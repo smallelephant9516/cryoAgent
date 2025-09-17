@@ -35,6 +35,11 @@ class ReActCryoEMAgent:
         self.tools = self._create_tools()
         self.agent_executor = self._create_agent_executor()
         self.reasoning_history: List[Dict[str, str]] = []
+        
+        # Memory control state
+        self.conversation_count = 0
+        self.last_conversation_id = None
+        self.conversation_memory: List[Dict[str, Any]] = []
     
     def _create_default_llm(self) -> BaseLanguageModel:
         """Create default language model."""
@@ -361,17 +366,35 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
         
         return params
     
-    def run_react_workflow(self, workflow_input: str) -> str:
+    def run_react_workflow(self, workflow_input: str, conversation_id: Optional[str] = None) -> str:
         """
         Run a cryoEM processing workflow using ReAct approach.
         
         Args:
             workflow_input: Description of the workflow to run
+            conversation_id: Optional conversation identifier for memory control
             
         Returns:
             Result of the workflow execution
         """
         try:
+            # Check if memory should be cleared
+            if self._should_clear_memory(conversation_id):
+                self._clear_agent_memory()
+                if self.config.agent.verbose:
+                    print("🧠 Memory cleared - starting fresh conversation")
+            
+            # Update conversation state
+            self._update_conversation_state(conversation_id)
+            
+            # Force clear memory if configuration requires it (more aggressive approach)
+            if (self.config.memory_control.clear_memory_on_new_conversation and 
+                not self.config.memory_control.maintain_context_between_interactions):
+                # Always clear memory for fresh starts
+                self._clear_agent_memory()
+                if self.config.agent.verbose:
+                    print("🧠 Memory forcefully cleared for fresh start")
+            
             # Add ReAct-specific instructions to the input
             react_input = f"""
 Execute the following cryoEM workflow using the ReAct framework:
@@ -394,17 +417,18 @@ Begin with reasoning about the current workflow state.
         except Exception as e:
             return f"❌ ReAct workflow execution failed: {str(e)}"
     
-    def run_single_step(self, step_description: str) -> str:
+    def run_single_step(self, step_description: str, conversation_id: Optional[str] = None) -> str:
         """
         Run a single processing step using ReAct approach.
         
         Args:
             step_description: Description of the step to run
+            conversation_id: Optional conversation identifier for memory control
             
         Returns:
             Result of the step execution
         """
-        return self.run_react_workflow(step_description)
+        return self.run_react_workflow(step_description, conversation_id)
     
     def get_reasoning_history(self) -> List[Dict[str, str]]:
         """Get the history of reasoning steps."""
@@ -413,3 +437,112 @@ Begin with reasoning about the current workflow state.
     def clear_reasoning_history(self):
         """Clear the reasoning history."""
         self.reasoning_history = []
+    
+    def _should_clear_memory(self, conversation_id: Optional[str] = None) -> bool:
+        """
+        Determine if memory should be cleared based on configuration and conversation state.
+        
+        Args:
+            conversation_id: Optional conversation identifier
+            
+        Returns:
+            True if memory should be cleared, False otherwise
+        """
+        # If clear_memory_on_new_conversation is True, always clear memory for new conversations
+        if self.config.memory_control.clear_memory_on_new_conversation:
+            # Clear memory if this is a new conversation (different ID or no ID provided)
+            if conversation_id is not None and conversation_id != self.last_conversation_id:
+                return True
+            elif conversation_id is None and self.conversation_count > 0:
+                return True
+            # Also clear memory if this is the first conversation and we want fresh starts
+            elif self.conversation_count == 0 and not self.config.memory_control.maintain_context_between_interactions:
+                return True
+        
+        # If maintain_context_between_interactions is False, always clear memory
+        if not self.config.memory_control.maintain_context_between_interactions:
+            return True
+            
+        return False
+    
+    def _clear_agent_memory(self):
+        """Clear all agent memory and reset conversation state."""
+        self.reasoning_history = []
+        self.conversation_memory = []
+        # Reset the agent executor to clear its internal state
+        self.agent_executor = self._create_agent_executor()
+        # Also reset the LLM to clear any internal conversation state
+        self.llm = self._create_default_llm()
+        # Reset conversation tracking
+        self.conversation_count = 0
+        self.last_conversation_id = None
+        
+        # Force clear any internal LangChain state by recreating the entire agent
+        # This ensures that the AgentExecutor's internal conversation history is cleared
+        if self.config.agent.verbose:
+            print("🧠 Completely resetting agent state for fresh start")
+    
+    def _update_conversation_state(self, conversation_id: Optional[str] = None):
+        """Update conversation state tracking."""
+        if conversation_id is not None:
+            self.last_conversation_id = conversation_id
+        self.conversation_count += 1
+    
+    def get_memory_status(self) -> Dict[str, Any]:
+        """
+        Get current memory status and configuration.
+        
+        Returns:
+            Dictionary containing memory status information
+        """
+        return {
+            "conversation_count": self.conversation_count,
+            "last_conversation_id": self.last_conversation_id,
+            "reasoning_history_length": len(self.reasoning_history),
+            "conversation_memory_length": len(self.conversation_memory),
+            "memory_control_config": {
+                "clear_memory_on_new_conversation": self.config.memory_control.clear_memory_on_new_conversation,
+                "maintain_context_between_interactions": self.config.memory_control.maintain_context_between_interactions
+            }
+        }
+    
+    def force_clear_memory(self):
+        """Force clear all memory regardless of configuration."""
+        self._clear_agent_memory()
+        if self.config.agent.verbose:
+            print("🧠 Memory forcefully cleared")
+    
+    def create_fresh_agent(self):
+        """Create a completely fresh agent instance with no memory."""
+        if self.config.agent.verbose:
+            print("🧠 Creating completely fresh agent instance")
+        
+        # Create a new agent with the same configuration but no memory
+        fresh_agent = ReActCryoEMAgent(
+            cryosparc_tools=self.cryosparc_tools,
+            config=self.config
+        )
+        
+        # Copy over any necessary state
+        fresh_agent.conversation_count = 0
+        fresh_agent.last_conversation_id = None
+        fresh_agent.reasoning_history = []
+        fresh_agent.conversation_memory = []
+        
+        return fresh_agent
+    
+    def set_memory_control(self, clear_on_new_conversation: bool = None, maintain_context: bool = None):
+        """
+        Dynamically update memory control settings.
+        
+        Args:
+            clear_on_new_conversation: Whether to clear memory on new conversations
+            maintain_context: Whether to maintain context between interactions
+        """
+        if clear_on_new_conversation is not None:
+            self.config.memory_control.clear_memory_on_new_conversation = clear_on_new_conversation
+        if maintain_context is not None:
+            self.config.memory_control.maintain_context_between_interactions = maintain_context
+        
+        if self.config.agent.verbose:
+            print(f"🧠 Memory control updated: clear_on_new={self.config.memory_control.clear_memory_on_new_conversation}, maintain_context={self.config.memory_control.maintain_context_between_interactions}")

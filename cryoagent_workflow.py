@@ -120,7 +120,7 @@ class CryoAgentWorkflow:
         print(f"   Timeout: {self.config.job_management.default_timeout}s")
         print()
     
-    def run_basic_workflow(self, dry_run: bool = False) -> bool:
+    def run_basic_workflow(self, dry_run: bool = False, conversation_id: Optional[str] = None) -> bool:
         """
         Run the basic cryoEM workflow using ReAct agent with job monitoring.
         
@@ -153,7 +153,7 @@ class CryoAgentWorkflow:
             print()
             
             # Execute the workflow using ReAct approach
-            result = self.agent.run_react_workflow(workflow_input)
+            result = self.agent.run_react_workflow(workflow_input, conversation_id)
             
             # Display the ReAct agent's execution result
             print("📊 ReAct Agent Execution Result:")
@@ -195,7 +195,7 @@ class CryoAgentWorkflow:
             traceback.print_exc()
             return False
     
-    def run_custom_workflow(self, steps: List[str], dry_run: bool = False) -> bool:
+    def run_custom_workflow(self, steps: List[str], dry_run: bool = False, conversation_id: Optional[str] = None) -> bool:
         """
         Run a custom workflow with specified steps using ReAct agent.
         
@@ -236,7 +236,7 @@ class CryoAgentWorkflow:
             print()
             
             # Execute the workflow using ReAct approach
-            result = self.agent.run_react_workflow(workflow_input)
+            result = self.agent.run_react_workflow(workflow_input, conversation_id)
             
             # Display the ReAct agent's execution result
             print("📊 ReAct Agent Custom Workflow Result:")
@@ -275,7 +275,7 @@ class CryoAgentWorkflow:
             traceback.print_exc()
             return False
     
-    def run_single_step(self, step: str, dry_run: bool = False) -> bool:
+    def run_single_step(self, step: str, dry_run: bool = False, conversation_id: Optional[str] = None) -> bool:
         """
         Run a single workflow step using ReAct agent.
         
@@ -328,7 +328,7 @@ Start by reasoning about what needs to be done and then execute the step.
             print()
             
             # Execute using ReAct approach
-            result = self.agent.run_react_workflow(workflow_input)
+            result = self.agent.run_react_workflow(workflow_input, conversation_id)
             
             print("📊 ReAct Agent Single Step Result:")
             print("=" * 50)
@@ -596,6 +596,9 @@ Examples:
 
   # Dry run
   python cryoagent_workflow.py --dry-run
+
+  # Clear AI memory and run workflow
+  python cryoagent_workflow.py --clear-memory
         """
     )
     
@@ -635,6 +638,12 @@ Examples:
         help="Show what would be done without executing"
     )
     
+    parser.add_argument(
+        "--clear-memory",
+        action="store_true",
+        help="Force clear AI memory before starting workflow"
+    )
+    
     args = parser.parse_args()
     
     # Initialize workflow
@@ -654,6 +663,12 @@ Examples:
         workflow.config.agent.verbose = True
         print("🔊 Verbose mode enabled")
     
+    # Force clear memory if requested
+    if args.clear_memory:
+        print("🧠 Force clearing AI memory...")
+        workflow.agent.force_clear_memory()
+        print("✅ AI memory cleared")
+    
     # Execute workflow based on type
     success = False
     
@@ -662,7 +677,10 @@ Examples:
             success = workflow.test_connection()
             
         elif args.workflow == "basic":
-            success = workflow.run_basic_workflow(args.dry_run)
+            # Use a unique conversation ID to ensure fresh start
+            import time
+            conversation_id = f"workflow_{int(time.time())}"
+            success = workflow.run_basic_workflow(args.dry_run, conversation_id)
             
         elif args.workflow == "custom":
             if not args.steps:
@@ -670,14 +688,20 @@ Examples:
                 print("   Valid steps: import_movies, motion_correction, ctf_estimation")
                 sys.exit(1)
             steps = [s.strip() for s in args.steps.split(",")]
-            success = workflow.run_custom_workflow(steps, args.dry_run)
+            # Use a unique conversation ID to ensure fresh start
+            import time
+            conversation_id = f"custom_{int(time.time())}"
+            success = workflow.run_custom_workflow(steps, args.dry_run, conversation_id)
             
         elif args.workflow == "single":
             if not args.steps:
                 print("❌ --steps required for single step workflow")
                 print("   Example: --steps 'Import movies and wait for completion'")
                 sys.exit(1)
-            success = workflow.run_single_step(args.steps, args.dry_run)
+            # Use a unique conversation ID to ensure fresh start
+            import time
+            conversation_id = f"single_{int(time.time())}"
+            success = workflow.run_single_step(args.steps, args.dry_run, conversation_id)
         
         # Exit with appropriate code
         if success:

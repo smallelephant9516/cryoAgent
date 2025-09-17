@@ -11,6 +11,25 @@ from dotenv import load_dotenv
 load_dotenv()
 
 
+def resolve_env_vars(data: Any) -> Any:
+    """
+    Resolve environment variables in configuration data.
+    Supports ${VARIABLE_NAME} pattern for LICENSE_ID and DEEPSEEK_API_KEY.
+    """
+    if isinstance(data, dict):
+        return {key: resolve_env_vars(value) for key, value in data.items()}
+    elif isinstance(data, list):
+        return [resolve_env_vars(item) for item in data]
+    elif isinstance(data, str) and data.startswith('${') and data.endswith('}'):
+        var_name = data[2:-1]  # Remove ${ and }
+        env_value = os.environ.get(var_name)
+        if env_value is None:
+            raise ValueError(f"Environment variable '{var_name}' not found")
+        return env_value
+    else:
+        return data
+
+
 class CryoSPARCSettings(BaseModel):
     """Settings for CryoSPARC connection."""
     
@@ -73,6 +92,12 @@ class AgentSettings(BaseModel):
     class Config:
         """Pydantic configuration."""
         env_prefix = "AGENT_"
+
+
+class MemoryControlSettings(BaseModel):
+    """Memory control settings for the LLM agent."""
+    clear_memory_on_new_conversation: bool = Field(default=True, description="Clear conversation history on new conversation")
+    maintain_context_between_interactions: bool = Field(default=False, description="Maintain context between different interactions")
 
 
 class ReActSettings(BaseModel):
@@ -140,6 +165,9 @@ class CryoAgentConfig(BaseModel):
     
     # ReAct specific settings
     react: ReActSettings
+    
+    # Memory control settings
+    memory_control: MemoryControlSettings
 
 
 class ConfigLoader:
@@ -176,6 +204,9 @@ class ConfigLoader:
         with open(config_path, 'r') as f:
             config_data = json.load(f)
         
+        # Resolve environment variables in the configuration data
+        config_data = resolve_env_vars(config_data)
+        
         return self._parse_config(config_data)
     
     def _parse_config(self, config_data: Dict[str, Any]) -> CryoAgentConfig:
@@ -186,6 +217,7 @@ class ConfigLoader:
         # Parse agent settings
         agent_data = config_data.get("agent", {})
         react_data = agent_data.pop("react", {})
+        memory_control_data = agent_data.pop("memory_control", {})
         agent_settings = AgentSettings(**agent_data)
         
         # Parse workflow settings
@@ -221,6 +253,9 @@ class ConfigLoader:
         # Parse ReAct settings
         react_settings = ReActSettings(**react_data)
         
+        # Parse memory control settings
+        memory_control_settings = MemoryControlSettings(**memory_control_data)
+        
         return CryoAgentConfig(
             cryosparc=cryosparc_settings,
             agent=agent_settings,
@@ -230,7 +265,8 @@ class ConfigLoader:
             react_workflow=react_workflow,
             error_handling=error_handling,
             performance=performance,
-            react=react_settings
+            react=react_settings,
+            memory_control=memory_control_settings
         )
     
     def get_cryosparc_settings(self) -> CryoSPARCSettings:
@@ -268,3 +304,7 @@ class ConfigLoader:
     def get_performance_settings(self) -> PerformanceSettings:
         """Get performance settings."""
         return self.load_config().performance
+    
+    def get_memory_control_settings(self) -> MemoryControlSettings:
+        """Get memory control settings."""
+        return self.load_config().memory_control

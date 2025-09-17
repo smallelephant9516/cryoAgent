@@ -43,7 +43,7 @@ class ReActCryoEMWorkflow:
         self.current_job_uids: Dict[WorkflowStep, str] = {}
         self.workflow_state: Dict[str, Any] = {}
     
-    def run_basic_workflow(self) -> List[WorkflowResult]:
+    def run_basic_workflow(self, conversation_id: Optional[str] = None) -> List[WorkflowResult]:
         """
         Run the basic cryoEM workflow using ReAct approach.
         
@@ -64,7 +64,7 @@ class ReActCryoEMWorkflow:
         
         try:
             # Execute the workflow using ReAct approach
-            result = self.agent.run_react_workflow(workflow_input)
+            result = self.agent.run_react_workflow(workflow_input, conversation_id)
             
             # Parse the result to extract individual step results
             self._parse_workflow_result(result)

@@ -54,7 +54,11 @@ Create a `config.json` file in your project root:
     "max_iterations": 15,
     "verbose": true,
     "api_key": "your-api-key",
-    "base_url": "https://api.deepseek.com"
+    "base_url": "https://api.deepseek.com",
+    "memory_control": {
+      "clear_memory_on_new_conversation": true,
+      "maintain_context_between_interactions": false
+    }
   },
   "workflow": {
     "project_uid": "P1",
@@ -81,7 +85,10 @@ Create a `config.json` file in your project root:
 **Using the Unified Workflow Script (Recommended):**
 
 ```bash
-# Test CryoSPARC connection first
+# Test DeepSeek API connection first
+python test_deepseek_connection.py
+
+# Test CryoSPARC connection
 python cryoagent_workflow.py --workflow test
 
 # Run the complete workflow
@@ -235,7 +242,72 @@ The ReAct agent includes sophisticated error handling:
 3. **Graceful Degradation**: Continue workflow when possible, even with partial failures
 4. **Detailed Logging**: Comprehensive logging of all reasoning and actions
 
+## 🧠 Memory Control
+
+CryoAgent includes sophisticated memory control features to manage LLM conversation history and context.
+
+### Memory Control Parameters
+
+Configure memory behavior in your `config.json`:
+
+```json
+{
+  "agent": {
+    "memory_control": {
+      "clear_memory_on_new_conversation": true,
+      "maintain_context_between_interactions": false
+    }
+  }
+}
+```
+
+### Memory Control Options
+
+- **`clear_memory_on_new_conversation`**: Whether to clear conversation history when starting a new conversation
+- **`maintain_context_between_interactions`**: Whether to maintain context between different interactions
+
+### Usage Examples
+
+```python
+# Run workflow with conversation ID for memory management
+result = agent.run_react_workflow(
+    "Process my cryoEM data", 
+    conversation_id="session_1"
+)
+
+# Check memory status
+memory_status = agent.get_memory_status()
+print(f"Conversation count: {memory_status['conversation_count']}")
+
+# Dynamically change memory control settings
+agent.set_memory_control(
+    clear_on_new_conversation=False,
+    maintain_context=True
+)
+
+# Force clear memory when needed
+agent.force_clear_memory()
+```
+
+### Use Cases
+
+- **Debugging**: Set `clear_memory_on_new_conversation=true` for fresh starts each time
+- **Continuous Workflows**: Set `maintain_context_between_interactions=true` for ongoing sessions
+- **Session Management**: Use `conversation_id` to group related interactions
+
 ## 📊 Monitoring and Debugging
+
+### Connection Testing
+
+Before running workflows, test your connections:
+
+```bash
+# Test DeepSeek API connection
+python test_deepseek_connection.py
+
+# Test CryoSPARC connection
+python test_cryosparc_connection.py
+```
 
 ### Real-time Status Updates
 

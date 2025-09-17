@@ -4,15 +4,19 @@
     "base_port": 61000,
     "username": "lidaoyi16@hotmail.com",
     "password": "Password123",
-    "license_id": "ea7aec62-b1ae-11e9-8554-cb1fba28db1b"
+    "license_id": "${LICENSE_ID}"
   },
   "agent": {
     "model_name": "deepseek-chat",
     "temperature": 0.1,
     "max_iterations": 15,
     "verbose": true,
-    "api_key": "sk-03a2d709245e4164821bfb36fa774f32",
+    "api_key": "${DEEPSEEK_API_KEY}",
     "base_url": "https://api.deepseek.com",
+    "memory_control": {
+      "clear_memory_on_new_conversation": true,
+      "maintain_context_between_interactions": false
+    },
     "react": {
       "max_reasoning_steps": 10,
       "enable_self_reflection": true,

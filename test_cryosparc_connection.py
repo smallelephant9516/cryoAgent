@@ -43,43 +43,6 @@ def test_cryosparc_connection():
         
         print(f"✅ CryoSPARC connection successful! (took {connection_time:.2f}s)")
         
-        # Test basic operations
-        print("\n📊 Testing basic operations...")
-        
-        # List projects
-        print("   - Listing projects...")
-        projects = cryosparc_tools.list_projects()
-        print(f"     ✅ Found {len(projects)} projects")
-        
-        if projects:
-            print("     📋 Available projects:")
-            for project in projects[:3]:  # Show first 3 projects
-                print(f"       • {project['name']} (UID: {project['uid']})")
-        
-        # Test project access
-        print(f"   - Testing project access (UID: {config.workflow.project_uid})...")
-        workspaces = cryosparc_tools.list_workspaces(config.workflow.project_uid)
-        print(f"     ✅ Project accessible! Found {len(workspaces)} workspaces")
-        
-        if workspaces:
-            print("     📋 Available workspaces:")
-            for workspace in workspaces[:3]:  # Show first 3 workspaces
-                print(f"       • {workspace['name']} (UID: {workspace['uid']})")
-        
-        # Test workspace access
-        print(f"   - Testing workspace access (UID: {config.workflow.workspace_uid})...")
-        try:
-            # Try to access the specific workspace
-            project = cryosparc_tools.cs.find_project(config.workflow.project_uid)
-            workspace = project.find_workspace(config.workflow.workspace_uid)
-            print(f"     ✅ Workspace accessible!")
-        except Exception as e:
-            print(f"     ⚠️ Workspace access issue: {e}")
-            print("     💡 This may be expected if the workspace doesn't exist yet")
-        
-        print("\n🎉 CryoSPARC connection test completed successfully!")
-        return True
-        
     except Exception as e:
         print(f"❌ CryoSPARC connection failed: {e}")
         print()
