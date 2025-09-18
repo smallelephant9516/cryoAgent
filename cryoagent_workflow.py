@@ -116,7 +116,20 @@ class CryoAgentWorkflow:
         print(f"   Voltage: {self.config.workflow.voltage} kV")
         print(f"   CS: {self.config.workflow.cs_mm} mm")
         print(f"   Dose: {self.config.workflow.dose} e-/Å²")
-        print(f"   Model: {self.config.agent.model_name}")
+        
+        # Display model information
+        model_info = self.agent.get_current_model_info()
+        available_providers = self.config.agent.get_available_providers()
+        
+        print(f"   LLM Provider: {model_info['provider']}")
+        print(f"   Model: {model_info['model_name']}")
+        print(f"   Base URL: {model_info['base_url']}")
+        print(f"   Temperature: {model_info['temperature']}")
+        print(f"   Available Providers: {', '.join(available_providers) if available_providers else 'None (no valid API keys)'}")
+        
+        if not available_providers:
+            print("   ⚠️ Warning: No valid API keys found. Please set one of: DEEPSEEK_API_KEY, OPENAI_API_KEY, or PANSHI_API_KEY")
+        
         print(f"   Timeout: {self.config.job_management.default_timeout}s")
         print()
     
@@ -690,6 +703,12 @@ Examples:
         help="Force clear AI memory before starting workflow"
     )
     
+    parser.add_argument(
+        "--model",
+        choices=["deepseek", "openai", "panshi"],
+        help="Override the LLM model provider (deepseek, openai, panshi)"
+    )
+    
     args = parser.parse_args()
     
     # Initialize workflow
@@ -714,6 +733,23 @@ Examples:
         print("🧠 Force clearing AI memory...")
         workflow.agent.force_clear_memory()
         print("✅ AI memory cleared")
+    
+    # Override model provider if specified
+    if args.model:
+        print(f"🔄 Switching to model provider: {args.model}")
+        try:
+            workflow.agent.switch_model_provider(args.model)
+            print(f"✅ Model provider switched to: {args.model}")
+        except ValueError as e:
+            print(f"❌ Failed to switch model provider: {e}")
+            print("💡 Available providers with valid API keys:")
+            available = workflow.config.agent.get_available_providers()
+            if available:
+                for provider in available:
+                    print(f"   - {provider}")
+            else:
+                print("   None - please set one of: DEEPSEEK_API_KEY, OPENAI_API_KEY, or PANSHI_API_KEY")
+            sys.exit(1)
     
     # Always create a fresh agent instance to prevent hallucination
     print("🧠 Ensuring fresh agent state to prevent hallucination...")

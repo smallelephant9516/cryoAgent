@@ -14,7 +14,8 @@ load_dotenv()
 def resolve_env_vars(data: Any) -> Any:
     """
     Resolve environment variables in configuration data.
-    Supports ${VARIABLE_NAME} pattern for LICENSE_ID and DEEPSEEK_API_KEY.
+    Supports ${VARIABLE_NAME} pattern for API keys and other variables.
+    Returns empty string for missing environment variables instead of raising error.
     """
     if isinstance(data, dict):
         return {key: resolve_env_vars(value) for key, value in data.items()}
@@ -24,7 +25,9 @@ def resolve_env_vars(data: Any) -> Any:
         var_name = data[2:-1]  # Remove ${ and }
         env_value = os.environ.get(var_name)
         if env_value is None:
-            raise ValueError(f"Environment variable '{var_name}' not found")
+            # Return empty string for missing environment variables
+            # This allows the system to work with only some API keys configured
+            return ""
         return env_value
     else:
         return data
@@ -79,19 +82,122 @@ class WorkflowSettings(BaseModel):
         env_prefix = "CRYOEM_"
 
 
+class ModelConfig(BaseModel):
+    """Configuration for a specific LLM model."""
+    api_key: str = Field(description="API key for the model")
+    base_url: str = Field(description="Base URL for the API")
+    model_name: str = Field(description="Model name")
+    temperature: float = Field(default=0.1, description="Model temperature")
+    timeout: int = Field(default=60, description="Request timeout in seconds")
+
+
 class AgentSettings(BaseModel):
     """Settings for LangChain agent configuration."""
     
-    model_name: str = Field(default="deepseek-chat", description="LLM model name")
-    temperature: float = Field(default=0.1, description="LLM temperature")
+    provider: str = Field(default="deepseek", description="LLM provider (deepseek, openai, panshi)")
+    model_name: str = Field(default="deepseek-chat", description="LLM model name (legacy)")
+    temperature: float = Field(default=0.1, description="LLM temperature (legacy)")
     max_iterations: int = Field(default=10, description="Maximum agent iterations")
     verbose: bool = Field(default=True, description="Enable verbose logging")
-    api_key: str = Field(default="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", description="DeepSeek API key")
-    base_url: str = Field(default="https://api.deepseek.com", description="API base URL")
+    timeout: int = Field(default=60, description="Request timeout in seconds")
+    api_key: str = Field(default="", description="API key (legacy)")
+    base_url: str = Field(default="", description="API base URL (legacy)")
+    models: Dict[str, ModelConfig] = Field(default_factory=dict, description="Available model configurations")
     
     class Config:
         """Pydantic configuration."""
         env_prefix = "AGENT_"
+    
+    def get_current_model_config(self) -> ModelConfig:
+        """Get the configuration for the currently selected model provider."""
+        if self.provider in self.models:
+            return self.models[self.provider]
+        else:
+            # Fallback to legacy configuration
+            return ModelConfig(
+                api_key=self.api_key,
+                base_url=self.base_url,
+                model_name=self.model_name,
+                temperature=self.temperature,
+                timeout=self.timeout
+            )
+    
+    def get_available_providers(self) -> list[str]:
+        """Get list of providers that have valid API keys configured."""
+        available = []
+        for provider, model_config in self.models.items():
+            if self._is_api_key_valid(model_config.api_key):
+                available.append(provider)
+        return available
+    
+    def auto_select_provider(self) -> str:
+        """
+        Automatically select the first available provider with a valid API key.
+        
+        Returns:
+            Provider name that has a valid API key
+            
+        Raises:
+            ValueError: If no providers have valid API keys
+        """
+        available_providers = self.get_available_providers()
+        
+        if not available_providers:
+            # Check if legacy configuration has valid API key
+            if self._is_api_key_valid(self.api_key):
+                return "legacy"
+            else:
+                raise ValueError(
+                    "No valid API keys found for any provider. "
+                    "Please set one of: DEEPSEEK_API_KEY, OPENAI_API_KEY, or PANSHI_API_KEY"
+                )
+        
+        # Return the first available provider
+        selected = available_providers[0]
+        self.provider = selected  # Update the current provider
+        return selected
+    
+    def _is_api_key_valid(self, api_key: str) -> bool:
+        """
+        Check if an API key is valid (not empty, not placeholder).
+        
+        Args:
+            api_key: API key to validate
+            
+        Returns:
+            True if API key appears valid, False otherwise
+        """
+        if not api_key or not api_key.strip():
+            return False
+        
+        # Check for common placeholder patterns (be more specific)
+        placeholder_patterns = [
+            "your-api-key",
+            "your-key",
+            "example-key",
+            "placeholder-key",
+            "replace-with-your",
+            "set-your-key"
+        ]
+        
+        api_key_lower = api_key.lower()
+        for pattern in placeholder_patterns:
+            if pattern in api_key_lower:
+                return False
+        
+        # Special handling for sk- keys (OpenAI format)
+        if api_key.startswith("sk-"):
+            # Valid OpenAI keys are typically longer and have specific format
+            if len(api_key.strip()) < 20:
+                return False
+            return True
+        
+        # For other API keys (DeepSeek, Panshi, etc.), be more lenient
+        # Just check that it's not obviously a placeholder and has reasonable length
+        if len(api_key.strip()) < 10:
+            return False
+        
+        return True
 
 
 class MemoryControlSettings(BaseModel):

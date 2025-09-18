@@ -7,12 +7,11 @@
     "license_id": "${LICENSE_ID}"
   },
   "agent": {
-    "model_name": "deepseek-chat",
+    "provider": "openai", 
     "temperature": 0.1,
     "max_iterations": 15,
     "verbose": true,
-    "api_key": "${DEEPSEEK_API_KEY}",
-    "base_url": "https://api.deepseek.com",
+    "timeout": 60,
     "memory_control": {
       "clear_memory_on_new_conversation": true,
       "maintain_context_between_interactions": false
@@ -21,6 +20,29 @@
       "max_reasoning_steps": 10,
       "enable_self_reflection": true,
       "require_explicit_reasoning": true
+    },
+    "models": {
+      "deepseek": {
+        "api_key": "${DEEPSEEK_API_KEY}",
+        "base_url": "https://api.deepseek.com",
+        "model_name": "deepseek-chat",
+        "temperature": 0.1,
+        "timeout": 60
+      },
+      "openai": {
+        "api_key": "${OPENAI_API_KEY}",
+        "base_url": "https://api.openai.com/v1",
+        "model_name": "gpt-4o",
+        "temperature": 0.1,
+        "timeout": 60
+      },
+      "panshi": {
+        "api_key": "${PANSHI_API_KEY}",
+        "base_url": "https://uni-api.cstcloud.cn/v1",
+        "model_name": "S1-Base-Lite",
+        "temperature": 0.2,
+        "timeout": 60
+      }
     }
   },
   "workflow": {

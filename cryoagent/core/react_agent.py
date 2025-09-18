@@ -11,6 +11,7 @@ from langchain_core.messages import HumanMessage, SystemMessage, AIMessage
 
 from ..tools.cryosparc_tools import CryoSPARCTools
 from ..config.config_loader import ConfigLoader, CryoAgentConfig
+from .llm_factory import LLMFactory
 
 
 class ReActCryoEMAgent:
@@ -32,6 +33,10 @@ class ReActCryoEMAgent:
         """
         self.cryosparc_tools = cryosparc_tools
         self.config = config
+        
+        # Auto-select provider if current one doesn't have valid API key
+        self._ensure_valid_provider()
+        
         self.llm = llm or self._create_default_llm()
         self.tools = self._create_tools()
         self.agent_executor = self._create_agent_executor()
@@ -43,14 +48,26 @@ class ReActCryoEMAgent:
         self.last_conversation_id = None
         self.conversation_memory: List[Dict[str, Any]] = []
     
+    def _ensure_valid_provider(self):
+        """Ensure that the current provider has a valid API key, auto-select if not."""
+        try:
+            # Check if current provider has valid API key
+            current_model_config = self.config.agent.get_current_model_config()
+            if not self.config.agent._is_api_key_valid(current_model_config.api_key):
+                # Auto-select a provider with valid API key
+                selected_provider = self.config.agent.auto_select_provider()
+                if self.config.agent.verbose:
+                    print(f"🔄 Auto-selected provider: {selected_provider} (no valid API key for configured provider)")
+        except ValueError as e:
+            # No valid providers found
+            if self.config.agent.verbose:
+                print(f"⚠️ Warning: {e}")
+            raise
+    
     def _create_default_llm(self) -> BaseLanguageModel:
-        """Create default language model."""
-        return ChatOpenAI(
-            model=self.config.agent.model_name,
-            temperature=self.config.agent.temperature,
-            api_key=self.config.agent.api_key,
-            base_url=self.config.agent.base_url
-        )
+        """Create default language model using the configured provider."""
+        model_config = self.config.agent.get_current_model_config()
+        return LLMFactory.create_llm(model_config, self.config.agent.provider)
     
     def _create_tools(self) -> List[Tool]:
         """Create LangChain tools for CryoSPARC operations."""
@@ -648,3 +665,55 @@ Begin with reasoning about the current workflow state.
         
         if self.config.agent.verbose:
             print(f"🧠 Memory control updated: clear_on_new={self.config.memory_control.clear_memory_on_new_conversation}, maintain_context={self.config.memory_control.maintain_context_between_interactions}")
+    
+    def switch_model_provider(self, provider: str):
+        """
+        Switch the LLM provider dynamically.
+        
+        Args:
+            provider: New provider name (openai, deepseek, panshi)
+            
+        Raises:
+            ValueError: If provider is not supported or not configured
+        """
+        provider = provider.lower()
+        supported_providers = LLMFactory.get_supported_providers()
+        
+        if provider not in supported_providers:
+            raise ValueError(f"Unsupported provider: {provider}. Supported: {supported_providers}")
+        
+        if provider not in self.config.agent.models:
+            raise ValueError(f"Provider '{provider}' not configured in config file")
+        
+        # Update the provider
+        old_provider = self.config.agent.provider
+        self.config.agent.provider = provider
+        
+        # Create new LLM instance
+        self.llm = self._create_default_llm()
+        
+        # Recreate agent executor with new LLM
+        self.agent_executor = self._create_agent_executor()
+        
+        if self.config.agent.verbose:
+            model_config = self.config.agent.get_current_model_config()
+            print(f"🔄 Model provider switched from '{old_provider}' to '{provider}'")
+            print(f"   Model: {model_config.model_name}")
+            print(f"   Base URL: {model_config.base_url}")
+    
+    def get_current_model_info(self) -> Dict[str, Any]:
+        """
+        Get information about the currently configured model.
+        
+        Returns:
+            Dictionary containing model information
+        """
+        model_config = self.config.agent.get_current_model_config()
+        return {
+            "provider": self.config.agent.provider,
+            "model_name": model_config.model_name,
+            "base_url": model_config.base_url,
+            "temperature": model_config.temperature,
+            "timeout": model_config.timeout,
+            "available_providers": list(self.config.agent.models.keys())
+        }
