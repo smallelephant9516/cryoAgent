@@ -145,6 +145,11 @@ class CryoAgentWorkflow:
             
             self.start_time = time.time()
             
+            # Create a fresh agent instance to prevent hallucination
+            print("🧠 Creating fresh agent instance to ensure clean state...")
+            self.agent = self.agent.create_fresh_agent()
+            print("✅ Fresh agent instance created")
+            
             # Use ReAct agent to orchestrate the entire workflow with monitoring
             workflow_input = self._create_workflow_input()
             
@@ -228,6 +233,11 @@ class CryoAgentWorkflow:
             
             self.start_time = time.time()
             
+            # Create a fresh agent instance to prevent hallucination
+            print("🧠 Creating fresh agent instance to ensure clean state...")
+            self.agent = self.agent.create_fresh_agent()
+            print("✅ Fresh agent instance created")
+            
             # Create custom workflow input
             workflow_input = self._create_custom_workflow_input(steps)
             
@@ -298,6 +308,11 @@ class CryoAgentWorkflow:
             print()
             
             self.start_time = time.time()
+            
+            # Create a fresh agent instance to prevent hallucination
+            print("🧠 Creating fresh agent instance to ensure clean state...")
+            self.agent = self.agent.create_fresh_agent()
+            print("✅ Fresh agent instance created")
             
             # Create a focused workflow input for the single step
             workflow_input = f"""
@@ -442,6 +457,16 @@ Start by reasoning about the workflow state and then proceed step by step.
 
         if not execution_log:
             print("⚠️ No CryoSPARC tool activity was recorded during this run. The agent likely hallucinated the workflow.")
+            print("🔧 This indicates the agent's internal state wasn't properly reset. Try running again.")
+            return False
+        
+        # Additional validation: Check if any tools were actually invoked
+        cryosparc_tools = {"import_movies", "motion_correction", "ctf_estimation", "wait_for_job", "get_job_status"}
+        actual_tool_calls = [entry for entry in execution_log if entry.get("tool") in cryosparc_tools]
+        
+        if not actual_tool_calls:
+            print("⚠️ No actual CryoSPARC tool calls were recorded. The agent likely hallucinated the workflow.")
+            print("🔧 This indicates the agent's internal state wasn't properly reset. Try running again.")
             return False
 
         # If any critical tool reported an error, flag the workflow as failed immediately
@@ -689,6 +714,11 @@ Examples:
         print("🧠 Force clearing AI memory...")
         workflow.agent.force_clear_memory()
         print("✅ AI memory cleared")
+    
+    # Always create a fresh agent instance to prevent hallucination
+    print("🧠 Ensuring fresh agent state to prevent hallucination...")
+    workflow.agent = workflow.agent.create_fresh_agent()
+    print("✅ Fresh agent state ensured")
     
     # Execute workflow based on type
     success = False

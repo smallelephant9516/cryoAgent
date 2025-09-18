@@ -563,6 +563,20 @@ Begin with reasoning about the current workflow state.
         if self.config.agent.verbose:
             print("🧠 Completely resetting agent state for fresh start")
     
+    def _force_reset_agent_executor(self):
+        """Force reset the agent executor to ensure clean state."""
+        try:
+            # Create a completely new agent executor
+            self.agent_executor = self._create_agent_executor()
+            if self.config.agent.verbose:
+                print("🔄 Agent executor forcefully reset")
+        except Exception as e:
+            if self.config.agent.verbose:
+                print(f"⚠️ Warning: Could not reset agent executor: {e}")
+            # Fallback: try to clear any internal state
+            if hasattr(self.agent_executor, 'memory'):
+                self.agent_executor.memory.clear()
+    
     def _update_conversation_state(self, conversation_id: Optional[str] = None):
         """Update conversation state tracking."""
         if conversation_id is not None:
@@ -604,11 +618,18 @@ Begin with reasoning about the current workflow state.
             config=self.config
         )
         
-        # Copy over any necessary state
+        # Ensure completely clean state
         fresh_agent.conversation_count = 0
         fresh_agent.last_conversation_id = None
         fresh_agent.reasoning_history = []
         fresh_agent.conversation_memory = []
+        fresh_agent.clear_tool_execution_log()
+        
+        # Force reset the agent executor to ensure no internal state
+        fresh_agent._force_reset_agent_executor()
+        
+        if self.config.agent.verbose:
+            print("✅ Fresh agent instance created with completely clean state")
         
         return fresh_agent
     
