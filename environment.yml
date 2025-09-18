@@ -1,0 +1,15 @@
+name: cryoAgent
+channels:
+  - defaults
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+  - pip:
+    - langchain>=0.1.0
+    - langchain-community>=0.0.20
+    - langchain-openai>=0.3.0
+    - cryosparc-tools>=0.1.0
+    - pydantic>=2.0.0
+    - python-dotenv>=1.0.0
+    - typing-extensions>=4.0.0

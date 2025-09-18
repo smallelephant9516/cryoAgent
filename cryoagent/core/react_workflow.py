@@ -113,32 +113,103 @@ Start by reasoning about the workflow state and then proceed step by step.
     
     def _parse_workflow_result(self, result: str) -> None:
         """Parse the workflow result to extract individual step results."""
-        # This is a simplified parser - in a real implementation, you might want
-        # more sophisticated parsing of the ReAct agent's output
-        
-        # For now, we'll create a single result representing the entire workflow
-        # In a more sophisticated implementation, you would parse the agent's
-        # reasoning and action history to extract individual step results
-        
-        if "successfully" in result.lower() and "completed" in result.lower():
-            # Assume all steps completed successfully
-            for step in [WorkflowStep.IMPORT_MOVIES, WorkflowStep.MOTION_CORRECTION, WorkflowStep.CTF_ESTIMATION]:
-                step_result = WorkflowResult(
-                    step=step,
-                    success=True,
-                    message=f"Step {step.value} completed successfully",
-                    reasoning=result
-                )
-                self.results.append(step_result)
-        else:
-            # Create error result
+        execution_log = self.agent.get_tool_execution_log()
+
+        if not execution_log:
             error_result = WorkflowResult(
                 step=WorkflowStep.IMPORT_MOVIES,
                 success=False,
-                error="Workflow did not complete successfully",
-                message=result
+                error="No CryoSPARC tool calls were recorded during workflow execution",
+                message="Agent response did not trigger any tool invocations",
+                reasoning=result
             )
             self.results.append(error_result)
+            return
+
+        waits: Dict[str, Dict[str, Any]] = {}
+        tool_entries: Dict[str, List[Dict[str, Any]]] = {}
+
+        for entry in execution_log:
+            tool_name = entry.get("tool")
+            tool_entries.setdefault(tool_name, []).append(entry)
+            if tool_name == "wait_for_job" and entry.get("result"):
+                job_uid = entry.get("params", {}).get("job_uid")
+                if job_uid:
+                    waits[job_uid] = entry["result"]
+
+        for step in [WorkflowStep.IMPORT_MOVIES, WorkflowStep.MOTION_CORRECTION, WorkflowStep.CTF_ESTIMATION]:
+            records = tool_entries.get(step.value, [])
+            if not records:
+                self.results.append(
+                    WorkflowResult(
+                        step=step,
+                        success=False,
+                        error="Step was never executed",
+                        message="No tool invocation recorded",
+                        reasoning=result
+                    )
+                )
+                continue
+
+            latest_record = records[-1]
+            error_message = latest_record.get("error")
+            result_payload = latest_record.get("result", {})
+            job_uid = result_payload.get("job_uid") if isinstance(result_payload, dict) else None
+
+            if error_message:
+                self.results.append(
+                    WorkflowResult(
+                        step=step,
+                        success=False,
+                        job_uid=job_uid,
+                        error=error_message,
+                        message="Tool execution reported an error",
+                        reasoning=result
+                    )
+                )
+                continue
+
+            if not job_uid:
+                self.results.append(
+                    WorkflowResult(
+                        step=step,
+                        success=False,
+                        error="Tool did not return a job UID",
+                        message="Unable to confirm CryoSPARC job submission",
+                        reasoning=result
+                    )
+                )
+                continue
+
+            wait_info = waits.get(job_uid)
+            if not wait_info:
+                self.results.append(
+                    WorkflowResult(
+                        step=step,
+                        success=False,
+                        job_uid=job_uid,
+                        error="Job completion was not confirmed",
+                        message="Missing wait_for_job invocation",
+                        reasoning=result
+                    )
+                )
+                continue
+
+            status = wait_info.get("status")
+            success = status == "completed"
+            message = f"CryoSPARC job {job_uid} completed successfully" if success else f"CryoSPARC job {job_uid} finished with status '{status}'"
+            error = None if success else f"Job status: {status}"
+
+            self.results.append(
+                WorkflowResult(
+                    step=step,
+                    success=success,
+                    job_uid=job_uid,
+                    message=message,
+                    error=error,
+                    reasoning=result
+                )
+            )
     
     def run_custom_workflow(self, steps: List[WorkflowStep]) -> List[WorkflowResult]:
         """

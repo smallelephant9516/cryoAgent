@@ -1,5 +1,6 @@
 """ReAct (Reasoning + Acting) CryoEM agent implementation."""
 
+import time
 from typing import Dict, Any, List, Optional, Tuple
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.tools import Tool
@@ -35,6 +36,7 @@ class ReActCryoEMAgent:
         self.tools = self._create_tools()
         self.agent_executor = self._create_agent_executor()
         self.reasoning_history: List[Dict[str, str]] = []
+        self.tool_execution_log: List[Dict[str, Any]] = []
         
         # Memory control state
         self.conversation_count = 0
@@ -197,64 +199,89 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
     
     def _import_movies_tool(self, input_str: str) -> str:
         """Tool wrapper for importing movies."""
+        params: Dict[str, Any] = {}
+        used_params: Dict[str, Any] = {}
         try:
             params = self._parse_tool_input(input_str)
-            
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            used_params = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+                "movies_path": params.get("movies_path", self.config.workflow.movies_path),
+                "gain_ref_path": params.get("gain_ref_path", self.config.workflow.gain_ref_path),
+                "pixel_size": float(params.get("pixel_size", self.config.workflow.pixel_size)),
+                "voltage": float(params.get("voltage", self.config.workflow.voltage)),
+                "cs_mm": float(params.get("cs_mm", self.config.workflow.cs_mm)),
+                "dose": float(params.get("dose", self.config.workflow.dose))
+            }
+
             # Use config defaults if not provided
-            result = self.cryosparc_tools.import_movies(
-                project_uid=params.get("project_uid", self.config.workflow.project_uid),
-                workspace_uid=params.get("workspace_uid", self.config.workflow.workspace_uid),
-                movies_path=params.get("movies_path", self.config.workflow.movies_path),
-                gain_ref_path=params.get("gain_ref_path", self.config.workflow.gain_ref_path),
-                pixel_size=float(params.get("pixel_size", self.config.workflow.pixel_size)),
-                voltage=float(params.get("voltage", self.config.workflow.voltage)),
-                cs_mm=float(params.get("cs_mm", self.config.workflow.cs_mm)),
-                dose=float(params.get("dose", self.config.workflow.dose))
-            )
-            
+            result = self.cryosparc_tools.import_movies(**used_params)
+
+            self._record_tool_execution("import_movies", used_params, result=result)
             return f"✅ Successfully queued import movies job: {result['job_uid']}"
             
         except Exception as e:
+            context = used_params or params or {"raw_input": input_str}
+            self._record_tool_execution("import_movies", context, error=str(e))
             return f"❌ Error importing movies: {str(e)}"
     
     def _motion_correction_tool(self, input_str: str) -> str:
         """Tool wrapper for motion correction."""
+        params: Dict[str, Any] = {}
+        used_params: Dict[str, Any] = {}
         try:
             params = self._parse_tool_input(input_str)
-            
-            result = self.cryosparc_tools.motion_correction(
-                project_uid=params.get("project_uid", self.config.workflow.project_uid),
-                workspace_uid=params.get("workspace_uid", self.config.workflow.workspace_uid),
-                movies_job_uid=params.get("movies_job_uid"),
-                binning=int(params.get("binning", self.config.workflow.motion_correction_binning)),
-                patch_size=int(params.get("patch_size", self.config.workflow.motion_correction_patch_size))
-            )
-            
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            used_params = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+                "movies_job_uid": params.get("movies_job_uid"),
+                "binning": int(params.get("binning", self.config.workflow.motion_correction_binning)),
+                "patch_size": int(params.get("patch_size", self.config.workflow.motion_correction_patch_size))
+            }
+
+            result = self.cryosparc_tools.motion_correction(**used_params)
+
+            self._record_tool_execution("motion_correction", used_params, result=result)
             return f"✅ Successfully queued motion correction job: {result['job_uid']}"
             
         except Exception as e:
+            context = used_params or params or {"raw_input": input_str}
+            self._record_tool_execution("motion_correction", context, error=str(e))
             return f"❌ Error starting motion correction: {str(e)}"
     
     def _ctf_estimation_tool(self, input_str: str) -> str:
         """Tool wrapper for CTF estimation."""
+        params: Dict[str, Any] = {}
+        used_params: Dict[str, Any] = {}
         try:
             params = self._parse_tool_input(input_str)
-            
-            result = self.cryosparc_tools.ctf_estimation(
-                project_uid=params.get("project_uid", self.config.workflow.project_uid),
-                workspace_uid=params.get("workspace_uid", self.config.workflow.workspace_uid),
-                micrographs_job_uid=params.get("micrographs_job_uid"),
-                min_res=float(params.get("min_res", self.config.workflow.ctf_min_res)),
-                max_res=float(params.get("max_res", self.config.workflow.ctf_max_res))
-            )
-            
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            used_params = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+                "micrographs_job_uid": params.get("micrographs_job_uid"),
+                "min_res": float(params.get("min_res", self.config.workflow.ctf_min_res)),
+                "max_res": float(params.get("max_res", self.config.workflow.ctf_max_res))
+            }
+
+            result = self.cryosparc_tools.ctf_estimation(**used_params)
+
+            self._record_tool_execution("ctf_estimation", used_params, result=result)
             return f"✅ Successfully queued CTF estimation job: {result['job_uid']}"
             
         except Exception as e:
+            context = used_params or params or {"raw_input": input_str}
+            self._record_tool_execution("ctf_estimation", context, error=str(e))
             return f"❌ Error starting CTF estimation: {str(e)}"
     
     def _get_job_status_tool(self, input_str: str) -> str:
         """Tool wrapper for getting job status."""
+        params: Dict[str, Any] = {}
         try:
             params = self._parse_tool_input(input_str)
             job_uid = params.get("job_uid")
@@ -271,13 +298,21 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 workspace_uid=workspace_uid
             )
             progress_display = f"{status['progress']}%" if status.get("progress") is not None else "N/A"
+            self._record_tool_execution("get_job_status", {
+                "job_uid": job_uid,
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }, result=status)
             return f"📊 Job {job_uid} status: {status['status']} ({progress_display})"
             
         except Exception as e:
+            context = params or {"raw_input": input_str}
+            self._record_tool_execution("get_job_status", context, error=str(e))
             return f"❌ Error getting job status: {str(e)}"
     
     def _wait_for_job_tool(self, input_str: str) -> str:
         """Tool wrapper for waiting for job completion."""
+        params: Dict[str, Any] = {}
         try:
             params = self._parse_tool_input(input_str)
             job_uid = params.get("job_uid")
@@ -296,9 +331,21 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 workspace_uid,
                 timeout
             )
+            self._record_tool_execution(
+                "wait_for_job",
+                {
+                    "job_uid": job_uid,
+                    "project_uid": project_uid,
+                    "workspace_uid": workspace_uid,
+                    "timeout": timeout
+                },
+                result=status
+            )
             return f"✅ Job {job_uid} completed with status: {status['status']}"
             
         except Exception as e:
+            context = params or {"raw_input": input_str}
+            self._record_tool_execution("wait_for_job", context, error=str(e))
             return f"❌ Error waiting for job: {str(e)}"
     
     def _reason_about_workflow_tool(self, input_str: str) -> str:
@@ -325,15 +372,17 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
 - Use wait_for_job for critical dependencies
 - Verify each step completes successfully before moving to the next
 """
+            self._record_tool_execution("reason_about_workflow", {"input": input_str}, result={"analysis": reasoning})
             return reasoning
             
         except Exception as e:
+            self._record_tool_execution("reason_about_workflow", {"input": input_str}, error=str(e))
             return f"❌ Error in workflow reasoning: {str(e)}"
     
     def _parse_tool_input(self, input_str: str) -> Dict[str, Any]:
         """Parse tool input string into parameters."""
         import json
-        
+
         # Handle different input formats
         input_str = input_str.strip()
         
@@ -363,8 +412,36 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             else:
                 # For other tools, try to extract meaningful parameters
                 params["input"] = input_str
-        
+
         return params
+
+    def _record_tool_execution(
+        self,
+        tool_name: str,
+        params: Dict[str, Any],
+        *,
+        result: Optional[Any] = None,
+        error: Optional[str] = None
+    ) -> None:
+        """Capture a structured record of tool usage for later analysis."""
+        entry: Dict[str, Any] = {
+            "tool": tool_name,
+            "timestamp": time.time(),
+            "params": dict(params) if params else {}
+        }
+        if result is not None:
+            entry["result"] = result
+        if error is not None:
+            entry["error"] = error
+        self.tool_execution_log.append(entry)
+
+    def get_tool_execution_log(self) -> List[Dict[str, Any]]:
+        """Return a shallow copy of the recorded tool executions."""
+        return [entry.copy() for entry in self.tool_execution_log]
+
+    def clear_tool_execution_log(self) -> None:
+        """Clear the recorded tool execution history."""
+        self.tool_execution_log = []
     
     def run_react_workflow(self, workflow_input: str, conversation_id: Optional[str] = None) -> str:
         """
@@ -378,6 +455,9 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             Result of the workflow execution
         """
         try:
+            # Reset execution log for this run so downstream checks see only fresh activity
+            self.clear_tool_execution_log()
+
             # Check if memory should be cleared
             if self._should_clear_memory(conversation_id):
                 self._clear_agent_memory()
@@ -473,6 +553,7 @@ Begin with reasoning about the current workflow state.
         self.agent_executor = self._create_agent_executor()
         # Also reset the LLM to clear any internal conversation state
         self.llm = self._create_default_llm()
+        self.clear_tool_execution_log()
         # Reset conversation tracking
         self.conversation_count = 0
         self.last_conversation_id = None

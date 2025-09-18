@@ -438,41 +438,62 @@ Start by reasoning about the workflow state and then proceed step by step.
     
     def _analyze_workflow_result(self, result: str) -> bool:
         """Analyze the workflow result to determine success."""
-        # Check for success indicators in the result
-        success_indicators = [
-            "successfully completed",
-            "workflow completed successfully",
-            "all steps completed",
-            "import movies completed",
-            "motion correction completed", 
-            "ctf estimation completed"
+        execution_log = self.agent.get_tool_execution_log()
+
+        if not execution_log:
+            print("⚠️ No CryoSPARC tool activity was recorded during this run. The agent likely hallucinated the workflow.")
+            return False
+
+        # If any critical tool reported an error, flag the workflow as failed immediately
+        critical_tools = {"import_movies", "motion_correction", "ctf_estimation", "wait_for_job"}
+        critical_errors = [
+            entry for entry in execution_log
+            if entry.get("error") and entry.get("tool") in critical_tools
         ]
-        
-        failure_indicators = [
-            "failed",
-            "error",
-            "timeout",
-            "cancelled"
-        ]
-        
-        result_lower = result.lower()
-        
-        # Check for failure indicators first
-        for indicator in failure_indicators:
-            if indicator in result_lower:
+        if critical_errors:
+            print("⚠️ Encountered errors while executing CryoSPARC tools:")
+            for entry in critical_errors:
+                print(f"   - {entry['tool']}: {entry['error']}")
+            return False
+
+        step_requirements = {
+            "import_movies": {"job_uid": None},
+            "motion_correction": {"job_uid": None},
+            "ctf_estimation": {"job_uid": None}
+        }
+        wait_results: Dict[str, Dict[str, Any]] = {}
+
+        for entry in execution_log:
+            tool = entry.get("tool")
+            if tool in step_requirements and entry.get("result"):
+                job_uid = entry["result"].get("job_uid")
+                if job_uid:
+                    step_requirements[tool]["job_uid"] = job_uid
+            if tool == "wait_for_job" and entry.get("result"):
+                job_uid = entry.get("params", {}).get("job_uid")
+                if job_uid:
+                    wait_results[job_uid] = entry["result"]
+
+        missing_steps = [step for step, info in step_requirements.items() if not info.get("job_uid")]
+        if missing_steps:
+            readable = ", ".join(missing_steps)
+            print(f"⚠️ The agent did not execute the following required steps: {readable}.")
+            print("   Treating the workflow as failed.")
+            return False
+
+        for step, info in step_requirements.items():
+            job_uid = info.get("job_uid")
+            wait_info = wait_results.get(job_uid)
+            if not wait_info:
+                print(f"⚠️ No wait_for_job call was recorded for {step} job {job_uid}.")
+                print("   The workflow cannot be marked successful without confirming job completion.")
                 return False
-        
-        # Check for success indicators
-        for indicator in success_indicators:
-            if indicator in result_lower:
-                return True
-        
-        # If no clear indicators, check for job completion patterns
-        if "job" in result_lower and ("completed" in result_lower or "finished" in result_lower):
-            return True
-        
-        # Default to failure if unclear
-        return False
+            status = wait_info.get("status")
+            if status != "completed":
+                print(f"⚠️ Job {job_uid} ({step}) finished with status '{status}'.")
+                return False
+
+        return True
     
     def _process_results(self, results: List, workflow_type: str) -> bool:
         """
