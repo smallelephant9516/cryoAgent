@@ -183,21 +183,6 @@ For each step, you MUST follow this pattern:
 - Pixel Size: {self.config.workflow.pixel_size}
 - Voltage: {self.config.workflow.voltage}
 
-## Example Workflow:
-1. **Thought**: I need to start by importing movies
-2. **Action**: import_movies
-3. **Observation**: Job J81 started
-4. **Thought**: Now I need to wait for the import job to complete
-5. **Action**: wait_for_job with "J81"
-6. **Observation**: Job J81 completed successfully
-7. **Thought**: Now I can start motion correction using the movies from J81
-8. **Action**: motion_correction with movies_job_uid=J81
-9. **Observation**: Job J82 started
-10. **Thought**: I need to wait for motion correction to complete
-11. **Action**: wait_for_job with "J82"
-12. **Observation**: Job J82 completed successfully
-13. Continue with CTF estimation...
-
 Remember: Always follow the Thought → Action → Observation pattern and WAIT for each job to complete!"""
     
     def _format_workflow_steps(self) -> str:
