@@ -1,60 +1,67 @@
 #!/usr/bin/env python3
 """
-CryoAgent - Intelligent CryoEM Workflow Orchestrator
+CryoAgent Master Workflow - Multi-Stage CryoEM Processing Pipeline
 
-This script provides a comprehensive agentic workflow for cryoEM image processing
-using the ReAct (Reasoning + Acting) framework with CryoSPARC integration.
+This script provides a comprehensive agentic workflow for the complete cryoEM processing
+pipeline using separate specialized ReAct agents for each stage.
 
-Features:
-- Intelligent workflow orchestration with reasoning
-- Automatic job monitoring and dependency management
-- Comprehensive error handling and retry logic
-- Real-time status updates and progress tracking
-- Flexible configuration management
-- Support for custom workflows
+Architecture:
+- Master Orchestrator coordinates separate stage agents
+- Each stage has its own configuration file and ReAct agent
+- Stage 1 (Pre-processing): Fully implemented
+- Stage 2 (Particle Picking): Placeholder for future implementation
+- Stage 3 (3D Reconstruction): Placeholder for future implementation
 
 Usage:
-    python cryoagent_workflow.py [options]
+    python cryoagent_master_workflow.py [options]
 
 Options:
-    --config CONFIG_FILE    Path to configuration file (default: config.json)
-    --workflow WORKFLOW     Workflow type: basic, custom, or single (default: basic)
-    --steps STEPS           Comma-separated list of steps for custom workflow
-    --timeout TIMEOUT       Job timeout in seconds (default: from config)
+    --config CONFIG_FILE    Path to master configuration file (default: configs/master_config.json)
+    --workflow WORKFLOW     Workflow type: complete, preprocessing, custom (default: complete)
+    --stages STAGES         Comma-separated list of stages for custom workflow
     --verbose               Enable verbose output
     --dry-run               Show what would be done without executing
+    --test                  Run test mode to verify setup
 """
 
 import sys
 import argparse
 import time
+import logging
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
-from cryoagent import (
-    ReActCryoEMAgent, 
-    ReActCryoEMWorkflow, 
-    CryoSPARCTools,
-    ConfigLoader
+from cryoagent.core.master_orchestrator import (
+    MasterOrchestrator,
+    WorkflowStage
 )
-from cryoagent.core.react_workflow import WorkflowStep
 
 
-class CryoAgentWorkflow:
-    """Main workflow orchestrator for CryoAgent."""
+def setup_logging(verbose: bool = False):
+    """Setup logging for the master workflow."""
+    level = logging.DEBUG if verbose else logging.INFO
+    logging.basicConfig(
+        level=level,
+        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+        handlers=[
+            logging.StreamHandler(),
+            logging.FileHandler('cryoagent_master.log')
+        ]
+    )
+
+
+class CryoAgentMasterWorkflow:
+    """Main master workflow orchestrator for CryoAgent."""
     
-    def __init__(self, config_path: str = "config.json"):
+    def __init__(self, master_config_path: str = "configs/master_config.json"):
         """
-        Initialize the CryoAgent workflow.
+        Initialize the CryoAgent master workflow.
         
         Args:
-            config_path: Path to the configuration file
+            master_config_path: Path to the master configuration file
         """
-        self.config_path = config_path
-        self.config = None
-        self.cryosparc_tools = None
-        self.agent = None
-        self.workflow = None
+        self.master_config_path = master_config_path
+        self.orchestrator = None
         self.start_time = None
         
     def initialize(self) -> bool:
@@ -65,35 +72,18 @@ class CryoAgentWorkflow:
             True if initialization successful, False otherwise
         """
         try:
-            print("🚀 Initializing CryoAgent Workflow")
+            print("🚀 Initializing CryoAgent Master Workflow")
             print("=" * 60)
             
-            # Load configuration
-            print("📋 Loading configuration...")
-            config_loader = ConfigLoader(self.config_path)
-            self.config = config_loader.load_config()
-            print(f"✅ Configuration loaded from {self.config_path}")
+            # Initialize master orchestrator
+            print("🎭 Initializing master orchestrator...")
+            self.orchestrator = MasterOrchestrator(self.master_config_path)
             
-            # Initialize CryoSPARC tools
-            print("🔧 Initializing CryoSPARC tools...")
-            self.cryosparc_tools = CryoSPARCTools(self.config.cryosparc)
-            print("✅ CryoSPARC tools initialized")
+            if not self.orchestrator.initialize():
+                print("❌ Failed to initialize master orchestrator")
+                return False
             
-            # Initialize ReAct agent
-            print("🤖 Initializing ReAct CryoEM agent...")
-            self.agent = ReActCryoEMAgent(
-                cryosparc_tools=self.cryosparc_tools,
-                config=self.config
-            )
-            print("✅ ReAct agent initialized")
-            
-            # Initialize ReAct workflow
-            print("⚙️ Initializing ReAct workflow...")
-            self.workflow = ReActCryoEMWorkflow(
-                agent=self.agent,
-                config=self.config
-            )
-            print("✅ ReAct workflow initialized")
+            print("✅ Master orchestrator initialized")
             
             # Display configuration summary
             self._display_config_summary()
@@ -109,207 +99,168 @@ class CryoAgentWorkflow:
     def _display_config_summary(self):
         """Display a summary of the current configuration."""
         print("\n📊 Configuration Summary:")
-        print(f"   Project UID: {self.config.workflow.project_uid}")
-        print(f"   Workspace UID: {self.config.workflow.workspace_uid}")
-        print(f"   Movies Path: {self.config.workflow.movies_path}")
-        print(f"   Pixel Size: {self.config.workflow.pixel_size} Å")
-        print(f"   Voltage: {self.config.workflow.voltage} kV")
-        print(f"   CS: {self.config.workflow.cs_mm} mm")
-        print(f"   Dose: {self.config.workflow.dose} e-/Å²")
+        print(f"   Master Config: {self.master_config_path}")
         
-        # Display model information
-        model_info = self.agent.get_current_model_info()
-        available_providers = self.config.agent.get_available_providers()
+        # Display available stages
+        stages = self.orchestrator.master_config["master_workflow"]["stages"]
+        print(f"   Available Stages: {len(stages)}")
+        for stage in stages:
+            status = "✅ ENABLED" if stage["enabled"] else "🚧 DISABLED"
+            print(f"     - {stage['name']}: {stage['description']} {status}")
         
-        print(f"   LLM Provider: {model_info['provider']}")
-        print(f"   Model: {model_info['model_name']}")
-        print(f"   Base URL: {model_info['base_url']}")
-        print(f"   Temperature: {model_info['temperature']}")
-        print(f"   Available Providers: {', '.join(available_providers) if available_providers else 'None (no valid API keys)'}")
-        
-        if not available_providers:
-            print("   ⚠️ Warning: No valid API keys found. Please set one of: DEEPSEEK_API_KEY, OPENAI_API_KEY, or PANSHI_API_KEY")
-        
-        print(f"   Timeout: {self.config.job_management.default_timeout}s")
         print()
     
-    def run_basic_workflow(self, dry_run: bool = False, conversation_id: Optional[str] = None) -> bool:
+    def run_complete_workflow(self, dry_run: bool = False, conversation_id: Optional[str] = None) -> bool:
         """
-        Run the basic cryoEM workflow using ReAct agent with job monitoring.
+        Run the complete 3-stage cryoEM workflow.
         
         Args:
             dry_run: If True, show what would be done without executing
+            conversation_id: Optional conversation ID for tracking
             
         Returns:
             True if workflow completed successfully, False otherwise
         """
         if dry_run:
-            print("🔍 DRY RUN: Basic Workflow")
-            # Get steps from configuration
-            steps = []
-            for step_config in self.config.react_workflow.steps:
-                step_name = step_config.name.replace('_', ' ').title()
-                steps.append(step_name)
-            
-            workflow_steps = " → ".join(steps)
-            print(f"Would execute: {workflow_steps}")
+            print("🔍 DRY RUN: Complete Workflow")
+            stages = [stage.value.replace('_', ' ').title() for stage in WorkflowStage]
+            workflow_stages = " → ".join(stages)
+            print(f"Would execute: {workflow_stages}")
             return True
         
         try:
-            print("🎯 Starting ReAct-Based CryoEM Workflow with Job Monitoring")
+            print("🎯 Starting Complete 3-Stage CryoEM Workflow")
             print("=" * 70)
-            print("This will use the ReAct (Reasoning + Acting) framework")
-            
-            # Get steps from configuration dynamically
-            steps = []
-            for step_config in self.config.react_workflow.steps:
-                step_name = step_config.name.replace('_', ' ').title()
-                steps.append(step_name)
-            
-            workflow_steps = " → ".join(steps)
-            print(f"to intelligently execute: {workflow_steps}")
-            print("with automatic job monitoring and dependency management")
-            print()
-            print("📋 Workflow Steps:")
-            for i, step_config in enumerate(self.config.react_workflow.steps, 1):
-                step_name = step_config.name.replace('_', ' ').title()
-                description = step_config.description
-                print(f"   {i}. {step_name} - {description}")
+            print("This will execute all three stages:")
+            print("1. Pre-processing (Import → Motion Correction → CTF → Selection)")
+            print("2. Particle Picking (Detection → Extraction → Quality Assessment)")
+            print("3. 3D Reconstruction (Initial Model → Refinement → Validation)")
             print()
             
             self.start_time = time.time()
             
-            # Create a fresh agent instance to prevent hallucination
-            print("🧠 Creating fresh agent instance to ensure clean state...")
-            self.agent = self.agent.create_fresh_agent()
-            print("✅ Fresh agent instance created")
+            # Execute complete workflow
+            result = self.orchestrator.execute_complete_workflow(conversation_id)
             
-            # Use ReAct agent to orchestrate the entire workflow with monitoring
-            workflow_input = self._create_workflow_input()
-            
-            print("🤖 ReAct Agent Starting Workflow Execution...")
-            print("The agent will reason through each step and monitor job completion")
-            print()
-            
-            # Execute the workflow using ReAct approach
-            result = self.agent.run_react_workflow(workflow_input, conversation_id)
-            
-            # Display the ReAct agent's execution result
-            print("📊 ReAct Agent Execution Result:")
-            print("=" * 50)
-            print(result)
-            print()
-            
-            # Check if the workflow completed successfully
-            success = self._analyze_workflow_result(result)
-            
-            # Display timing information
-            if self.start_time:
-                elapsed = time.time() - self.start_time
-                print(f"⏱️ Total Execution Time: {elapsed:.2f} seconds")
-                print()
-            
-            # Display reasoning history if available
-            reasoning_history = self.agent.get_reasoning_history()
-            if reasoning_history:
-                print("🧠 ReAct Reasoning History:")
-                for i, reasoning in enumerate(reasoning_history, 1):
-                    print(f"   {i}. {reasoning}")
-                print()
+            # Check if workflow completed successfully
+            success = result['successful_stages'] == result['total_stages']
             
             if success:
-                print("🎉 ReAct-based workflow completed successfully!")
-                print("   ✅ All jobs completed with proper monitoring")
-                print("   🔗 Workflow dependencies properly handled")
-                print("   ⏱️ Each tool waited for completion before claiming success")
+                print("🎉 Complete workflow executed successfully!")
+                print("   ✅ All stages completed with proper monitoring")
+                print("   🔗 Stage dependencies properly handled")
+                print("   ⏱️ Each stage waited for completion before claiming success")
             else:
-                print("❌ ReAct-based workflow failed!")
-                print("   ⚠️ Check the reasoning history above for details")
+                print("❌ Complete workflow failed!")
+                print("   ⚠️ One or more stages did not complete successfully")
             
             return success
             
         except Exception as e:
-            print(f"❌ ReAct workflow failed: {e}")
+            print(f"❌ Complete workflow failed: {e}")
             import traceback
             traceback.print_exc()
             return False
     
-    def run_custom_workflow(self, steps: List[str], dry_run: bool = False, conversation_id: Optional[str] = None) -> bool:
+    def run_preprocessing_workflow(self, dry_run: bool = False, conversation_id: Optional[str] = None) -> bool:
         """
-        Run a custom workflow with specified steps using ReAct agent.
+        Run only the pre-processing stage workflow.
         
         Args:
-            steps: List of workflow steps to execute
             dry_run: If True, show what would be done without executing
+            conversation_id: Optional conversation ID for tracking
+            
+        Returns:
+            True if workflow completed successfully, False otherwise
+        """
+        if dry_run:
+            print("🔍 DRY RUN: Pre-processing Workflow")
+            print("Would execute: Pre-processing (Import → Motion Correction → CTF → Selection)")
+            return True
+        
+        try:
+            print("🎯 Starting Pre-processing Workflow")
+            print("=" * 50)
+            print("This will execute the pre-processing stage:")
+            print("1. Import Movies")
+            print("2. Motion Correction")
+            print("3. CTF Estimation")
+            print("4. Micrograph Selection")
+            print()
+            
+            self.start_time = time.time()
+            
+            # Execute pre-processing stage only
+            stages = [WorkflowStage.PREPROCESSING]
+            result = self.orchestrator.execute_stage_workflow(stages, conversation_id)
+            
+            # Check if workflow completed successfully
+            success = result['successful_stages'] == result['total_stages']
+            
+            if success:
+                print("🎉 Pre-processing workflow completed successfully!")
+                print("   ✅ All pre-processing steps completed")
+                print("   🔗 Step dependencies properly handled")
+                print("   ⏱️ Each step waited for completion before claiming success")
+            else:
+                print("❌ Pre-processing workflow failed!")
+                print("   ⚠️ One or more steps did not complete successfully")
+            
+            return success
+            
+        except Exception as e:
+            print(f"❌ Pre-processing workflow failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    
+    def run_custom_workflow(self, stages: List[str], dry_run: bool = False, conversation_id: Optional[str] = None) -> bool:
+        """
+        Run a custom workflow with specified stages.
+        
+        Args:
+            stages: List of stage names to execute
+            dry_run: If True, show what would be done without executing
+            conversation_id: Optional conversation ID for tracking
             
         Returns:
             True if workflow completed successfully, False otherwise
         """
         if dry_run:
             print(f"🔍 DRY RUN: Custom Workflow")
-            print(f"Would execute: {' → '.join(steps)}")
+            print(f"Would execute: {' → '.join(stages)}")
             return True
         
         try:
-            print("🎯 Starting Custom ReAct-Based CryoEM Workflow")
-            print("=" * 60)
-            print(f"Steps: {' → '.join(steps)}")
-            print("Using ReAct (Reasoning + Acting) framework with job monitoring")
+            print("🎯 Starting Custom CryoEM Workflow")
+            print("=" * 50)
+            print(f"Stages: {' → '.join(stages)}")
             print()
             
-            # Validate steps
-            valid_steps = [s.value for s in WorkflowStep]
-            for step_str in steps:
-                if step_str.lower() not in valid_steps:
-                    print(f"❌ Invalid workflow step: {step_str}")
-                    print(f"   Valid steps: {valid_steps}")
+            # Convert stage names to WorkflowStage enums
+            workflow_stages = []
+            for stage_name in stages:
+                try:
+                    stage = WorkflowStage(stage_name.lower())
+                    workflow_stages.append(stage)
+                except ValueError:
+                    print(f"❌ Invalid stage: {stage_name}")
+                    print(f"   Valid stages: {[s.value for s in WorkflowStage]}")
                     return False
             
             self.start_time = time.time()
             
-            # Create a fresh agent instance to prevent hallucination
-            print("🧠 Creating fresh agent instance to ensure clean state...")
-            self.agent = self.agent.create_fresh_agent()
-            print("✅ Fresh agent instance created")
+            # Execute custom workflow
+            result = self.orchestrator.execute_stage_workflow(workflow_stages, conversation_id)
             
-            # Create custom workflow input
-            workflow_input = self._create_custom_workflow_input(steps)
-            
-            print("🤖 ReAct Agent Starting Custom Workflow Execution...")
-            print("The agent will reason through each step and monitor job completion")
-            print()
-            
-            # Execute the workflow using ReAct approach
-            result = self.agent.run_react_workflow(workflow_input, conversation_id)
-            
-            # Display the ReAct agent's execution result
-            print("📊 ReAct Agent Custom Workflow Result:")
-            print("=" * 50)
-            print(result)
-            print()
-            
-            # Check if the workflow completed successfully
-            success = self._analyze_workflow_result(result)
-            
-            # Display timing information
-            if self.start_time:
-                elapsed = time.time() - self.start_time
-                print(f"⏱️ Total Execution Time: {elapsed:.2f} seconds")
-                print()
-            
-            # Display reasoning history if available
-            reasoning_history = self.agent.get_reasoning_history()
-            if reasoning_history:
-                print("🧠 ReAct Reasoning History:")
-                for i, reasoning in enumerate(reasoning_history, 1):
-                    print(f"   {i}. {reasoning}")
-                print()
+            # Check if workflow completed successfully
+            success = result['successful_stages'] == result['total_stages']
             
             if success:
-                print("🎉 Custom ReAct-based workflow completed successfully!")
+                print("🎉 Custom workflow completed successfully!")
             else:
-                print("❌ Custom ReAct-based workflow failed!")
-                print("   ⚠️ Check the reasoning history above for details")
+                print("❌ Custom workflow failed!")
+                print("   ⚠️ One or more stages did not complete successfully")
             
             return success
             
@@ -319,402 +270,84 @@ class CryoAgentWorkflow:
             traceback.print_exc()
             return False
     
-    def run_single_step(self, step: str, dry_run: bool = False, conversation_id: Optional[str] = None) -> bool:
+    def test_setup(self) -> bool:
         """
-        Run a single workflow step using ReAct agent.
+        Test the setup and configuration.
         
-        Args:
-            step: The step to execute
-            dry_run: If True, show what would be done without executing
-            
         Returns:
-            True if step completed successfully, False otherwise
+            True if setup is correct, False otherwise
         """
-        if dry_run:
-            print(f"🔍 DRY RUN: Single Step")
-            print(f"Would execute: {step}")
-            return True
-        
         try:
-            print(f"🎯 Starting Single Step with ReAct Agent: {step}")
+            print("🧪 Testing CryoAgent Master Workflow Setup")
             print("=" * 60)
-            print("Using ReAct (Reasoning + Acting) framework with job monitoring")
-            print()
             
-            self.start_time = time.time()
+            # Test stage agents
+            print("🤖 Testing Stage Agents...")
+            for stage_name, agent in self.orchestrator.stage_agents.items():
+                print(f"   ✅ {stage_name}: {agent.get_stage_description()}")
+                print(f"      Required inputs: {agent.get_required_inputs()}")
+                print(f"      Config file: {agent.config_path}")
             
-            # Create a fresh agent instance to prevent hallucination
-            print("🧠 Creating fresh agent instance to ensure clean state...")
-            self.agent = self.agent.create_fresh_agent()
-            print("✅ Fresh agent instance created")
-            
-            # Create a focused workflow input for the single step
-            workflow_input = f"""
-Execute the following single cryoEM processing step:
-
-**Step**: {step}
-
-**Configuration**:
-- Project UID: {self.config.workflow.project_uid}
-- Workspace UID: {self.config.workflow.workspace_uid}
-- Movies Path: {self.config.workflow.movies_path}
-- Pixel Size: {self.config.workflow.pixel_size} Å
-- Voltage: {self.config.workflow.voltage} kV
-- CS: {self.config.workflow.cs_mm} mm
-- Dose: {self.config.workflow.dose} e-/Å²
-
-**Important**: 
-- Execute the step with proper reasoning
-- Wait for job completion if applicable
-- Provide clear status updates
-- Handle any errors gracefully
-
-Start by reasoning about what needs to be done and then execute the step.
-"""
-            
-            print("🤖 ReAct Agent Starting Single Step Execution...")
-            print("The agent will reason through the step and monitor completion")
-            print()
-            
-            # Execute using ReAct approach
-            result = self.agent.run_react_workflow(workflow_input, conversation_id)
-            
-            print("📊 ReAct Agent Single Step Result:")
-            print("=" * 50)
-            print(result)
-            print()
-            
-            # Check if successful
-            success = self._analyze_workflow_result(result)
-            
-            # Display timing information
-            if self.start_time:
-                elapsed = time.time() - self.start_time
-                print(f"⏱️ Total Execution Time: {elapsed:.2f} seconds")
-                print()
-            
-            # Display reasoning history if available
-            reasoning_history = self.agent.get_reasoning_history()
-            if reasoning_history:
-                print("🧠 ReAct Reasoning History:")
-                for i, reasoning in enumerate(reasoning_history, 1):
-                    print(f"   {i}. {reasoning}")
-                print()
-            
-            if success:
-                print("✅ Single step completed successfully!")
-            else:
-                print("❌ Single step failed or did not complete")
-                print("   ⚠️ Check the reasoning history above for details")
-            
-            return success
+            print("\n🎉 All tests passed! Master workflow is ready to use.")
+            return True
             
         except Exception as e:
-            print(f"❌ Single step failed: {e}")
+            print(f"❌ Setup test failed: {e}")
             import traceback
             traceback.print_exc()
             return False
     
-    def _create_workflow_input(self) -> str:
-        """Create the workflow input for the ReAct agent."""
-        return f"""
-Execute the complete cryoEM processing workflow with these steps:
-
-1. **Import Movies**: Import movie files from {self.config.workflow.movies_path}
-   - Pixel size: {self.config.workflow.pixel_size} Å
-   - Voltage: {self.config.workflow.voltage} kV
-   - CS: {self.config.workflow.cs_mm} mm
-   - Dose: {self.config.workflow.dose} e-/Å²
-   - Project: {self.config.workflow.project_uid}
-   - Workspace: {self.config.workflow.workspace_uid}
-
-2. **Motion Correction**: Correct motion in the imported movies
-   - Binning: {self.config.workflow.motion_correction_binning}
-   - Patch size: {self.config.workflow.motion_correction_patch_size}
-
-3. **CTF Estimation**: Estimate CTF parameters for micrographs
-   - Min resolution: {self.config.workflow.ctf_min_res} Å
-   - Max resolution: {self.config.workflow.ctf_max_res} Å
-
-4. **Micrograph Selection**: Select micrographs with resolution better than 5 Å
-   - Min resolution threshold: 5.0 Å
-   - Filters out low-quality micrographs
-
-**Important**: 
-- Each step must complete successfully before the next begins
-- Always check job status and wait for completion
-- Handle any errors gracefully
-- Provide clear status updates throughout the process
-
-Start by reasoning about the workflow state and then proceed step by step.
-"""
-    
-    def _create_custom_workflow_input(self, steps: List[str]) -> str:
-        """Create custom workflow input for specified steps."""
-        step_descriptions = []
-        
-        for i, step in enumerate(steps, 1):
-            if step.lower() == "import_movies":
-                step_descriptions.append(f"""
-{i}. **Import Movies**: Import movie files from {self.config.workflow.movies_path}
-   - Pixel size: {self.config.workflow.pixel_size} Å
-   - Voltage: {self.config.workflow.voltage} kV
-   - CS: {self.config.workflow.cs_mm} mm
-   - Dose: {self.config.workflow.dose} e-/Å²
-""")
-            elif step.lower() == "motion_correction":
-                step_descriptions.append(f"""
-{i}. **Motion Correction**: Correct motion in imported movies
-   - Binning: {self.config.workflow.motion_correction_binning}
-   - Patch size: {self.config.workflow.motion_correction_patch_size}
-""")
-            elif step.lower() == "ctf_estimation":
-                step_descriptions.append(f"""
-{i}. **CTF Estimation**: Estimate CTF parameters for micrographs
-   - Min resolution: {self.config.workflow.ctf_min_res} Å
-   - Max resolution: {self.config.workflow.ctf_max_res} Å
-""")
-            elif step.lower() == "micrograph_selection":
-                step_descriptions.append(f"""
-{i}. **Micrograph Selection**: Select micrographs with resolution better than 5 Å
-   - Min resolution threshold: 5.0 Å
-   - Filters out low-quality micrographs
-""")
-        
-        return f"""
-Execute the following custom cryoEM workflow:
-
-{''.join(step_descriptions)}
-
-**Important**: 
-- Each step must complete successfully before the next begins
-- Always check job status and wait for completion
-- Handle any errors gracefully
-- Provide clear status updates throughout the process
-
-Start by reasoning about the workflow state and then proceed step by step.
-"""
-    
-    def _analyze_workflow_result(self, result: str) -> bool:
-        """Analyze the workflow result to determine success."""
-        execution_log = self.agent.get_tool_execution_log()
-
-        if not execution_log:
-            print("⚠️ No CryoSPARC tool activity was recorded during this run. The agent likely hallucinated the workflow.")
-            print("🔧 This indicates the agent's internal state wasn't properly reset. Try running again.")
-            return False
-        
-        # Additional validation: Check if any tools were actually invoked
-        cryosparc_tools = {"import_movies", "motion_correction", "ctf_estimation", "micrograph_selection", "wait_for_job", "get_job_status"}
-        actual_tool_calls = [entry for entry in execution_log if entry.get("tool") in cryosparc_tools]
-        
-        if not actual_tool_calls:
-            print("⚠️ No actual CryoSPARC tool calls were recorded. The agent likely hallucinated the workflow.")
-            print("🔧 This indicates the agent's internal state wasn't properly reset. Try running again.")
-            return False
-
-        # If any critical tool reported an error, flag the workflow as failed immediately
-        critical_tools = {"import_movies", "motion_correction", "ctf_estimation", "micrograph_selection", "wait_for_job"}
-        critical_errors = [
-            entry for entry in execution_log
-            if entry.get("error") and entry.get("tool") in critical_tools
-        ]
-        if critical_errors:
-            print("⚠️ Encountered errors while executing CryoSPARC tools:")
-            for entry in critical_errors:
-                print(f"   - {entry['tool']}: {entry['error']}")
-            return False
-
-        step_requirements = {
-            "import_movies": {"job_uid": None},
-            "motion_correction": {"job_uid": None},
-            "ctf_estimation": {"job_uid": None},
-            "micrograph_selection": {"job_uid": None}
-        }
-        wait_results: Dict[str, Dict[str, Any]] = {}
-
-        for entry in execution_log:
-            tool = entry.get("tool")
-            if tool in step_requirements and entry.get("result"):
-                job_uid = entry["result"].get("job_uid")
-                if job_uid:
-                    step_requirements[tool]["job_uid"] = job_uid
-            if tool == "wait_for_job" and entry.get("result"):
-                job_uid = entry.get("params", {}).get("job_uid")
-                if job_uid:
-                    wait_results[job_uid] = entry["result"]
-
-        missing_steps = [step for step, info in step_requirements.items() if not info.get("job_uid")]
-        if missing_steps:
-            readable = ", ".join(missing_steps)
-            print(f"⚠️ The agent did not execute the following required steps: {readable}.")
-            print("   Treating the workflow as failed.")
-            return False
-
-        for step, info in step_requirements.items():
-            job_uid = info.get("job_uid")
-            wait_info = wait_results.get(job_uid)
-            if not wait_info:
-                print(f"⚠️ No wait_for_job call was recorded for {step} job {job_uid}.")
-                print("   The workflow cannot be marked successful without confirming job completion.")
-                return False
-            status = wait_info.get("status")
-            if status != "completed":
-                print(f"⚠️ Job {job_uid} ({step}) finished with status '{status}'.")
-                return False
-
-        return True
-    
-    def _process_results(self, results: List, workflow_type: str) -> bool:
-        """
-        Process and display workflow results.
-        
-        Args:
-            results: List of workflow results
-            workflow_type: Type of workflow executed
-            
-        Returns:
-            True if all steps successful, False otherwise
-        """
-        print(f"📊 {workflow_type} Results:")
-        print("=" * 50)
-        
-        all_success = True
-        for i, result in enumerate(results, 1):
-            status = "✅ SUCCESS" if result.success else "❌ FAILED"
-            print(f"{i}. {result.step.value}: {status}")
-            
-            if result.job_uid:
-                print(f"   Job UID: {result.job_uid}")
-            if result.message:
-                print(f"   Message: {result.message}")
-            if result.error:
-                print(f"   Error: {result.error}")
-                all_success = False
-            if result.reasoning:
-                print(f"   Reasoning: {result.reasoning[:100]}...")
-            print()
-        
-        # Display workflow summary
-        summary = self.workflow.get_workflow_summary()
-        print("📈 Workflow Summary:")
-        print(f"   Total Steps: {summary['total_steps']}")
-        print(f"   Successful: {summary['successful_steps']}")
-        print(f"   Failed: {summary['failed_steps']}")
-        
-        # Display timing information
-        if self.start_time:
-            elapsed = time.time() - self.start_time
-            print(f"   Execution Time: {elapsed:.2f} seconds")
-        
-        print()
-        
-        # Display reasoning history if available
-        reasoning_history = self.agent.get_reasoning_history()
-        if reasoning_history:
-            print("🧠 ReAct Reasoning History:")
-            for i, reasoning in enumerate(reasoning_history, 1):
-                print(f"   {i}. {reasoning}")
-            print()
-        
-        # Display current workflow state
-        current_state = self.workflow.get_current_state()
-        print("🔍 Current Workflow State:")
-        print(f"   Status: {current_state['workflow_state'].get('workflow_status', 'unknown')}")
-        print(f"   Active Jobs: {len(current_state['current_job_uids'])}")
-        for step, job_uid in current_state['current_job_uids'].items():
-            print(f"     {step.value}: {job_uid}")
-        print()
-        
-        if all_success:
-            print(f"🎉 {workflow_type} completed successfully!")
-            print("   ✅ All steps completed with proper monitoring")
-            print("   🔗 Workflow dependencies properly handled")
-            print("   ⏱️ Each tool waited for completion before claiming success")
+    def get_workflow_status(self) -> Dict[str, Any]:
+        """Get current workflow status."""
+        if self.orchestrator:
+            return self.orchestrator.get_workflow_status()
         else:
-            print(f"❌ {workflow_type} failed!")
-            print("   ⚠️ One or more steps did not complete successfully")
-        
-        return all_success
-    
-    def test_connection(self) -> bool:
-        """
-        Test the CryoSPARC connection.
-        
-        Returns:
-            True if connection successful, False otherwise
-        """
-        try:
-            print("🔌 Testing CryoSPARC Connection")
-            print("=" * 40)
-            
-            # Test basic connection
-            projects = self.cryosparc_tools.list_projects()
-            print(f"✅ Connected to CryoSPARC successfully")
-            print(f"   Found {len(projects)} projects")
-            
-            # Test project access
-            project_uid = self.config.workflow.project_uid
-            workspaces = self.cryosparc_tools.list_workspaces(project_uid)
-            print(f"✅ Project {project_uid} accessible")
-            print(f"   Found {len(workspaces)} workspaces")
-            
-            return True
-            
-        except Exception as e:
-            print(f"❌ Connection test failed: {e}")
-            return False
+            return {"status": "not_initialized"}
 
 
 def main():
-    """Main function to run the CryoAgent workflow."""
+    """Main function to run the CryoAgent master workflow."""
     parser = argparse.ArgumentParser(
-        description="CryoAgent - Intelligent CryoEM Workflow Orchestrator",
+        description="CryoAgent Master Workflow - Multi-Stage CryoEM Processing Pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
-  # Run basic workflow
-  python cryoagent_workflow.py
+  # Run complete workflow (all 3 stages)
+  python cryoagent_master_workflow.py
 
-  # Run custom workflow
-  python cryoagent_workflow.py --workflow custom --steps import_movies,motion_correction,ctf_estimation,micrograph_selection
+  # Run pre-processing only
+  python cryoagent_master_workflow.py --workflow preprocessing
 
-  # Run single step
-  python cryoagent_workflow.py --workflow single --steps "Import movies and wait for completion"
+  # Run custom stages
+  python cryoagent_master_workflow.py --workflow custom --stages preprocessing,particle_picking
 
-  # Test connection
-  python cryoagent_workflow.py --workflow test
+  # Test setup
+  python cryoagent_master_workflow.py --workflow test
 
   # Dry run
-  python cryoagent_workflow.py --dry-run
+  python cryoagent_master_workflow.py --dry-run
 
-  # Clear AI memory and run workflow
-  python cryoagent_workflow.py --clear-memory
+  # Verbose mode
+  python cryoagent_master_workflow.py --verbose
         """
     )
     
     parser.add_argument(
         "--config", 
-        default="config.json",
-        help="Path to configuration file (default: config.json)"
+        default="configs/master_config.json",
+        help="Path to master configuration file (default: configs/master_config.json)"
     )
     
     parser.add_argument(
         "--workflow",
-        choices=["basic", "custom", "single", "test"],
-        default="basic",
-        help="Workflow type (default: basic)"
+        choices=["complete", "preprocessing", "custom", "test"],
+        default="complete",
+        help="Workflow type (default: complete)"
     )
     
     parser.add_argument(
-        "--steps",
-        help="Comma-separated list of steps for custom workflow, or description for single step"
-    )
-    
-    parser.add_argument(
-        "--timeout",
-        type=int,
-        help="Job timeout in seconds (overrides config)"
+        "--stages",
+        help="Comma-separated list of stages for custom workflow (preprocessing,particle_picking,reconstruction)"
     )
     
     parser.add_argument(
@@ -729,105 +362,51 @@ Examples:
         help="Show what would be done without executing"
     )
     
-    parser.add_argument(
-        "--clear-memory",
-        action="store_true",
-        help="Force clear AI memory before starting workflow"
-    )
-    
-    parser.add_argument(
-        "--model",
-        choices=["deepseek", "openai", "panshi"],
-        help="Override the LLM model provider (deepseek, openai, panshi)"
-    )
-    
     args = parser.parse_args()
     
-    # Initialize workflow
-    workflow = CryoAgentWorkflow(args.config)
+    # Setup logging
+    setup_logging(args.verbose)
     
-    if not workflow.initialize():
-        print("❌ Failed to initialize CryoAgent workflow")
+    # Initialize master workflow
+    master_workflow = CryoAgentMasterWorkflow(args.config)
+    
+    if not master_workflow.initialize():
+        print("❌ Failed to initialize CryoAgent master workflow")
         sys.exit(1)
-    
-    # Override timeout if specified
-    if args.timeout:
-        workflow.config.job_management.default_timeout = args.timeout
-        print(f"⏱️ Timeout set to {args.timeout} seconds")
-    
-    # Set verbose mode
-    if args.verbose:
-        workflow.config.agent.verbose = True
-        print("🔊 Verbose mode enabled")
-    
-    # Force clear memory if requested
-    if args.clear_memory:
-        print("🧠 Force clearing AI memory...")
-        workflow.agent.force_clear_memory()
-        print("✅ AI memory cleared")
-    
-    # Override model provider if specified
-    if args.model:
-        print(f"🔄 Switching to model provider: {args.model}")
-        try:
-            workflow.agent.switch_model_provider(args.model)
-            print(f"✅ Model provider switched to: {args.model}")
-        except ValueError as e:
-            print(f"❌ Failed to switch model provider: {e}")
-            print("💡 Available providers with valid API keys:")
-            available = workflow.config.agent.get_available_providers()
-            if available:
-                for provider in available:
-                    print(f"   - {provider}")
-            else:
-                print("   None - please set one of: DEEPSEEK_API_KEY, OPENAI_API_KEY, or PANSHI_API_KEY")
-            sys.exit(1)
-    
-    # Always create a fresh agent instance to prevent hallucination
-    print("🧠 Ensuring fresh agent state to prevent hallucination...")
-    workflow.agent = workflow.agent.create_fresh_agent()
-    print("✅ Fresh agent state ensured")
     
     # Execute workflow based on type
     success = False
     
     try:
         if args.workflow == "test":
-            success = workflow.test_connection()
+            success = master_workflow.test_setup()
             
-        elif args.workflow == "basic":
+        elif args.workflow == "complete":
             # Use a unique conversation ID to ensure fresh start
-            import time
-            conversation_id = f"workflow_{int(time.time())}"
-            success = workflow.run_basic_workflow(args.dry_run, conversation_id)
+            conversation_id = f"complete_workflow_{int(time.time())}"
+            success = master_workflow.run_complete_workflow(args.dry_run, conversation_id)
+            
+        elif args.workflow == "preprocessing":
+            # Use a unique conversation ID to ensure fresh start
+            conversation_id = f"preprocessing_workflow_{int(time.time())}"
+            success = master_workflow.run_preprocessing_workflow(args.dry_run, conversation_id)
             
         elif args.workflow == "custom":
-            if not args.steps:
-                print("❌ --steps required for custom workflow")
-                print("   Valid steps: import_movies, motion_correction, ctf_estimation, micrograph_selection")
+            if not args.stages:
+                print("❌ --stages required for custom workflow")
+                print("   Valid stages: preprocessing, particle_picking, reconstruction")
                 sys.exit(1)
-            steps = [s.strip() for s in args.steps.split(",")]
+            stages = [s.strip() for s in args.stages.split(",")]
             # Use a unique conversation ID to ensure fresh start
-            import time
-            conversation_id = f"custom_{int(time.time())}"
-            success = workflow.run_custom_workflow(steps, args.dry_run, conversation_id)
-            
-        elif args.workflow == "single":
-            if not args.steps:
-                print("❌ --steps required for single step workflow")
-                print("   Example: --steps 'Import movies and wait for completion'")
-                sys.exit(1)
-            # Use a unique conversation ID to ensure fresh start
-            import time
-            conversation_id = f"single_{int(time.time())}"
-            success = workflow.run_single_step(args.steps, args.dry_run, conversation_id)
+            conversation_id = f"custom_workflow_{int(time.time())}"
+            success = master_workflow.run_custom_workflow(stages, args.dry_run, conversation_id)
         
         # Exit with appropriate code
         if success:
-            print("\n🎉 CryoAgent workflow completed successfully!")
+            print("\n🎉 CryoAgent master workflow completed successfully!")
             sys.exit(0)
         else:
-            print("\n❌ CryoAgent workflow failed!")
+            print("\n❌ CryoAgent master workflow failed!")
             sys.exit(1)
             
     except KeyboardInterrupt:

@@ -1,0 +1,55 @@
+{
+  "stage_info": {
+    "name": "reconstruction",
+    "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
+    "version": "1.0.0",
+    "status": "placeholder"
+  },
+  "workflow": {
+    "initial_model": {
+      "method": "ab_initio",
+      "symmetry": "C1",
+      "initial_resolution": 20.0,
+      "number_of_classes": 1,
+      "number_of_particles": 10000
+    },
+    "refinement": {
+      "refinement_iterations": 3,
+      "final_resolution_target": 3.0,
+      "angular_sampling": 1.0,
+      "translational_sampling": 1.0,
+      "mask_diameter": 180
+    },
+    "validation": {
+      "fsc_threshold": 0.143,
+      "gold_standard_fsc": true,
+      "half_map_correlation": true,
+      "local_resolution": true
+    }
+  },
+  "react_workflow": {
+    "steps": [
+      {
+        "name": "initial_model_generation",
+        "description": "Generate initial 3D model using ab initio methods",
+        "required_params": ["particles_job_uid", "symmetry", "initial_resolution"],
+        "optional_params": ["number_of_classes", "number_of_particles"],
+        "depends_on": []
+      },
+      {
+        "name": "3d_refinement",
+        "description": "Refine the 3D model using iterative refinement",
+        "required_params": ["initial_model_job_uid", "refinement_iterations"],
+        "optional_params": ["final_resolution_target", "angular_sampling", "translational_sampling"],
+        "depends_on": ["initial_model_generation"]
+      },
+      {
+        "name": "structure_validation",
+        "description": "Validate the final structure using FSC and other metrics",
+        "required_params": ["refinement_job_uid"],
+        "optional_params": ["fsc_threshold", "gold_standard_fsc", "half_map_correlation"],
+        "depends_on": ["3d_refinement"]
+      }
+    ]
+  }
+}

@@ -1,0 +1,65 @@
+{
+  "stage_info": {
+    "name": "preprocessing",
+    "description": "Pre-processing stage: Import movies, motion correction, CTF estimation, and micrograph selection",
+    "version": "1.0.0"
+  },
+  "workflow": {
+    "import_movies": {
+      "movies_path": "/home/lidao/cryoEM_dataset/10025_subset/agent_test/*.tif",
+      "gain_ref_path": "/home/lidao/cryoEM_dataset/10025_subset/agent_test/norm-amibox05-0.mrc",
+      "pixel_size": 0.6575,
+      "voltage": 300.0,
+      "cs_mm": 2.7,
+      "dose": 53.0
+    },
+    "motion_correction": {
+      "binning": 1,
+      "patch_size": 5,
+      "max_shift": 15.0,
+      "min_patch_shift_ratio": 0.8
+    },
+    "ctf_estimation": {
+      "min_res": 30.0,
+      "max_res": 4.0,
+      "defocus_range": [0.5, 4.0],
+      "astigmatism_tolerance": 100.0
+    },
+    "micrograph_selection": {
+      "min_resolution": 5.0,
+      "quality_threshold": 0.8
+    }
+  },
+  "react_workflow": {
+    "steps": [
+      {
+        "name": "import_movies",
+        "description": "Import movie files into CryoSPARC",
+        "required_params": ["movies_path", "pixel_size", "voltage", "cs_mm", "dose"],
+        "optional_params": ["gain_ref_path"],
+        "depends_on": []
+      },
+      {
+        "name": "motion_correction",
+        "description": "Perform motion correction on imported movies",
+        "required_params": ["movies_job_uid"],
+        "optional_params": ["binning", "patch_size", "max_shift"],
+        "depends_on": ["import_movies"]
+      },
+      {
+        "name": "ctf_estimation",
+        "description": "Estimate CTF parameters for micrographs",
+        "required_params": ["micrographs_job_uid"],
+        "optional_params": ["min_res", "max_res", "defocus_range"],
+        "depends_on": ["motion_correction"]
+      },
+      {
+        "name": "micrograph_selection",
+        "description": "Select micrographs with resolution better than specified threshold",
+        "required_params": ["ctf_job_uid"],
+        "optional_params": ["min_resolution", "quality_threshold"],
+        "depends_on": ["ctf_estimation"]
+      }
+    ]
+  }
+}

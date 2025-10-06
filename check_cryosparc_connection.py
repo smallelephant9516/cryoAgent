@@ -25,7 +25,7 @@ def test_cryosparc_connection():
     try:
         # Load configuration
         print("📋 Loading configuration...")
-        config_loader = ConfigLoader("config.json")
+        config_loader = ConfigLoader("configs/master_config.json")
         config = config_loader.load_config()
         
         print("✅ Configuration loaded successfully!")
@@ -62,7 +62,7 @@ def test_connection_performance():
     print("=" * 50)
     
     try:
-        config_loader = ConfigLoader("config.json")
+        config_loader = ConfigLoader("configs/master_config.json")
         config = config_loader.load_config()
         
         # Test multiple connections

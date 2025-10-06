@@ -215,11 +215,11 @@ def main() -> int:
     print()
 
     try:
-        config_loader = ConfigLoader("config.json")
+        config_loader = ConfigLoader("configs/master_config.json")
         config = config_loader.load_config()
     except FileNotFoundError:
-        print("❌ Configuration file not found: config.json")
-        print("   Please ensure config.json exists in the project root")
+        print("❌ Configuration file not found: configs/master_config.json")
+        print("   Please ensure configs/master_config.json exists in the project root")
         return 1
     except Exception as exc:
         print(f"❌ Failed to load configuration: {exc}")
@@ -240,7 +240,7 @@ def main() -> int:
         print()
         print("💡 Next steps:")
         print("   1. Run the basic workflow: python cryoagent_workflow.py --workflow basic")
-        print("   2. Test CryoSPARC connection: python test_cryosparc_connection.py")
+        print("   2. Test CryoSPARC connection: python check_cryosparc_connection.py")
         print("   3. Try the ReAct workflow example: python examples/react_workflow_example.py")
     else:
         print("❌ Some tests failed. Please check the configuration and try again.")

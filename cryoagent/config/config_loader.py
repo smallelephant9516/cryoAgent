@@ -279,14 +279,16 @@ class CryoAgentConfig(BaseModel):
 class ConfigLoader:
     """Configuration loader for CryoAgent."""
     
-    def __init__(self, config_path: Optional[str] = None):
+    def __init__(self, config_path: Optional[str] = None, master_config_path: Optional[str] = None):
         """
         Initialize the configuration loader.
         
         Args:
             config_path: Path to the configuration file. If None, uses default config.json
+            master_config_path: Path to the master configuration file for merging
         """
         self.config_path = config_path or "config.json"
+        self.master_config_path = master_config_path
         self._config: Optional[CryoAgentConfig] = None
     
     def load_config(self) -> CryoAgentConfig:
@@ -310,10 +312,35 @@ class ConfigLoader:
         with open(config_path, 'r') as f:
             config_data = json.load(f)
         
+        # If master config is provided, merge it with stage config
+        if self.master_config_path:
+            master_config_path = Path(self.master_config_path)
+            if master_config_path.exists():
+                with open(master_config_path, 'r') as f:
+                    master_config_data = json.load(f)
+                
+                # Merge master config with stage config (stage config takes precedence for overlapping keys)
+                config_data = self._merge_configs(master_config_data, config_data)
+        
         # Resolve environment variables in the configuration data
         config_data = resolve_env_vars(config_data)
         
         return self._parse_config(config_data)
+    
+    def _merge_configs(self, master_config: Dict[str, Any], stage_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Merge master configuration with stage-specific configuration."""
+        merged = master_config.copy()
+        
+        # Merge stage-specific sections
+        for key, value in stage_config.items():
+            if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+                # Recursively merge nested dictionaries
+                merged[key] = self._merge_configs(merged[key], value)
+            else:
+                # Stage config takes precedence
+                merged[key] = value
+        
+        return merged
     
     def _parse_config(self, config_data: Dict[str, Any]) -> CryoAgentConfig:
         """Parse configuration data into structured objects."""

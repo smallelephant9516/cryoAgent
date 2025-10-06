@@ -1,0 +1,116 @@
+{
+  "master_workflow": {
+    "name": "CryoEM Master Workflow",
+    "description": "Complete 3-stage cryoEM processing pipeline",
+    "stages": [
+      {
+        "name": "preprocessing",
+        "description": "Pre-processing stage: Import movies, motion correction, CTF estimation, and micrograph selection",
+        "enabled": true,
+        "config_file": "configs/preprocessing_config.json",
+        "agent_class": "PreprocessingAgent",
+        "required_inputs": ["movies_path", "pixel_size", "voltage", "cs_mm", "dose"],
+        "outputs": ["selected_micrographs", "ctf_parameters", "micrograph_job_uid"]
+      },
+      {
+        "name": "particle_picking",
+        "description": "Particle picking stage: Detect and extract particles from micrographs",
+        "enabled": false,
+        "config_file": "configs/particle_picking_config.json",
+        "agent_class": "ParticlePickingAgent",
+        "required_inputs": ["selected_micrographs", "ctf_parameters"],
+        "outputs": ["picked_particles", "particle_coordinates", "particle_job_uid"]
+      },
+      {
+        "name": "reconstruction",
+        "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
+        "enabled": false,
+        "config_file": "configs/reconstruction_config.json",
+        "agent_class": "ReconstructionAgent",
+        "required_inputs": ["picked_particles", "particle_coordinates"],
+        "outputs": ["final_structure", "resolution", "reconstruction_job_uid"]
+      }
+    ],
+    "execution_mode": "sequential",
+    "stop_on_failure": true,
+    "retry_failed_stages": false,
+    "max_retries": 2
+  },
+  "cryosparc": {
+    "host": "localhost",
+    "base_port": 61000,
+    "username": "lidaoyi16@hotmail.com",
+    "password": "Password123",
+    "license_id": "${LICENSE_ID}"
+  },
+  "agent": {
+    "provider": "deepseek", 
+    "temperature": 0.1,
+    "max_iterations": 15,
+    "verbose": true,
+    "timeout": 60,
+    "memory_control": {
+      "clear_memory_on_new_conversation": true,
+      "maintain_context_between_interactions": false
+    },
+    "react": {
+      "max_reasoning_steps": 10,
+      "enable_self_reflection": true,
+      "require_explicit_reasoning": true
+    },
+    "models": {
+      "deepseek": {
+        "api_key": "${DEEPSEEK_API_KEY}",
+        "base_url": "https://api.deepseek.com",
+        "model_name": "deepseek-chat",
+        "temperature": 0.1,
+        "timeout": 60
+      },
+      "openai": {
+        "api_key": "${OPENAI_API_KEY}",
+        "base_url": "https://api.openai.com/v1",
+        "model_name": "gpt-4o",
+        "temperature": 0.1,
+        "timeout": 60
+      },
+      "panshi": {
+        "api_key": "${PANSHI_API_KEY}",
+        "base_url": "https://uni-api.cstcloud.cn/v1",
+        "model_name": "deepseek-v3:671b",
+        "temperature": 0.1,
+        "timeout": 180
+      }
+    }
+  },
+  "workflow": {
+    "project_uid": "P1",
+    "workspace_uid": "W1"
+  },
+  "job_management": {
+    "default_timeout": 3600,
+    "status_check_interval": 1,
+    "max_retries": 3,
+    "retry_delay": 60
+  },
+  "error_handling": {
+    "max_consecutive_failures": 3,
+    "fallback_strategies": [
+      "retry_with_different_params",
+      "skip_optional_steps",
+      "manual_intervention_required"
+    ]
+  },
+  "performance": {
+    "parallel_jobs": false,
+    "max_concurrent_jobs": 1,
+    "resource_monitoring": true,
+    "memory_limit": "8GB"
+  },
+  "logging": {
+    "level": "INFO",
+    "format": "%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    "file": "cryoagent_master.log",
+    "max_file_size": "10MB",
+    "backup_count": 5
+  }
+}

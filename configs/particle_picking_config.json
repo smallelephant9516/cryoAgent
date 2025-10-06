@@ -1,0 +1,49 @@
+{
+  "stage_info": {
+    "name": "particle_picking",
+    "description": "Particle picking stage: Detect and extract particles from micrographs",
+    "version": "1.0.0",
+    "status": "placeholder"
+  },
+  "workflow": {
+    "particle_picking": {
+      "particle_diameter": 180,
+      "min_particle_quality": 0.3,
+      "max_particle_quality": 1.0,
+      "extraction_box_size": 256,
+      "min_particles_per_micrograph": 10,
+      "max_particles_per_micrograph": 1000
+    },
+    "quality_assessment": {
+      "min_particle_score": 0.5,
+      "max_particle_score": 1.0,
+      "exclude_edge_particles": true,
+      "edge_distance": 50
+    }
+  },
+  "react_workflow": {
+    "steps": [
+      {
+        "name": "particle_detection",
+        "description": "Detect particles in micrographs using template matching or deep learning",
+        "required_params": ["micrographs_job_uid", "particle_diameter"],
+        "optional_params": ["min_particle_quality", "max_particle_quality"],
+        "depends_on": []
+      },
+      {
+        "name": "particle_extraction",
+        "description": "Extract particle coordinates and create particle stack",
+        "required_params": ["detection_job_uid", "extraction_box_size"],
+        "optional_params": ["min_particles_per_micrograph", "max_particles_per_micrograph"],
+        "depends_on": ["particle_detection"]
+      },
+      {
+        "name": "particle_quality_assessment",
+        "description": "Assess particle quality and filter out low-quality particles",
+        "required_params": ["extraction_job_uid"],
+        "optional_params": ["min_particle_score", "max_particle_score", "exclude_edge_particles"],
+        "depends_on": ["particle_extraction"]
+      }
+    ]
+  }
+}
