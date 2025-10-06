@@ -13,6 +13,7 @@ class WorkflowStep(Enum):
     IMPORT_MOVIES = "import_movies"
     MOTION_CORRECTION = "motion_correction"
     CTF_ESTIMATION = "ctf_estimation"
+    MICROGRAPH_SELECTION = "micrograph_selection"
 
 
 @dataclass
@@ -102,6 +103,10 @@ Execute the complete cryoEM processing workflow with these steps:
    - Min resolution: {self.config.workflow.ctf_min_res} Å
    - Max resolution: {self.config.workflow.ctf_max_res} Å
 
+4. **Micrograph Selection**: Select micrographs with resolution better than 5 Å
+   - Min resolution threshold: 5.0 Å
+   - Filters out low-quality micrographs
+
 **Important**: 
 - Each step must complete successfully before the next begins
 - Always check job status and wait for completion
@@ -137,7 +142,7 @@ Start by reasoning about the workflow state and then proceed step by step.
                 if job_uid:
                     waits[job_uid] = entry["result"]
 
-        for step in [WorkflowStep.IMPORT_MOVIES, WorkflowStep.MOTION_CORRECTION, WorkflowStep.CTF_ESTIMATION]:
+        for step in [WorkflowStep.IMPORT_MOVIES, WorkflowStep.MOTION_CORRECTION, WorkflowStep.CTF_ESTIMATION, WorkflowStep.MICROGRAPH_SELECTION]:
             records = tool_entries.get(step.value, [])
             if not records:
                 self.results.append(
@@ -264,6 +269,12 @@ Start by reasoning about the workflow state and then proceed step by step.
 {i}. **CTF Estimation**: Estimate CTF parameters for micrographs
    - Min resolution: {self.config.workflow.ctf_min_res} Å
    - Max resolution: {self.config.workflow.ctf_max_res} Å
+""")
+            elif step == WorkflowStep.MICROGRAPH_SELECTION:
+                step_descriptions.append(f"""
+{i}. **Micrograph Selection**: Select micrographs with resolution better than 5 Å
+   - Min resolution threshold: 5.0 Å
+   - Filters out low-quality micrographs
 """)
         
         return f"""

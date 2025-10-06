@@ -76,22 +76,29 @@ class ReActCryoEMAgent:
                 name="import_movies",
                 description="Import movie files into CryoSPARC for processing. "
                            "Required parameters: movies_path, pixel_size, voltage, cs_mm, dose. "
-                           "Optional parameters: gain_ref_path, project_uid, workspace_uid.",
+                           "Optional parameters: gain_ref_path, project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
                 func=self._import_movies_tool
             ),
             Tool(
                 name="motion_correction",
                 description="Perform motion correction on imported movies. "
                            "Required parameters: movies_job_uid. "
-                           "Optional parameters: binning, patch_size, max_shift, project_uid, workspace_uid.",
+                           "Optional parameters: binning, patch_size, max_shift, project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
                 func=self._motion_correction_tool
             ),
             Tool(
                 name="ctf_estimation",
                 description="Estimate CTF parameters for micrographs. "
                            "Required parameters: micrographs_job_uid. "
-                           "Optional parameters: min_res, max_res, defocus_range, project_uid, workspace_uid.",
+                           "Optional parameters: min_res, max_res, defocus_range, project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
                 func=self._ctf_estimation_tool
+            ),
+            Tool(
+                name="micrograph_selection",
+                description="Select micrographs with resolution better than specified threshold. "
+                           "Required parameters: ctf_job_uid. "
+                           "Optional parameters: min_resolution, project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
+                func=self._micrograph_selection_tool
             ),
             Tool(
                 name="get_job_status",
@@ -153,7 +160,7 @@ For each step, you MUST follow this pattern:
 **Observation**: [What happened as a result of the action]
 
 ## CRITICAL: Job Monitoring and Waiting
-- After starting any job (import_movies, motion_correction, ctf_estimation), you MUST wait for it to complete
+- After starting any job (import_movies, motion_correction, ctf_estimation, micrograph_selection), you MUST wait for it to complete
 - Use wait_for_job tool with the job UID to wait for completion
 - Do NOT proceed to the next step until the current job is completed
 - If a job fails, report the error and stop the workflow
@@ -162,6 +169,7 @@ For each step, you MUST follow this pattern:
 - import_movies: Start the import, then wait for completion
 - motion_correction: Requires movies_job_uid from completed import_movies job
 - ctf_estimation: Requires micrographs_job_uid from completed motion_correction job
+- micrograph_selection: Requires ctf_job_uid from completed ctf_estimation job
 - get_job_status: Check status of a specific job (use job UID only, e.g., "J81")
 - wait_for_job: Wait for job completion (use job UID only, e.g., "J81")
 - reason_about_workflow: Analyze current state and dependencies
@@ -172,7 +180,7 @@ For each step, you MUST follow this pattern:
 - Do NOT use JSON format or complex parameters for these tools
 
 ## Workflow Dependencies:
-1. Import movies → Wait for completion → Motion correction → Wait for completion → CTF estimation
+1. Import movies → Wait for completion → Motion correction → Wait for completion → CTF estimation → Wait for completion → Micrograph selection
 2. Each step must complete successfully before the next can begin
 3. Always verify job completion before proceeding
 
@@ -215,7 +223,10 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 "pixel_size": float(params.get("pixel_size", self.config.workflow.pixel_size)),
                 "voltage": float(params.get("voltage", self.config.workflow.voltage)),
                 "cs_mm": float(params.get("cs_mm", self.config.workflow.cs_mm)),
-                "dose": float(params.get("dose", self.config.workflow.dose))
+                "dose": float(params.get("dose", self.config.workflow.dose)),
+                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
+                "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
             }
 
             # Use config defaults if not provided
@@ -242,7 +253,10 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 "workspace_uid": workspace_uid,
                 "movies_job_uid": params.get("movies_job_uid"),
                 "binning": int(params.get("binning", self.config.workflow.motion_correction_binning)),
-                "patch_size": int(params.get("patch_size", self.config.workflow.motion_correction_patch_size))
+                "patch_size": int(params.get("patch_size", self.config.workflow.motion_correction_patch_size)),
+                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
+                "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
             }
 
             result = self.cryosparc_tools.motion_correction(**used_params)
@@ -268,7 +282,10 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 "workspace_uid": workspace_uid,
                 "micrographs_job_uid": params.get("micrographs_job_uid"),
                 "min_res": float(params.get("min_res", self.config.workflow.ctf_min_res)),
-                "max_res": float(params.get("max_res", self.config.workflow.ctf_max_res))
+                "max_res": float(params.get("max_res", self.config.workflow.ctf_max_res)),
+                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
+                "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
             }
 
             result = self.cryosparc_tools.ctf_estimation(**used_params)
@@ -280,6 +297,34 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             context = used_params or params or {"raw_input": input_str}
             self._record_tool_execution("ctf_estimation", context, error=str(e))
             return f"❌ Error starting CTF estimation: {str(e)}"
+    
+    def _micrograph_selection_tool(self, input_str: str) -> str:
+        """Tool wrapper for micrograph selection."""
+        params: Dict[str, Any] = {}
+        used_params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            used_params = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+                "ctf_job_uid": params.get("ctf_job_uid"),
+                "min_resolution": float(params.get("min_resolution", 5.0)),
+                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
+                "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
+            }
+
+            result = self.cryosparc_tools.micrograph_selection(**used_params)
+
+            self._record_tool_execution("micrograph_selection", used_params, result=result)
+            return f"✅ Successfully queued micrograph selection job: {result['job_uid']}"
+            
+        except Exception as e:
+            context = used_params or params or {"raw_input": input_str}
+            self._record_tool_execution("micrograph_selection", context, error=str(e))
+            return f"❌ Error starting micrograph selection: {str(e)}"
     
     def _get_job_status_tool(self, input_str: str) -> str:
         """Tool wrapper for getting job status."""
@@ -319,6 +364,7 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             params = self._parse_tool_input(input_str)
             job_uid = params.get("job_uid")
             timeout = int(params.get("timeout", self.config.job_management.default_timeout))
+            check_interval = int(params.get("check_interval", self.config.job_management.status_check_interval))
             
             if not job_uid:
                 return f"❌ Error: job_uid parameter is required. Input was: '{input_str}', parsed params: {params}"
@@ -326,12 +372,13 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
 
-            print(f"🛰️ Waiting for job {job_uid} to complete...")
+            print(f"🛰️ Waiting for job {job_uid} to complete (checking every {check_interval}s)...")
             status = self.cryosparc_tools.wait_for_job_completion(
                 project_uid,
                 job_uid,
                 workspace_uid,
-                timeout
+                timeout,
+                check_interval
             )
             self._record_tool_execution(
                 "wait_for_job",
@@ -339,7 +386,8 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                     "job_uid": job_uid,
                     "project_uid": project_uid,
                     "workspace_uid": workspace_uid,
-                    "timeout": timeout
+                    "timeout": timeout,
+                    "check_interval": check_interval
                 },
                 result=status
             )

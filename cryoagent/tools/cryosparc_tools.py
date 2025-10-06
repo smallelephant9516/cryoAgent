@@ -82,6 +82,7 @@ class CryoSPARCTools:
         dose: float = 1.0,
         wait_for_completion: bool = False,
         timeout: int = 3600,
+        check_interval: int = 30,
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -149,7 +150,8 @@ class CryoSPARCTools:
                         project_uid,
                         job.uid,
                         workspace_uid,
-                        timeout
+                        timeout,
+                        check_interval
                     )
                     result["status"] = final_status["status"]
                     result["final_status"] = final_status
@@ -180,6 +182,7 @@ class CryoSPARCTools:
         hostname: Optional[str] = None,
         wait_for_completion: bool = False,
         timeout: int = 3600,
+        check_interval: int = 30,
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -274,7 +277,8 @@ class CryoSPARCTools:
                         project_uid,
                         job.uid,
                         workspace_uid,
-                        timeout
+                        timeout,
+                        check_interval
                     )
                     result["status"] = final_status["status"]
                     result["final_status"] = final_status
@@ -305,6 +309,7 @@ class CryoSPARCTools:
         hostname: Optional[str] = None,
         wait_for_completion: bool = False,
         timeout: int = 3600,
+        check_interval: int = 30,
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -383,7 +388,8 @@ class CryoSPARCTools:
                         project_uid,
                         job.uid,
                         workspace_uid,
-                        timeout
+                        timeout,
+                        check_interval
                     )
                     result["status"] = final_status["status"]
                     result["final_status"] = final_status
@@ -402,6 +408,118 @@ class CryoSPARCTools:
             
         except Exception as e:
             raise RuntimeError(f"Failed to start CTF estimation: {e}")
+    
+    def micrograph_selection(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        ctf_job_uid: str,
+        min_resolution: float = 5.0,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Select micrographs with resolution better than specified threshold using curate_exposures_v2.
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            workspace_uid: CryoSPARC workspace UID
+            ctf_job_uid: UID of the CTF estimation job
+            min_resolution: Minimum resolution threshold in Angstroms (default: 5.0)
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            # Find project and workspace
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+            
+            # Create curate_exposures_v2 job with proper connections
+            job = workspace.create_job(
+                "curate_exposures_v2",
+                connections={"exposures": (ctf_job_uid, "exposures")},
+                **kwargs
+            )
+            
+            # Queue the job
+            job.queue()
+            print(f"Queued micrograph curation job: {job.uid}")
+            
+            # Wait for job to reach waiting status (interactive mode)
+            job.wait_for_status("waiting")
+            print(f"Job {job.uid} reached waiting status, configuring thresholds...")
+            
+            # Get fields and thresholds data
+            data = job.interact("get_fields_and_thresholds")
+            
+            # Find the CTF resolution field and set threshold
+            from cryosparc.util import first
+            ctf_res_field = first(field for field in data["fields"] if field["name"] == "ctf_fit_to_A")
+            
+            if ctf_res_field:
+                # Set threshold to filter micrographs with resolution better than min_resolution
+                ctf_res_field["thresholds"] = [1, min_resolution]  # Keep micrographs with resolution 1 to min_resolution Å
+                ctf_res_field["active"] = True
+                print(f"Set CTF resolution threshold to {min_resolution} Å")
+            else:
+                print("⚠️ Warning: Could not find 'ctf_fit_to_A' field in CTF data")
+            
+            # Apply the thresholds
+            job.interact("set_thresholds", data)
+            job.interact("shutdown_interactive")
+            
+            self._job_cache[job.uid] = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }
+            result = {
+                "job_uid": job.uid,
+                "job_type": "curate_exposures_v2",
+                "status": "queued",
+                "params": {
+                    "ctf_job_uid": ctf_job_uid,
+                    "min_resolution": min_resolution
+                },
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }
+            
+            # Wait for completion if requested
+            if wait_for_completion:
+                print(f"⏳ Waiting for micrograph curation job {job.uid} to complete...")
+                try:
+                    final_status = self.wait_for_job_completion(
+                        project_uid,
+                        job.uid,
+                        workspace_uid,
+                        timeout,
+                        check_interval
+                    )
+                    result["status"] = final_status["status"]
+                    result["final_status"] = final_status
+                    if final_status["status"] == "completed":
+                        print(f"✅ Micrograph curation job {job.uid} completed successfully!")
+                    else:
+                        print(f"⚠️ Micrograph curation job {job.uid} finished with status: {final_status['status']}")
+                except TimeoutError:
+                    result["status"] = "timeout"
+                    print(f"⏰ Micrograph curation job {job.uid} timed out after {timeout} seconds")
+                except Exception as e:
+                    result["status"] = "error"
+                    print(f"❌ Error monitoring micrograph curation job {job.uid}: {e}")
+            
+            return result
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to start micrograph selection: {e}")
     
     def get_job_status(
         self,

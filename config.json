@@ -1,13 +1,13 @@
 {
   "cryosparc": {
-    "host": "Dao.localdomain",
+    "host": "localhost",
     "base_port": 61000,
     "username": "lidaoyi16@hotmail.com",
     "password": "Password123",
     "license_id": "${LICENSE_ID}"
   },
   "agent": {
-    "provider": "panshi", 
+    "provider": "deepseek", 
     "temperature": 0.1,
     "max_iterations": 15,
     "verbose": true,
@@ -49,8 +49,8 @@
     "project_uid": "P1",
     "workspace_uid": "W1",
     "import_movies": {
-      "movies_path": "/home/daoyi/cryoEM_dataset/10025_subset/agent_test/*.tif",
-      "gain_ref_path": "/home/daoyi/cryoEM_dataset/10025_subset/agent_test/norm-amibox05-0.mrc",
+      "movies_path": "/home/lidao/cryoEM_dataset/10025_subset/agent_test/*.tif",
+      "gain_ref_path": "/home/lidao/cryoEM_dataset/10025_subset/agent_test/norm-amibox05-0.mrc",
       "pixel_size": 0.6575,
       "voltage": 300.0,
       "cs_mm": 2.7,
@@ -67,11 +67,15 @@
       "max_res": 4.0,
       "defocus_range": [0.5, 4.0],
       "astigmatism_tolerance": 100.0
+    },
+    "micrograph_selection": {
+      "min_resolution": 5.0,
+      "quality_threshold": 0.8
     }
   },
   "job_management": {
     "default_timeout": 3600,
-    "status_check_interval": 10,
+    "status_check_interval": 1,
     "max_retries": 3,
     "retry_delay": 60
   },
@@ -104,6 +108,13 @@
         "required_params": ["micrographs_job_uid"],
         "optional_params": ["min_res", "max_res", "defocus_range"],
         "depends_on": ["motion_correction"]
+      },
+      {
+        "name": "micrograph_selection",
+        "description": "Select micrographs with resolution better than specified threshold",
+        "required_params": ["ctf_job_uid"],
+        "optional_params": ["min_resolution", "quality_threshold"],
+        "depends_on": ["ctf_estimation"]
       }
     ]
   },

@@ -145,15 +145,36 @@ class CryoAgentWorkflow:
         """
         if dry_run:
             print("🔍 DRY RUN: Basic Workflow")
-            print("Would execute: Import Movies → Motion Correction → CTF Estimation")
+            # Get steps from configuration
+            steps = []
+            for step_config in self.config.react_workflow.steps:
+                step_name = step_config.name.replace('_', ' ').title()
+                steps.append(step_name)
+            
+            workflow_steps = " → ".join(steps)
+            print(f"Would execute: {workflow_steps}")
             return True
         
         try:
             print("🎯 Starting ReAct-Based CryoEM Workflow with Job Monitoring")
             print("=" * 70)
             print("This will use the ReAct (Reasoning + Acting) framework")
-            print("to intelligently execute: Import Movies → Motion Correction → CTF Estimation")
+            
+            # Get steps from configuration dynamically
+            steps = []
+            for step_config in self.config.react_workflow.steps:
+                step_name = step_config.name.replace('_', ' ').title()
+                steps.append(step_name)
+            
+            workflow_steps = " → ".join(steps)
+            print(f"to intelligently execute: {workflow_steps}")
             print("with automatic job monitoring and dependency management")
+            print()
+            print("📋 Workflow Steps:")
+            for i, step_config in enumerate(self.config.react_workflow.steps, 1):
+                step_name = step_config.name.replace('_', ' ').title()
+                description = step_config.description
+                print(f"   {i}. {step_name} - {description}")
             print()
             
             self.start_time = time.time()
@@ -415,6 +436,10 @@ Execute the complete cryoEM processing workflow with these steps:
    - Min resolution: {self.config.workflow.ctf_min_res} Å
    - Max resolution: {self.config.workflow.ctf_max_res} Å
 
+4. **Micrograph Selection**: Select micrographs with resolution better than 5 Å
+   - Min resolution threshold: 5.0 Å
+   - Filters out low-quality micrographs
+
 **Important**: 
 - Each step must complete successfully before the next begins
 - Always check job status and wait for completion
@@ -449,6 +474,12 @@ Start by reasoning about the workflow state and then proceed step by step.
    - Min resolution: {self.config.workflow.ctf_min_res} Å
    - Max resolution: {self.config.workflow.ctf_max_res} Å
 """)
+            elif step.lower() == "micrograph_selection":
+                step_descriptions.append(f"""
+{i}. **Micrograph Selection**: Select micrographs with resolution better than 5 Å
+   - Min resolution threshold: 5.0 Å
+   - Filters out low-quality micrographs
+""")
         
         return f"""
 Execute the following custom cryoEM workflow:
@@ -474,7 +505,7 @@ Start by reasoning about the workflow state and then proceed step by step.
             return False
         
         # Additional validation: Check if any tools were actually invoked
-        cryosparc_tools = {"import_movies", "motion_correction", "ctf_estimation", "wait_for_job", "get_job_status"}
+        cryosparc_tools = {"import_movies", "motion_correction", "ctf_estimation", "micrograph_selection", "wait_for_job", "get_job_status"}
         actual_tool_calls = [entry for entry in execution_log if entry.get("tool") in cryosparc_tools]
         
         if not actual_tool_calls:
@@ -483,7 +514,7 @@ Start by reasoning about the workflow state and then proceed step by step.
             return False
 
         # If any critical tool reported an error, flag the workflow as failed immediately
-        critical_tools = {"import_movies", "motion_correction", "ctf_estimation", "wait_for_job"}
+        critical_tools = {"import_movies", "motion_correction", "ctf_estimation", "micrograph_selection", "wait_for_job"}
         critical_errors = [
             entry for entry in execution_log
             if entry.get("error") and entry.get("tool") in critical_tools
@@ -497,7 +528,8 @@ Start by reasoning about the workflow state and then proceed step by step.
         step_requirements = {
             "import_movies": {"job_uid": None},
             "motion_correction": {"job_uid": None},
-            "ctf_estimation": {"job_uid": None}
+            "ctf_estimation": {"job_uid": None},
+            "micrograph_selection": {"job_uid": None}
         }
         wait_results: Dict[str, Dict[str, Any]] = {}
 
@@ -645,7 +677,7 @@ Examples:
   python cryoagent_workflow.py
 
   # Run custom workflow
-  python cryoagent_workflow.py --workflow custom --steps import_movies,motion_correction
+  python cryoagent_workflow.py --workflow custom --steps import_movies,motion_correction,ctf_estimation,micrograph_selection
 
   # Run single step
   python cryoagent_workflow.py --workflow single --steps "Import movies and wait for completion"
@@ -772,7 +804,7 @@ Examples:
         elif args.workflow == "custom":
             if not args.steps:
                 print("❌ --steps required for custom workflow")
-                print("   Valid steps: import_movies, motion_correction, ctf_estimation")
+                print("   Valid steps: import_movies, motion_correction, ctf_estimation, micrograph_selection")
                 sys.exit(1)
             steps = [s.strip() for s in args.steps.split(",")]
             # Use a unique conversation ID to ensure fresh start
