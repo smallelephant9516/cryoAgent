@@ -5,6 +5,10 @@
     "version": "1.0.0",
     "status": "placeholder"
   },
+  "input": {
+    "micrograph_location": null,
+    "micrograph_location_description": "Location of the micrographs for particle picking. If null, will read from the output of the preprocessing agent. Can be a CryoSPARC job UID (e.g., 'J81') or a path to micrographs."
+  },
   "workflow": {
     "particle_picking": {
       "particle_diameter": 180,

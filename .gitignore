@@ -144,4 +144,6 @@ cython_debug/
 # vscode
 .vscode/
 
+# the output directory
+outputs
 .log

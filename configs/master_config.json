@@ -44,7 +44,7 @@
     "license_id": "${LICENSE_ID}"
   },
   "agent": {
-    "provider": "deepseek", 
+    "provider": "panshi", 
     "temperature": 0.1,
     "max_iterations": 15,
     "verbose": true,

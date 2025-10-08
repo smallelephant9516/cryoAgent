@@ -154,6 +154,14 @@ class PreprocessingAgent(StageAgent):
             # Parse results and extract stage outputs
             stage_outputs = self._parse_preprocessing_results(result)
             
+            # Save preprocessing results to JSON file
+            result_file_path = self._save_preprocessing_results(stage_outputs, context)
+            self.logger.info(f"Preprocessing results saved to: {result_file_path}")
+            print(f"📄 Preprocessing results saved to: {result_file_path}")
+            
+            # Add result file path to stage outputs
+            stage_outputs["result_file"] = result_file_path
+            
             execution_time = time.time() - start_time
             
             return StageResult(
@@ -244,6 +252,85 @@ Start by reasoning about the workflow state and then proceed step by step.
                     stage_outputs["micrograph_selection_job_uid"] = result_data["job_uid"]
         
         return stage_outputs
+    
+    def _save_preprocessing_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext) -> str:
+        """
+        Save preprocessing results to a JSON file.
+        
+        Args:
+            stage_outputs: Dictionary of stage outputs
+            context: Workflow context
+            
+        Returns:
+            Path to the saved JSON file
+        """
+        import datetime
+        from pathlib import Path
+        
+        # Create output directory if it doesn't exist
+        output_dir = Path("outputs")
+        output_dir.mkdir(exist_ok=True)
+        
+        # Get the final selection job output directory
+        final_job_uid = stage_outputs.get("micrograph_selection_job_uid")
+        micrograph_output_directory = None
+        output_summary = None
+        
+        if final_job_uid:
+            try:
+                job_dir_info = self.cryosparc_tools.get_job_output_directory(
+                    context.project_uid,
+                    final_job_uid
+                )
+                micrograph_output_directory = job_dir_info.get("job_directory")
+                output_summary = job_dir_info.get("outputs", [])
+                self.logger.info(f"Retrieved job directory for {final_job_uid}: {micrograph_output_directory}")
+            except Exception as e:
+                self.logger.warning(f"Could not retrieve job output directory: {e}")
+                micrograph_output_directory = None
+        
+        # Create preprocessing results dictionary
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        preprocessing_results = {
+            "stage": "preprocessing",
+            "status": "completed",
+            "timestamp": timestamp,
+            "project_uid": context.project_uid,
+            "workspace_uid": context.workspace_uid,
+            "micrograph_location": {
+                "description": "Location of processed micrographs in CryoSPARC",
+                "project_uid": context.project_uid,
+                "workspace_uid": context.workspace_uid,
+                "final_selection_job_uid": final_job_uid,
+                "output_directory": micrograph_output_directory,
+                "path_pattern": f"Project {context.project_uid}, Workspace {context.workspace_uid}, Job {final_job_uid}",
+                "output_summary": output_summary
+            },
+            "job_uids": {
+                "import_movies": stage_outputs.get("movies_job_uid"),
+                "motion_correction": stage_outputs.get("motion_correction_job_uid"),
+                "ctf_estimation": stage_outputs.get("ctf_job_uid"),
+                "micrograph_selection": stage_outputs.get("micrograph_selection_job_uid")
+            },
+            "outputs": {
+                "selected_micrographs": stage_outputs.get("selected_micrographs"),
+                "ctf_parameters": stage_outputs.get("ctf_parameters")
+            },
+            "usage_notes": {
+                "next_stage": "particle_picking",
+                "final_selection_job_uid_usage": "Use the final_selection_job_uid as input for particle picking stage",
+                "micrograph_location_usage": "This job UID contains the selected micrographs for further processing",
+                "output_directory_usage": "The output_directory contains the filesystem path to the micrograph files"
+            }
+        }
+        
+        # Save to JSON file
+        output_file = output_dir / f"preprocessing_results_{timestamp}.json"
+        with open(output_file, 'w') as f:
+            json.dump(preprocessing_results, f, indent=2)
+        
+        self.logger.info(f"Preprocessing results saved to {output_file}")
+        return str(output_file)
 
 
 class ParticlePickingAgent(StageAgent):

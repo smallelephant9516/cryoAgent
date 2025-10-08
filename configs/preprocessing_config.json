@@ -6,8 +6,8 @@
   },
   "workflow": {
     "import_movies": {
-      "movies_path": "/home/lidao/cryoEM_dataset/10025_subset/agent_test/*.tif",
-      "gain_ref_path": "/home/lidao/cryoEM_dataset/10025_subset/agent_test/norm-amibox05-0.mrc",
+      "movies_path": "/home/daoyi/cryoEM_dataset/10025_subset/agent_test/*.tif",
+      "gain_ref_path": "/home/daoyi/cryoEM_dataset/10025_subset/agent_test/norm-amibox05-0.mrc",
       "pixel_size": 0.6575,
       "voltage": 300.0,
       "cs_mm": 2.7,

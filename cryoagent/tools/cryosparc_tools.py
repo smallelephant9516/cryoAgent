@@ -677,3 +677,52 @@ class CryoSPARCTools:
             return workspaces
         except Exception as e:
             raise RuntimeError(f"Failed to list workspaces for project {project_uid}: {e}")
+    
+    def get_job_output_directory(
+        self,
+        project_uid: str,
+        job_uid: str
+    ) -> Dict[str, Any]:
+        """
+        Get the output directory and related information for a job.
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            job_uid: UID of the job
+            
+        Returns:
+            Dictionary containing job directory information
+        """
+        try:
+            job = self.cs.find_job(project_uid, job_uid)
+            job.refresh()
+            
+            # Get job directory path and convert to string for JSON serialization
+            job_dir = str(job.dir())
+            
+            # Get job document for additional information
+            doc = getattr(job, "doc", {})
+            
+            # Try to get output information
+            output_result_groups = doc.get("output_result_groups", [])
+            output_info = []
+            
+            for group in output_result_groups:
+                output_info.append({
+                    "type": group.get("type"),
+                    "name": group.get("name"),
+                    "title": group.get("title"),
+                    "num_items": group.get("num_items", 0)
+                })
+            
+            return {
+                "job_uid": job_uid,
+                "project_uid": project_uid,
+                "job_directory": job_dir,
+                "job_type": doc.get("job_type"),
+                "status": doc.get("status"),
+                "outputs": output_info
+            }
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to get job output directory for {job_uid}: {e}")
