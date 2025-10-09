@@ -38,13 +38,13 @@
   },
   "cryosparc": {
     "host": "localhost",
-    "base_port": 61000,
+    "base_port": 39000,
     "username": "lidaoyi16@hotmail.com",
     "password": "Password123",
     "license_id": "${LICENSE_ID}"
   },
   "agent": {
-    "provider": "panshi", 
+    "provider": "deepseek", 
     "temperature": 0.1,
     "max_iterations": 15,
     "verbose": true,

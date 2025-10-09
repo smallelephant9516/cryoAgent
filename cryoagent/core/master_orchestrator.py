@@ -154,8 +154,11 @@ class PreprocessingAgent(StageAgent):
             # Parse results and extract stage outputs
             stage_outputs = self._parse_preprocessing_results(result)
             
+            # Validate that jobs were actually executed
+            validation_result = self._validate_preprocessing_results(stage_outputs)
+            
             # Save preprocessing results to JSON file
-            result_file_path = self._save_preprocessing_results(stage_outputs, context)
+            result_file_path = self._save_preprocessing_results(stage_outputs, context, validation_result["success"])
             self.logger.info(f"Preprocessing results saved to: {result_file_path}")
             print(f"📄 Preprocessing results saved to: {result_file_path}")
             
@@ -163,6 +166,18 @@ class PreprocessingAgent(StageAgent):
             stage_outputs["result_file"] = result_file_path
             
             execution_time = time.time() - start_time
+            
+            # Return result based on validation
+            if not validation_result["success"]:
+                self.logger.error(f"Pre-processing validation failed: {validation_result['error']}")
+                return StageResult(
+                    stage=WorkflowStage.PREPROCESSING,
+                    success=False,
+                    stage_outputs=stage_outputs,
+                    error=validation_result["error"],
+                    execution_time=execution_time,
+                    reasoning=result
+                )
             
             return StageResult(
                 stage=WorkflowStage.PREPROCESSING,
@@ -253,13 +268,52 @@ Start by reasoning about the workflow state and then proceed step by step.
         
         return stage_outputs
     
-    def _save_preprocessing_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext) -> str:
+    def _validate_preprocessing_results(self, stage_outputs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validate that the preprocessing workflow actually completed successfully.
+        
+        Args:
+            stage_outputs: Dictionary of stage outputs to validate
+            
+        Returns:
+            Dictionary with 'success' boolean and 'error' message if failed
+        """
+        # Check if any jobs were executed
+        required_jobs = [
+            ("import_movies", stage_outputs.get("movies_job_uid")),
+            ("motion_correction", stage_outputs.get("motion_correction_job_uid")),
+            ("ctf_estimation", stage_outputs.get("ctf_job_uid")),
+            ("micrograph_selection", stage_outputs.get("micrograph_selection_job_uid"))
+        ]
+        
+        missing_jobs = []
+        for job_name, job_uid in required_jobs:
+            if job_uid is None:
+                missing_jobs.append(job_name)
+        
+        if missing_jobs:
+            error_msg = f"Preprocessing workflow failed - the following jobs were not executed: {', '.join(missing_jobs)}. " \
+                       f"The agent may have completed without actually running the CryoSPARC jobs. " \
+                       f"Check the agent's reasoning and ensure all tools are being called correctly."
+            return {
+                "success": False,
+                "error": error_msg
+            }
+        
+        # All required jobs have UIDs, validation passed
+        return {
+            "success": True,
+            "error": None
+        }
+    
+    def _save_preprocessing_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True) -> str:
         """
         Save preprocessing results to a JSON file.
         
         Args:
             stage_outputs: Dictionary of stage outputs
             context: Workflow context
+            success: Whether the preprocessing was successful
             
         Returns:
             Path to the saved JSON file
@@ -291,9 +345,11 @@ Start by reasoning about the workflow state and then proceed step by step.
         
         # Create preprocessing results dictionary
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        status = "completed" if success else "failed"
+        
         preprocessing_results = {
             "stage": "preprocessing",
-            "status": "completed",
+            "status": status,
             "timestamp": timestamp,
             "project_uid": context.project_uid,
             "workspace_uid": context.workspace_uid,
