@@ -40,6 +40,28 @@ class PickingTools:
         )
     
     @staticmethod
+    def create_extract_particles_tool(agent) -> Tool:
+        """Create tool for particle extraction."""
+        return Tool(
+            name="extract_particles",
+            description="Extract particles from micrographs using particle coordinates from picking. "
+                       "Required parameters: particles_job_uid (from blob picker), micrographs_job_uid (from CTF/selection), box_size_pix (box size in pixels). "
+                       "Optional parameters: project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
+            func=agent._extract_particles_tool
+        )
+    
+    @staticmethod
+    def create_class_2d_tool(agent) -> Tool:
+        """Create tool for 2D classification."""
+        return Tool(
+            name="class_2d",
+            description="Perform 2D classification on extracted particles. "
+                       "Required parameters: particles_job_uid (from extraction). "
+                       "Optional parameters: num_classes (default: 20), project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
+            func=agent._class_2d_tool
+        )
+    
+    @staticmethod
     def create_reason_about_workflow_tool(agent) -> Tool:
         """Create tool for reasoning about particle picking workflow."""
         return Tool(

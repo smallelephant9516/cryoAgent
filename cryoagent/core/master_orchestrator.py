@@ -436,10 +436,11 @@ class ParticlePickingAgent(StageAgent):
                 config=self.config
             )
             
-            # Initialize picking workflow
+            # Initialize picking workflow with stage config path
             self.modular_workflow = PickingWorkflow(
                 agent=self.modular_agent,
-                config=self.config
+                config=self.config,
+                stage_config_path=self.config_path
             )
             
             self.logger.info(f"Stage agent {self.stage_name} initialized successfully with modular architecture")
@@ -470,24 +471,18 @@ class ParticlePickingAgent(StageAgent):
                     execution_time=time.time() - start_time
                 )
             
-            # Get particle diameter from config
-            particle_diameter = getattr(self.config.workflow, "particle_diameter", 180.0)
-            diameter_max = getattr(self.config.workflow, "diameter_max", None)
-            
-            self.logger.info(f"Running blob picker GPU with diameter={particle_diameter}Å (max={diameter_max or particle_diameter*2.0}Å), micrographs={micrographs_job_uid}")
+            self.logger.info(f"Running particle picking workflow (parameters from {self.config_path})")
             
             # Execute the particle picking workflow using modular architecture
+            # The workflow will read all parameters from the stage config file
             results = self.modular_workflow.run(
                 micrographs_job_uid=micrographs_job_uid,
-                particle_diameter=particle_diameter,
-                diameter_max=diameter_max,
                 conversation_id=conversation_id
             )
             
             # Parse results and extract stage outputs
             stage_outputs = self._parse_modular_picking_results(results)
             stage_outputs["micrographs_job_uid"] = micrographs_job_uid
-            stage_outputs["particle_diameter"] = particle_diameter
             
             # Validate that jobs were actually executed
             validation_result = self._validate_picking_results(stage_outputs)
@@ -532,7 +527,7 @@ class ParticlePickingAgent(StageAgent):
             )
     
     def get_stage_description(self) -> str:
-        return "Particle Picking: Detect and extract particles from micrographs using blob picker"
+        return "Particle Picking: Detect particles (blob picker), extract them, and perform 2D classification"
     
     def get_required_inputs(self) -> List[str]:
         return ["micrograph_selection_job_uid"]
@@ -541,7 +536,11 @@ class ParticlePickingAgent(StageAgent):
         """Parse modular picking results to extract stage outputs."""
         stage_outputs = {
             "blob_picker_job_uid": None,
-            "picked_particles": None
+            "extraction_job_uid": None,
+            "classification_2d_job_uid": None,
+            "picked_particles": None,
+            "extracted_particles": None,
+            "classified_particles": None
         }
         
         # Extract job UIDs from modular workflow results
@@ -550,17 +549,31 @@ class ParticlePickingAgent(StageAgent):
             if result.success and result.job_uid:
                 if step_name == "blob_picker":
                     stage_outputs["blob_picker_job_uid"] = result.job_uid
+                elif step_name == "extract_particles":
+                    stage_outputs["extraction_job_uid"] = result.job_uid
+                elif step_name == "class_2d":
+                    stage_outputs["classification_2d_job_uid"] = result.job_uid
         
         return stage_outputs
     
     def _validate_picking_results(self, stage_outputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate that the particle picking workflow completed successfully."""
-        picker_job_uid = stage_outputs.get("blob_picker_job_uid")
+        """Validate that the complete particle picking workflow completed successfully."""
+        required_jobs = [
+            ("blob_picker", stage_outputs.get("blob_picker_job_uid")),
+            ("particle_extraction", stage_outputs.get("extraction_job_uid")),
+            ("2d_classification", stage_outputs.get("classification_2d_job_uid"))
+        ]
         
-        if not picker_job_uid:
+        missing_jobs = []
+        for job_name, job_uid in required_jobs:
+            if job_uid is None:
+                missing_jobs.append(job_name)
+        
+        if missing_jobs:
+            error_msg = f"Particle picking workflow failed - the following jobs were not executed: {', '.join(missing_jobs)}"
             return {
                 "success": False,
-                "error": "Blob picker job was not executed - no job UID found"
+                "error": error_msg
             }
         
         return {
@@ -590,15 +603,19 @@ class ParticlePickingAgent(StageAgent):
             "input_micrographs_job_uid": stage_outputs.get("micrographs_job_uid"),
             "particle_diameter": stage_outputs.get("particle_diameter"),
             "job_uids": {
-                "blob_picker": stage_outputs.get("blob_picker_job_uid")
+                "blob_picker": stage_outputs.get("blob_picker_job_uid"),
+                "particle_extraction": stage_outputs.get("extraction_job_uid"),
+                "2d_classification": stage_outputs.get("classification_2d_job_uid")
             },
             "outputs": {
-                "picked_particles": stage_outputs.get("picked_particles")
+                "picked_particles": stage_outputs.get("picked_particles"),
+                "extracted_particles": stage_outputs.get("extracted_particles"),
+                "classified_particles": stage_outputs.get("classified_particles")
             },
             "usage_notes": {
-                "next_stage": "2d_classification or extraction",
-                "picker_job_uid_usage": "Use the blob_picker job UID for particle extraction or 2D classification",
-                "particle_coordinates": "Particle coordinates are stored in the blob_picker job output"
+                "next_stage": "3d_reconstruction",
+                "classification_2d_job_uid_usage": "Use the 2d_classification job UID for 3D reconstruction or further refinement",
+                "particle_classes": "2D classes are stored in the classification job output and can be used for particle selection"
             }
         }
         
@@ -750,7 +767,11 @@ class MasterOrchestrator:
         elif stage == WorkflowStage.PARTICLE_PICKING:
             return {
                 "blob_picker_job_uid": job_uids.get("blob_picker"),
-                "picked_particles": None
+                "extraction_job_uid": job_uids.get("particle_extraction"),
+                "classification_2d_job_uid": job_uids.get("2d_classification"),
+                "picked_particles": None,
+                "extracted_particles": None,
+                "classified_particles": None
             }
         else:
             # For other stages, return as-is

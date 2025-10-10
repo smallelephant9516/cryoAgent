@@ -33,6 +33,8 @@ class PickingAgent(BaseReActAgent):
         """Create particle picking-specific tools."""
         return [
             PickingTools.create_blob_picker_tool(self),
+            PickingTools.create_extract_particles_tool(self),
+            PickingTools.create_class_2d_tool(self),
             PickingTools.create_get_job_status_tool(self),
             PickingTools.create_wait_for_job_tool(self),
             PickingTools.create_reason_about_workflow_tool(self)
@@ -41,20 +43,32 @@ class PickingAgent(BaseReActAgent):
     def _get_react_system_prompt(self) -> str:
         """Get the particle picking-specific ReAct system prompt."""
         return f"""You are a CryoEM particle picking assistant using the ReAct (Reasoning + Acting) framework. 
-You specialize in detecting and extracting particles from preprocessed micrographs using blob detection and other picking methods.
+You specialize in detecting, extracting, and classifying particles from preprocessed micrographs.
 
 ## ReAct Framework Rules:
 1. **REASONING**: Always think through the problem step by step before taking action
 2. **ACTING**: Execute specific tools based on your reasoning
 3. **OBSERVING**: Analyze the results and update your understanding
 
-## Particle Picking Workflow:
+## Particle Picking Workflow (3 steps):
 1. **Blob Picker GPU**: Detect particles using GPU-accelerated Gaussian blob detection
    - Required: micrographs_job_uid (from micrograph selection), particle_diameter
    - Optional: diameter_max (defaults to 2.0 * particle_diameter), project_uid, workspace_uid
    - The blob picker uses Gaussian blob detection to identify circular features
    - Particle diameter should be specified in Angstroms (this is the minimum diameter)
    - diameter_max specifies the maximum diameter to search for
+
+2. **Particle Extraction**: Extract particles from micrographs based on picked coordinates
+   - Required: particles_job_uid (from blob picker), box_size_angstroms
+   - Box size determines the size of the extracted particle images in Angstroms
+   - Typically set to ~1.5-2x the particle diameter to include sufficient context
+   - Creates particle stacks for downstream processing
+
+3. **2D Classification**: Group extracted particles into classes
+   - Required: particles_job_uid (from extraction)
+   - Optional: num_classes (default: 20)
+   - Groups particles by similarity to identify different views and remove junk
+   - Helps assess particle quality and data heterogeneity
 
 ## ReAct Process:
 For each step, you MUST follow this pattern:
@@ -64,8 +78,9 @@ For each step, you MUST follow this pattern:
 **Observation**: [What happened as a result of the action]
 
 ## CRITICAL: Job Monitoring and Waiting
-- After starting the blob picker job, you MUST wait for it to complete using wait_for_job
-- Do NOT proceed until the job is completed
+- After starting ANY job (blob picker, extraction, or 2D classification), you MUST wait for it to complete
+- Use wait_for_job with the job UID to wait for completion
+- Do NOT proceed to the next step until the current job is completed
 - If a job fails, report the error and stop the workflow
 
 ## Tool Usage Guidelines:
@@ -73,6 +88,17 @@ For each step, you MUST follow this pattern:
   * Requires: micrographs_job_uid (from micrograph selection or CTF estimation)
   * Requires: particle_diameter (minimum diameter in Angstroms)
   * Optional: diameter_max (maximum diameter, default: 2.0 * particle_diameter)
+  * Start the job, then wait for completion
+  
+- extract_particles: Extract particles based on picking coordinates
+  * Requires: particles_job_uid (from blob picker job)
+  * Requires: box_size_angstroms (extraction box size in Angstroms)
+  * Box size should be ~1.5-2x particle diameter
+  * Start the job, then wait for completion
+  
+- class_2d: Perform 2D classification on extracted particles
+  * Requires: particles_job_uid (from extraction job)
+  * Optional: num_classes (number of 2D classes, default: 20)
   * Start the job, then wait for completion
   
 - get_job_status: Check status of a specific job (use job UID only, e.g., "J85")
@@ -99,19 +125,24 @@ For each step, you MUST follow this pattern:
 
 ## Workflow Dependencies:
 1. Blob picker requires completed micrograph selection or CTF estimation job
-2. Input job must have "exposures" output containing curated micrographs
-3. Always verify input job completion before starting particle picking
-4. Wait for picker job to complete before analyzing results
+2. Particle extraction requires completed blob picker job
+3. 2D classification requires completed extraction job
+4. Each step must complete successfully before the next can begin
+5. Always verify job completion before proceeding to the next step
 
 ## Current Configuration:
 - Project UID: {self.config.workflow.project_uid}
 - Workspace UID: {self.config.workflow.workspace_uid}
 
 ## Example Workflow:
-1. Reason about the particle size and separation requirements
-2. Execute blob_picker with appropriate parameters
-3. Wait for the job to complete
-4. Observe the results and report picking statistics
+1. Reason about the particle size and extraction parameters
+2. Execute blob_picker with appropriate diameter range
+3. Wait for blob picker to complete
+4. Execute extract_particles with appropriate box size
+5. Wait for extraction to complete
+6. Execute class_2d with desired number of classes
+7. Wait for classification to complete
+8. Observe the final results and report statistics
 
 Remember: Always follow the Thought → Action → Observation pattern and WAIT for each job to complete!"""
     
@@ -159,6 +190,83 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             self._record_tool_execution("blob_picker", context, error=str(e))
             return f"❌ Error starting blob picker: {str(e)}"
     
+    def _extract_particles_tool(self, input_str: str) -> str:
+        """Tool wrapper for particle extraction."""
+        params: Dict[str, Any] = {}
+        used_params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            
+            # Get box size from params or config
+            box_size_pix = params.get("box_size_pix")
+            if not box_size_pix:
+                box_size_pix = getattr(self.config.workflow, "box_size_pix", None)
+            
+            if not box_size_pix:
+                return "❌ Error: box_size_pix parameter is required for particle extraction"
+            
+            # Get micrographs_job_uid
+            micrographs_job_uid = params.get("micrographs_job_uid")
+            if not micrographs_job_uid:
+                return "❌ Error: micrographs_job_uid parameter is required for particle extraction"
+            
+            used_params = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+                "particles_job_uid": params.get("particles_job_uid"),
+                "micrographs_job_uid": micrographs_job_uid,
+                "box_size_pix": int(box_size_pix),
+                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
+                "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
+            }
+
+            result = self.cryosparc_tools.extract_particles(**used_params)
+            self._record_tool_execution("extract_particles", used_params, result=result)
+            
+            return f"✅ Successfully queued particle extraction job: {result['job_uid']} (box size: {box_size_pix} pixels)"
+            
+        except Exception as e:
+            context = used_params or params or {"raw_input": input_str}
+            self._record_tool_execution("extract_particles", context, error=str(e))
+            return f"❌ Error starting particle extraction: {str(e)}"
+    
+    def _class_2d_tool(self, input_str: str) -> str:
+        """Tool wrapper for 2D classification."""
+        params: Dict[str, Any] = {}
+        used_params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            
+            # Get num_classes from params or config (default 20)
+            num_classes = params.get("num_classes")
+            if not num_classes:
+                num_classes = getattr(self.config.workflow, "num_classes", 20)
+            
+            used_params = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+                "particles_job_uid": params.get("particles_job_uid"),
+                "num_classes": int(num_classes),
+                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "timeout": int(params.get("timeout", self.config.job_management.default_timeout * 2)),  # 2D classification takes longer
+                "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
+            }
+
+            result = self.cryosparc_tools.class_2d(**used_params)
+            self._record_tool_execution("class_2d", used_params, result=result)
+            
+            return f"✅ Successfully queued 2D classification job: {result['job_uid']} ({num_classes} classes)"
+            
+        except Exception as e:
+            context = used_params or params or {"raw_input": input_str}
+            self._record_tool_execution("class_2d", context, error=str(e))
+            return f"❌ Error starting 2D classification: {str(e)}"
+    
     def _reason_about_workflow_tool(self, input_str: str) -> str:
         """Tool for reasoning about particle picking workflow state."""
         try:
@@ -167,35 +275,52 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
 
 **Current State**: {input_str}
 
-**Workflow Overview**:
-1. Blob picker GPU detects particles using GPU-accelerated Gaussian blob detection
-2. Requires completed micrograph selection or CTF estimation job
-3. Key parameters: particle_diameter (min) and diameter_max (max)
+**Complete Workflow Overview**:
+1. **Blob Picker GPU**: Detect particles using GPU-accelerated Gaussian blob detection
+2. **Particle Extraction**: Extract particle images based on picking coordinates
+3. **2D Classification**: Group particles into classes for quality assessment
 
 **Parameter Considerations**:
 - **Particle Diameter (Min)**: Minimum expected size of the protein complex
   * Too small: May pick noise or fragment particles
   * Too large: May miss smaller particles
   * Should be determined from prior knowledge or initial screening
-  * This is the lower bound of the search range
+  * This is the lower bound of the search range for blob picker
 
-- **Diameter Max**: Maximum expected particle size
+- **Diameter Max**: Maximum expected particle size for blob picker
   * Default (2.0 × particle_diameter) works for most cases
   * Increase if particles have significant size variation
   * Defines the upper bound of the search range
-  * Blob picker searches for particles between min and max diameters
+
+- **Box Size (Angstroms)**: Size of extracted particle images
+  * Typically 1.5-2x the particle diameter
+  * Must be large enough to include the entire particle plus context
+  * Affects downstream processing (classification, refinement)
+  * Larger boxes provide more context but increase computational cost
+
+- **Number of Classes**: Number of 2D classes for classification
+  * Default: 20 classes
+  * More classes: Better separation of views and junk, but slower
+  * Fewer classes: Faster but less detailed classification
+  * Typical range: 10-100 depending on dataset size and heterogeneity
+
+**Workflow Dependencies**:
+1. Blob picker requires completed micrograph job (CTF or selection)
+2. Extraction requires completed blob picker job
+3. 2D classification requires completed extraction job
+4. Each step must complete before proceeding to the next
 
 **Next Steps Analysis**:
-- If no picking job running: Start blob_picker with appropriate diameter range
-- If blob picker is running: Wait for completion and analyze results
-- If picking failed: Check parameters and input micrograph quality
+- If no jobs running: Start with blob_picker
+- If blob picker running/done: Proceed to extraction
+- If extraction running/done: Proceed to 2D classification
+- If 2D classification done: Workflow complete, analyze results
 
 **Recommended Actions**:
-- Always verify input job UID is valid and completed
-- Start with conservative particle diameter range
-- Wait for job completion before proceeding
+- Always verify each job UID is valid and completed before using it
+- Wait for each job to complete before starting the next
 - Monitor job status for errors or warnings
-- Review picked particles to validate diameter range
+- Use appropriate parameters based on particle characteristics
 """
             self._record_tool_execution("reason_about_workflow", {"input": input_str}, result={"analysis": reasoning})
             return reasoning

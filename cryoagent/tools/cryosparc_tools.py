@@ -817,6 +817,287 @@ class CryoSPARCTools:
         except Exception as e:
             raise RuntimeError(f"Failed to start blob picker: {e}")
     
+    def extract_particles(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        particles_job_uid: str,
+        micrographs_job_uid: str,
+        box_size_pix: int,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Extract particles from micrographs using particle coordinates.
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            workspace_uid: CryoSPARC workspace UID
+            particles_job_uid: UID of the blob picker or picking job
+            micrographs_job_uid: UID of the micrograph job (CTF or selection)
+            box_size_pix: Box size for extraction in pixels
+            lane: Compute lane to use
+            hostname: Specific hostname to run on
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            check_interval: Time between status checks in seconds
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            # Find project and workspace
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+            
+            # Prepare job parameters for particle extraction
+            job_params = {
+                "box_size_pix": box_size_pix,
+                **kwargs
+            }
+            
+            # Create extraction job with connections to both particles and micrographs
+            # Try different output labels from the picker job and micrograph job
+            connection_errors = []
+            job = None
+            
+            # Try different combinations of output labels
+            particle_labels = ("particles", "particles_all", "picked_particles")
+            micrograph_labels = ("exposures_accepted", "micrographs", "exposures")
+            
+            for particle_label in particle_labels:
+                for micrograph_label in micrograph_labels:
+                    try:
+                        job = workspace.create_job(
+                            "extract_micrographs_multi",  # Particle extraction job type
+                            params=job_params,
+                            connections={
+                                "particles": (particles_job_uid, particle_label),
+                                "micrographs": (micrographs_job_uid, micrograph_label)
+                            }
+                        )
+                        print(f"✅ Connected particle extraction:")
+                        print(f"   - Particles: {particles_job_uid}.{particle_label}")
+                        print(f"   - Micrographs: {micrographs_job_uid}.{micrograph_label}")
+                        break
+                    except Exception as exc:
+                        connection_errors.append((particle_label, micrograph_label, exc))
+                        job = None
+                if job is not None:
+                    break
+            
+            if job is None:
+                error_messages = "\n".join(
+                    f"  particles '{p_label}' + micrographs '{m_label}': {err}" 
+                    for p_label, m_label, err in connection_errors
+                ) or "unknown"
+                raise RuntimeError(
+                    f"Unable to connect particle extraction to job outputs:\n{error_messages}"
+                )
+            
+            # Queue the job
+            used_lane = lane
+            try:
+                job.queue(lane=lane, hostname=hostname)
+            except Exception as queue_error:
+                message = str(queue_error)
+                if (lane is None and hostname is None and "Must specify a lane" in message):
+                    try:
+                        lanes = self.cs.get_lanes()
+                        if not lanes:
+                            raise queue_error
+                        used_lane = lanes[0]["name"]
+                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
+                        job.queue(lane=used_lane)
+                    except Exception:
+                        raise queue_error
+                else:
+                    raise queue_error
+            print(f"Queued particle extraction job: {job.uid}")
+            
+            self._job_cache[job.uid] = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }
+            result = {
+                "job_uid": job.uid,
+                "job_type": "extract_micrographs_multi",
+                "status": "queued",
+                "params": job_params,
+                "connections": {
+                    "particles": particles_job_uid,
+                    "micrographs": micrographs_job_uid
+                },
+                "lane": used_lane,
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }
+            
+            # Wait for completion if requested
+            if wait_for_completion:
+                print(f"⏳ Waiting for particle extraction job {job.uid} to complete...")
+                try:
+                    final_status = self.wait_for_job_completion(
+                        project_uid,
+                        job.uid,
+                        workspace_uid,
+                        timeout,
+                        check_interval
+                    )
+                    result["status"] = final_status["status"]
+                    result["final_status"] = final_status
+                    if final_status["status"] == "completed":
+                        print(f"✅ Particle extraction job {job.uid} completed successfully!")
+                    else:
+                        print(f"⚠️ Particle extraction job {job.uid} finished with status: {final_status['status']}")
+                except TimeoutError:
+                    result["status"] = "timeout"
+                    print(f"⏰ Particle extraction job {job.uid} timed out after {timeout} seconds")
+                except Exception as e:
+                    result["status"] = "error"
+                    print(f"❌ Error monitoring particle extraction job {job.uid}: {e}")
+            
+            return result
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to start particle extraction: {e}")
+    
+    def class_2d(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        particles_job_uid: str,
+        num_classes: int = 20,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 7200,
+        check_interval: int = 30,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Perform 2D classification on extracted particles.
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            workspace_uid: CryoSPARC workspace UID
+            particles_job_uid: UID of the particle extraction job
+            num_classes: Number of 2D classes to generate
+            lane: Compute lane to use
+            hostname: Specific hostname to run on
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            check_interval: Time between status checks in seconds
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            # Find project and workspace
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+            
+            # Prepare job parameters for 2D classification
+            job_params = {
+                "class2D_K": num_classes,  # Number of classes
+                **kwargs
+            }
+            
+            # Create 2D classification job with connections
+            # Try different output labels from the extraction job
+            connection_errors = []
+            job = None
+            for output_label in ("particles", "particles_all", "extracted_particles"):
+                try:
+                    job = workspace.create_job(
+                        "class_2D",  # 2D classification job type
+                        params=job_params,
+                        connections={"particles": (particles_job_uid, output_label)}
+                    )
+                    print(f"✅ Connected 2D classification to {particles_job_uid}.{output_label}")
+                    break
+                except Exception as exc:
+                    connection_errors.append((output_label, exc))
+                    job = None
+            
+            if job is None:
+                error_messages = ", ".join(
+                    f"output '{label}': {err}" for label, err in connection_errors
+                ) or "unknown"
+                raise RuntimeError(
+                    f"Unable to connect 2D classification to extraction job outputs: {error_messages}"
+                )
+            
+            # Queue the job
+            used_lane = lane
+            try:
+                job.queue(lane=lane, hostname=hostname)
+            except Exception as queue_error:
+                message = str(queue_error)
+                if (lane is None and hostname is None and "Must specify a lane" in message):
+                    try:
+                        lanes = self.cs.get_lanes()
+                        if not lanes:
+                            raise queue_error
+                        used_lane = lanes[0]["name"]
+                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
+                        job.queue(lane=used_lane)
+                    except Exception:
+                        raise queue_error
+                else:
+                    raise queue_error
+            print(f"Queued 2D classification job: {job.uid}")
+            
+            self._job_cache[job.uid] = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }
+            result = {
+                "job_uid": job.uid,
+                "job_type": "class_2D",
+                "status": "queued",
+                "params": job_params,
+                "connections": {"particles": particles_job_uid},
+                "lane": used_lane,
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }
+            
+            # Wait for completion if requested
+            if wait_for_completion:
+                print(f"⏳ Waiting for 2D classification job {job.uid} to complete...")
+                try:
+                    final_status = self.wait_for_job_completion(
+                        project_uid,
+                        job.uid,
+                        workspace_uid,
+                        timeout,
+                        check_interval
+                    )
+                    result["status"] = final_status["status"]
+                    result["final_status"] = final_status
+                    if final_status["status"] == "completed":
+                        print(f"✅ 2D classification job {job.uid} completed successfully!")
+                    else:
+                        print(f"⚠️ 2D classification job {job.uid} finished with status: {final_status['status']}")
+                except TimeoutError:
+                    result["status"] = "timeout"
+                    print(f"⏰ 2D classification job {job.uid} timed out after {timeout} seconds")
+                except Exception as e:
+                    result["status"] = "error"
+                    print(f"❌ Error monitoring 2D classification job {job.uid}: {e}")
+            
+            return result
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to start 2D classification: {e}")
+    
     def get_job_output_directory(
         self,
         project_uid: str,

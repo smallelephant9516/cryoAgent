@@ -15,6 +15,30 @@
       "particle_diameter_description": "Minimum expected particle diameter in Angstroms. This is the most critical parameter for blob detection and should match the actual size of your protein complex. Typical range: 50-500 Å.",
       "diameter_max": null,
       "diameter_max_description": "Maximum particle diameter in Angstroms. If null, defaults to 2.0 × particle_diameter. Defines the upper bound of the particle size search range. Useful for particles with size variation."
+    },
+    "particle_extraction": {
+      "box_size_pix": 440,
+      "box_size_pix_description": "Extraction box size in pixels. Should be at least 1.5-2× the particle diameter in pixels. Common values: 128, 256, 320, 384, 512. Larger boxes capture more context but require more memory.",
+      "extract_downscale_factor": 1.0,
+      "extract_downscale_factor_description": "Downsampling factor for extraction. 1.0 = no downsampling. Values like 2.0 or 4.0 reduce box size for initial processing and speed. Typical range: 1.0-4.0.",
+      "bg_radius": null,
+      "bg_radius_description": "Background normalization radius in Angstroms. If null, defaults to particle_diameter/2. Used to normalize particle images by subtracting local background.",
+      "invert_contrast": true,
+      "invert_contrast_description": "Whether to invert image contrast. Set to true if particles appear dark on light background (most common). Set to false if particles appear bright."
+    },
+    "2d_classification": {
+      "num_classes": 50,
+      "num_classes_description": "Number of 2D classes to generate. More classes provide finer particle views but require more particles. Typical range: 20-200 depending on dataset size and particle heterogeneity.",
+      "max_iterations": 20,
+      "max_iterations_description": "Maximum number of classification iterations. More iterations allow better convergence but take longer. Typical range: 15-30.",
+      "initial_resolution": 12.0,
+      "initial_resolution_description": "Initial resolution limit in Angstroms for classification. Start with lower resolution (higher value) for better initial alignment. Typical range: 10-20 Å.",
+      "final_resolution": 6.0,
+      "final_resolution_description": "Final resolution limit in Angstroms. The algorithm progressively increases resolution up to this limit. Should match expected resolution of 2D classes. Typical range: 4-8 Å.",
+      "batch_size_per_class": 200,
+      "batch_size_per_class_description": "Number of particles per class for online-EM updates. Larger values are more stable but slower. Typical range: 100-500.",
+      "force_max_res": false,
+      "force_max_res_description": "Whether to force maximum resolution limit throughout classification. If false, resolution increases adaptively during iterations."
     }
   },
   "react_workflow": {
@@ -26,6 +50,22 @@
         "optional_params": ["diameter_max"],
         "depends_on": [],
         "notes": "Requires completed micrograph selection or CTF estimation job as input. Uses 'blob_picker_gpu' job type in CryoSPARC. The micrographs_job_uid should point to a curate_exposures_v2 job with 'exposures_accepted' output containing curated micrographs."
+      },
+      {
+        "name": "particle_extraction",
+        "description": "Extract particle images from micrographs using coordinates from blob picker. Creates particle stacks with specified box size and optional downsampling.",
+        "required_params": ["micrographs_job_uid", "particle_locations_job_uid", "box_size_pix"],
+        "optional_params": ["extract_downscale_factor", "bg_radius", "invert_contrast"],
+        "depends_on": ["blob_picker"],
+        "notes": "Uses 'extract_micrographs_gpu' job type in CryoSPARC. The particle_locations_job_uid comes from blob_picker output. Box size should accommodate particle diameter with sufficient padding."
+      },
+      {
+        "name": "2d_classification",
+        "description": "Classify extracted particles into 2D class averages using online-EM algorithm. Helps assess particle quality and identify good particles for 3D reconstruction.",
+        "required_params": ["particles_job_uid", "num_classes"],
+        "optional_params": ["max_iterations", "initial_resolution", "final_resolution", "batch_size_per_class", "force_max_res"],
+        "depends_on": ["particle_extraction"],
+        "notes": "Uses 'class_2D' job type in CryoSPARC. The particles_job_uid comes from extraction output. Good 2D classes indicate proper particle picking and extraction. Poor classes suggest issues with picking parameters or sample quality."
       }
     ]
   }
