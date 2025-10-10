@@ -147,3 +147,5 @@ cython_debug/
 # the output directory
 outputs
 .log
+
+.md

@@ -1,52 +1,31 @@
 {
   "stage_info": {
     "name": "particle_picking",
-    "description": "Particle picking stage: Detect and extract particles from micrographs",
+    "description": "Particle picking stage: Detect and extract particles from micrographs using blob picker",
     "version": "1.0.0",
-    "status": "placeholder"
+    "status": "active"
   },
   "input": {
     "micrograph_location": null,
-    "micrograph_location_description": "Location of the micrographs for particle picking. If null, will read from the output of the preprocessing agent. Can be a CryoSPARC job UID (e.g., 'J81') or a path to micrographs."
+    "micrograph_location_description": "Location of the micrographs for particle picking. If null, will read from the output of the preprocessing agent. Can be a CryoSPARC job UID (e.g., 'J84') or a path to micrographs."
   },
   "workflow": {
-    "particle_picking": {
+    "blob_picker": {
       "particle_diameter": 180,
-      "min_particle_quality": 0.3,
-      "max_particle_quality": 1.0,
-      "extraction_box_size": 256,
-      "min_particles_per_micrograph": 10,
-      "max_particles_per_micrograph": 1000
-    },
-    "quality_assessment": {
-      "min_particle_score": 0.5,
-      "max_particle_score": 1.0,
-      "exclude_edge_particles": true,
-      "edge_distance": 50
+      "particle_diameter_description": "Minimum expected particle diameter in Angstroms. This is the most critical parameter for blob detection and should match the actual size of your protein complex. Typical range: 50-500 Å.",
+      "diameter_max": null,
+      "diameter_max_description": "Maximum particle diameter in Angstroms. If null, defaults to 2.0 × particle_diameter. Defines the upper bound of the particle size search range. Useful for particles with size variation."
     }
   },
   "react_workflow": {
     "steps": [
       {
-        "name": "particle_detection",
-        "description": "Detect particles in micrographs using template matching or deep learning",
+        "name": "blob_picker",
+        "description": "Detect particles using GPU-accelerated Gaussian blob detection algorithm. The blob picker identifies circular features (blobs) in micrographs within a specified diameter range.",
         "required_params": ["micrographs_job_uid", "particle_diameter"],
-        "optional_params": ["min_particle_quality", "max_particle_quality"],
-        "depends_on": []
-      },
-      {
-        "name": "particle_extraction",
-        "description": "Extract particle coordinates and create particle stack",
-        "required_params": ["detection_job_uid", "extraction_box_size"],
-        "optional_params": ["min_particles_per_micrograph", "max_particles_per_micrograph"],
-        "depends_on": ["particle_detection"]
-      },
-      {
-        "name": "particle_quality_assessment",
-        "description": "Assess particle quality and filter out low-quality particles",
-        "required_params": ["extraction_job_uid"],
-        "optional_params": ["min_particle_score", "max_particle_score", "exclude_edge_particles"],
-        "depends_on": ["particle_extraction"]
+        "optional_params": ["diameter_max"],
+        "depends_on": [],
+        "notes": "Requires completed micrograph selection or CTF estimation job as input. Uses 'blob_picker_gpu' job type in CryoSPARC. The micrographs_job_uid should point to a curate_exposures_v2 job with 'exposures_accepted' output containing curated micrographs."
       }
     ]
   }

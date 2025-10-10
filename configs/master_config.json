@@ -15,7 +15,7 @@
       {
         "name": "particle_picking",
         "description": "Particle picking stage: Detect and extract particles from micrographs",
-        "enabled": false,
+        "enabled": true,
         "config_file": "configs/particle_picking_config.json",
         "agent_class": "ParticlePickingAgent",
         "required_inputs": ["selected_micrographs", "ctf_parameters"],
@@ -84,7 +84,8 @@
   },
   "workflow": {
     "project_uid": "P1",
-    "workspace_uid": "W1"
+    "workspace_uid": "W1",
+    "particle_diameter": 180.0
   },
   "job_management": {
     "default_timeout": 3600,

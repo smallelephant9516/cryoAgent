@@ -28,6 +28,8 @@ import sys
 import argparse
 import time
 import logging
+import json
+import glob
 from pathlib import Path
 from typing import List, Optional, Dict, Any
 
@@ -48,6 +50,64 @@ def setup_logging(verbose: bool = False):
             logging.FileHandler('cryoagent_master.log')
         ]
     )
+
+
+def check_stage_output_exists(stage: WorkflowStage, outputs_dir: str = "outputs") -> Optional[Dict[str, Any]]:
+    """
+    Check if output file for a given stage already exists.
+    
+    Args:
+        stage: The workflow stage to check
+        outputs_dir: Directory where output files are stored
+        
+    Returns:
+        Dictionary with output file information if exists, None otherwise
+    """
+    outputs_path = Path(outputs_dir)
+    if not outputs_path.exists():
+        return None
+    
+    # Map stage names to output file patterns
+    stage_patterns = {
+        WorkflowStage.PREPROCESSING: "preprocessing_results_*.json",
+        WorkflowStage.PARTICLE_PICKING: "particle_picking_results_*.json",
+        WorkflowStage.RECONSTRUCTION: "reconstruction_results_*.json"
+    }
+    
+    pattern = stage_patterns.get(stage)
+    if not pattern:
+        return None
+    
+    # Search for matching output files
+    search_pattern = str(outputs_path / pattern)
+    matching_files = glob.glob(search_pattern)
+    
+    if not matching_files:
+        return None
+    
+    # Get the most recent file (sorted by modification time)
+    latest_file = max(matching_files, key=lambda f: Path(f).stat().st_mtime)
+    
+    try:
+        # Read and validate the output file
+        with open(latest_file, 'r') as f:
+            output_data = json.load(f)
+        
+        # Check if the stage was completed successfully
+        if output_data.get("status") == "completed":
+            return {
+                "file_path": latest_file,
+                "timestamp": output_data.get("timestamp"),
+                "status": output_data.get("status"),
+                "project_uid": output_data.get("project_uid"),
+                "workspace_uid": output_data.get("workspace_uid"),
+                "data": output_data
+            }
+    except (json.JSONDecodeError, IOError) as e:
+        logging.warning(f"Failed to read output file {latest_file}: {e}")
+        return None
+    
+    return None
 
 
 class CryoAgentMasterWorkflow:
@@ -137,6 +197,27 @@ class CryoAgentMasterWorkflow:
             print("3. 3D Reconstruction (Initial Model → Refinement → Validation)")
             print()
             
+            # Check which stages have already been completed
+            print("🔍 Checking for existing stage outputs...")
+            stages_to_skip = []
+            for stage in WorkflowStage:
+                existing_output = check_stage_output_exists(stage)
+                if existing_output:
+                    stages_to_skip.append(stage)
+                    print(f"   ✅ {stage.value.replace('_', ' ').title()}: Already completed ({existing_output['timestamp']})")
+                else:
+                    print(f"   ⏳ {stage.value.replace('_', ' ').title()}: Will be executed")
+            
+            if stages_to_skip:
+                print()
+                print("ℹ️  Some stages already completed and will be skipped.")
+                print("💡 To re-run all stages, delete or move output files in the outputs/ folder.")
+                print()
+            
+            if len(stages_to_skip) == len(list(WorkflowStage)):
+                print("✅ All stages already completed! No execution needed.")
+                return True
+            
             self.start_time = time.time()
             
             # Execute complete workflow
@@ -179,6 +260,21 @@ class CryoAgentMasterWorkflow:
             return True
         
         try:
+            # Check if preprocessing output already exists
+            existing_output = check_stage_output_exists(WorkflowStage.PREPROCESSING)
+            
+            if existing_output:
+                print("✅ Pre-processing stage already completed!")
+                print("=" * 50)
+                print(f"📄 Output file found: {existing_output['file_path']}")
+                print(f"📅 Completed at: {existing_output['timestamp']}")
+                print(f"🎯 Status: {existing_output['status']}")
+                print(f"📦 Project: {existing_output['project_uid']}, Workspace: {existing_output['workspace_uid']}")
+                print()
+                print("ℹ️  Skipping pre-processing stage to avoid re-running.")
+                print("💡 To re-run, delete or move the output file in the outputs/ folder.")
+                return True
+            
             print("🎯 Starting Pre-processing Workflow")
             print("=" * 50)
             print("This will execute the pre-processing stage:")
@@ -248,9 +344,38 @@ class CryoAgentMasterWorkflow:
                     print(f"   Valid stages: {[s.value for s in WorkflowStage]}")
                     return False
             
+            # Check which stages have already been completed
+            print("🔍 Checking for existing stage outputs...")
+            stages_to_skip = []
+            stages_to_run = []
+            for stage in workflow_stages:
+                existing_output = check_stage_output_exists(stage)
+                if existing_output:
+                    stages_to_skip.append(stage)
+                    print(f"   ✅ {stage.value.replace('_', ' ').title()}: Already completed ({existing_output['timestamp']})")
+                else:
+                    stages_to_run.append(stage)
+                    print(f"   ⏳ {stage.value.replace('_', ' ').title()}: Will be executed")
+            
+            if stages_to_skip:
+                print()
+                print("ℹ️  Some stages already completed and will be skipped.")
+                print("💡 To re-run these stages, delete or move output files in the outputs/ folder.")
+                print()
+            
+            if len(stages_to_skip) == len(workflow_stages):
+                print("✅ All requested stages already completed! No execution needed.")
+                return True
+            
+            if not stages_to_run:
+                print("✅ No stages to execute.")
+                return True
+            
             self.start_time = time.time()
             
-            # Execute custom workflow
+            # IMPORTANT: Pass ALL requested stages to orchestrator, not just stages_to_run
+            # The orchestrator will handle skipping and loading cached outputs correctly
+            # This ensures that dependent stages have access to previous stage outputs
             result = self.orchestrator.execute_stage_workflow(workflow_stages, conversation_id)
             
             # Check if workflow completed successfully

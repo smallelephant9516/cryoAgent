@@ -1,33 +1,25 @@
-"""ReAct-based CryoEM workflow orchestrator.
+"""ReAct-based preprocessing workflow orchestrator."""
 
-NOTE: This is the legacy workflow orchestrator. For new development, use the modular workflows:
-- cryoagent.core.cryosparc_preprocessing.PreprocessingWorkflow - for preprocessing workflows
-- cryoagent.core.cryosparc_picking.PickingWorkflow - for particle picking workflows
-
-This legacy orchestrator is maintained for backward compatibility with existing workflows.
-"""
-
-from typing import Dict, Any, List, Optional, Union
+from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from enum import Enum
 
-from .react_agent import ReActCryoEMAgent
-from ..config.config_loader import CryoAgentConfig
+from .preprocessing_agent import PreprocessingAgent
+from ...config.config_loader import CryoAgentConfig
 
 
-class WorkflowStep(Enum):
-    """Enumeration of workflow steps."""
+class PreprocessingStep(Enum):
+    """Enumeration of preprocessing workflow steps."""
     IMPORT_MOVIES = "import_movies"
     MOTION_CORRECTION = "motion_correction"
     CTF_ESTIMATION = "ctf_estimation"
     MICROGRAPH_SELECTION = "micrograph_selection"
-    BLOB_PICKER = "blob_picker"
 
 
 @dataclass
-class WorkflowResult:
-    """Result of a workflow execution."""
-    step: WorkflowStep
+class PreprocessingResult:
+    """Result of a preprocessing workflow execution."""
+    step: PreprocessingStep
     success: bool
     job_uid: Optional[str] = None
     message: str = ""
@@ -35,29 +27,32 @@ class WorkflowResult:
     reasoning: Optional[str] = None
 
 
-class ReActCryoEMWorkflow:
-    """ReAct-based orchestrator for cryoEM processing workflows."""
+class PreprocessingWorkflow:
+    """ReAct-based orchestrator for cryoEM preprocessing workflows."""
     
-    def __init__(self, agent: ReActCryoEMAgent, config: CryoAgentConfig):
+    def __init__(self, agent: PreprocessingAgent, config: CryoAgentConfig):
         """
-        Initialize the ReAct workflow.
+        Initialize the preprocessing workflow.
         
         Args:
-            agent: ReAct CryoEM agent instance
+            agent: Preprocessing agent instance
             config: Complete configuration object
         """
         self.agent = agent
         self.config = config
-        self.results: List[WorkflowResult] = []
-        self.current_job_uids: Dict[WorkflowStep, str] = {}
+        self.results: List[PreprocessingResult] = []
+        self.current_job_uids: Dict[PreprocessingStep, str] = {}
         self.workflow_state: Dict[str, Any] = {}
     
-    def run_basic_workflow(self, conversation_id: Optional[str] = None) -> List[WorkflowResult]:
+    def run(self, conversation_id: Optional[str] = None) -> List[PreprocessingResult]:
         """
-        Run the basic cryoEM workflow using ReAct approach.
+        Run the complete preprocessing workflow using ReAct approach.
         
+        Args:
+            conversation_id: Optional conversation identifier for memory control
+            
         Returns:
-            List of workflow results for each step
+            List of preprocessing results for each step
         """
         self.results = []
         self.workflow_state = {
@@ -68,22 +63,17 @@ class ReActCryoEMWorkflow:
             "workflow_status": "starting"
         }
         
-        # Use ReAct agent to orchestrate the entire workflow
         workflow_input = self._create_workflow_input()
         
         try:
-            # Execute the workflow using ReAct approach
             result = self.agent.run_react_workflow(workflow_input, conversation_id)
-            
-            # Parse the result to extract individual step results
             self._parse_workflow_result(result)
             
         except Exception as e:
-            # Create error result
-            error_result = WorkflowResult(
-                step=WorkflowStep.IMPORT_MOVIES,  # Default to first step
+            error_result = PreprocessingResult(
+                step=PreprocessingStep.IMPORT_MOVIES,
                 success=False,
-                error=f"Workflow execution failed: {str(e)}",
+                error=f"Preprocessing workflow execution failed: {str(e)}",
                 message="ReAct workflow failed to execute"
             )
             self.results.append(error_result)
@@ -93,7 +83,7 @@ class ReActCryoEMWorkflow:
     def _create_workflow_input(self) -> str:
         """Create the workflow input for the ReAct agent."""
         return f"""
-Execute the complete cryoEM processing workflow with these steps:
+Execute the complete cryoEM preprocessing workflow with these steps:
 
 1. **Import Movies**: Import movie files from {self.config.workflow.movies_path}
    - Pixel size: {self.config.workflow.pixel_size} Å
@@ -129,8 +119,8 @@ Start by reasoning about the workflow state and then proceed step by step.
         execution_log = self.agent.get_tool_execution_log()
 
         if not execution_log:
-            error_result = WorkflowResult(
-                step=WorkflowStep.IMPORT_MOVIES,
+            error_result = PreprocessingResult(
+                step=PreprocessingStep.IMPORT_MOVIES,
                 success=False,
                 error="No CryoSPARC tool calls were recorded during workflow execution",
                 message="Agent response did not trigger any tool invocations",
@@ -150,11 +140,12 @@ Start by reasoning about the workflow state and then proceed step by step.
                 if job_uid:
                     waits[job_uid] = entry["result"]
 
-        for step in [WorkflowStep.IMPORT_MOVIES, WorkflowStep.MOTION_CORRECTION, WorkflowStep.CTF_ESTIMATION, WorkflowStep.MICROGRAPH_SELECTION]:
+        for step in [PreprocessingStep.IMPORT_MOVIES, PreprocessingStep.MOTION_CORRECTION, 
+                     PreprocessingStep.CTF_ESTIMATION, PreprocessingStep.MICROGRAPH_SELECTION]:
             records = tool_entries.get(step.value, [])
             if not records:
                 self.results.append(
-                    WorkflowResult(
+                    PreprocessingResult(
                         step=step,
                         success=False,
                         error="Step was never executed",
@@ -171,7 +162,7 @@ Start by reasoning about the workflow state and then proceed step by step.
 
             if error_message:
                 self.results.append(
-                    WorkflowResult(
+                    PreprocessingResult(
                         step=step,
                         success=False,
                         job_uid=job_uid,
@@ -184,7 +175,7 @@ Start by reasoning about the workflow state and then proceed step by step.
 
             if not job_uid:
                 self.results.append(
-                    WorkflowResult(
+                    PreprocessingResult(
                         step=step,
                         success=False,
                         error="Tool did not return a job UID",
@@ -197,7 +188,7 @@ Start by reasoning about the workflow state and then proceed step by step.
             wait_info = waits.get(job_uid)
             if not wait_info:
                 self.results.append(
-                    WorkflowResult(
+                    PreprocessingResult(
                         step=step,
                         success=False,
                         job_uid=job_uid,
@@ -214,7 +205,7 @@ Start by reasoning about the workflow state and then proceed step by step.
             error = None if success else f"Job status: {status}"
 
             self.results.append(
-                WorkflowResult(
+                PreprocessingResult(
                     step=step,
                     success=success,
                     job_uid=job_uid,
@@ -224,83 +215,8 @@ Start by reasoning about the workflow state and then proceed step by step.
                 )
             )
     
-    def run_custom_workflow(self, steps: List[WorkflowStep]) -> List[WorkflowResult]:
-        """
-        Run a custom workflow with specified steps using ReAct approach.
-        
-        Args:
-            steps: List of workflow steps to execute
-            
-        Returns:
-            List of workflow results
-        """
-        self.results = []
-        
-        # Create custom workflow input
-        workflow_input = self._create_custom_workflow_input(steps)
-        
-        try:
-            result = self.agent.run_react_workflow(workflow_input)
-            self._parse_workflow_result(result)
-        except Exception as e:
-            error_result = WorkflowResult(
-                step=steps[0] if steps else WorkflowStep.IMPORT_MOVIES,
-                success=False,
-                error=f"Custom workflow execution failed: {str(e)}",
-                message="ReAct custom workflow failed to execute"
-            )
-            self.results.append(error_result)
-        
-        return self.results
-    
-    def _create_custom_workflow_input(self, steps: List[WorkflowStep]) -> str:
-        """Create custom workflow input for specified steps."""
-        step_descriptions = []
-        
-        for i, step in enumerate(steps, 1):
-            if step == WorkflowStep.IMPORT_MOVIES:
-                step_descriptions.append(f"""
-{i}. **Import Movies**: Import movie files from {self.config.workflow.movies_path}
-   - Pixel size: {self.config.workflow.pixel_size} Å
-   - Voltage: {self.config.workflow.voltage} kV
-   - CS: {self.config.workflow.cs_mm} mm
-   - Dose: {self.config.workflow.dose} e-/Å²
-""")
-            elif step == WorkflowStep.MOTION_CORRECTION:
-                step_descriptions.append(f"""
-{i}. **Motion Correction**: Correct motion in imported movies
-   - Binning: {self.config.workflow.motion_correction_binning}
-   - Patch size: {self.config.workflow.motion_correction_patch_size}
-""")
-            elif step == WorkflowStep.CTF_ESTIMATION:
-                step_descriptions.append(f"""
-{i}. **CTF Estimation**: Estimate CTF parameters for micrographs
-   - Min resolution: {self.config.workflow.ctf_min_res} Å
-   - Max resolution: {self.config.workflow.ctf_max_res} Å
-""")
-            elif step == WorkflowStep.MICROGRAPH_SELECTION:
-                step_descriptions.append(f"""
-{i}. **Micrograph Selection**: Select micrographs with resolution better than 5 Å
-   - Min resolution threshold: 5.0 Å
-   - Filters out low-quality micrographs
-""")
-        
-        return f"""
-Execute the following custom cryoEM workflow:
-
-{''.join(step_descriptions)}
-
-**Important**: 
-- Each step must complete successfully before the next begins
-- Always check job status and wait for completion
-- Handle any errors gracefully
-- Provide clear status updates throughout the process
-
-Start by reasoning about the workflow state and then proceed step by step.
-"""
-    
     def get_workflow_summary(self) -> Dict[str, Any]:
-        """Get a summary of the workflow execution."""
+        """Get a summary of the preprocessing workflow execution."""
         summary = {
             "total_steps": len(self.results),
             "successful_steps": sum(1 for r in self.results if r.success),
@@ -325,22 +241,6 @@ Start by reasoning about the workflow state and then proceed step by step.
         
         return summary
     
-    def get_current_state(self) -> Dict[str, Any]:
-        """Get the current workflow state."""
-        return {
-            "workflow_state": self.workflow_state,
-            "current_job_uids": self.current_job_uids,
-            "results": [
-                {
-                    "step": r.step.value,
-                    "success": r.success,
-                    "job_uid": r.job_uid,
-                    "message": r.message
-                }
-                for r in self.results
-            ]
-        }
-    
     def reset_workflow(self):
         """Reset the workflow state."""
         self.results = []
@@ -353,3 +253,4 @@ Start by reasoning about the workflow state and then proceed step by step.
             "workflow_status": "reset"
         }
         self.agent.clear_reasoning_history()
+

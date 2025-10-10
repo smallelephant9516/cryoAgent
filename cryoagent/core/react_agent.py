@@ -1,4 +1,12 @@
-"""ReAct (Reasoning + Acting) CryoEM agent implementation."""
+"""ReAct (Reasoning + Acting) CryoEM agent implementation.
+
+NOTE: This is the legacy preprocessing agent. For new development, use the modular agents:
+- cryoagent.core.cryosparc_preprocessing.PreprocessingAgent - for preprocessing workflows
+- cryoagent.core.cryosparc_picking.PickingAgent - for particle picking workflows
+
+These new agents inherit from BaseReActAgent and provide better code organization and reusability.
+This legacy agent is maintained for backward compatibility with existing workflows.
+"""
 
 import time
 from typing import Dict, Any, List, Optional, Tuple
