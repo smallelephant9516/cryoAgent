@@ -1023,5 +1023,7 @@ class MasterOrchestrator:
         
         # Reset all stage agents
         for agent in self.stage_agents.values():
-            if hasattr(agent, 'react_agent') and agent.react_agent:
-                agent.react_agent.clear_reasoning_history()
+            if hasattr(agent, 'modular_agent') and agent.modular_agent:
+                # Modular agents don't have clear_reasoning_history method
+                # They handle memory differently
+                pass
