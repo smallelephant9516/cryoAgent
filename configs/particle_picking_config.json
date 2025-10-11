@@ -39,33 +39,59 @@
       "batch_size_per_class_description": "Number of particles per class for online-EM updates. Larger values are more stable but slower. Typical range: 100-500.",
       "force_max_res": false,
       "force_max_res_description": "Whether to force maximum resolution limit throughout classification. If false, resolution increases adaptively during iterations."
+    },
+    "select_2d_classes": {
+      "top_n_classes": 5,
+      "top_n_classes_description": "Number of top classes to select based on particle count. Used for BOTH selections (first and final). These classes will be used as templates for template-based picking."
+    },
+    "template_picker": {
+      "lowpass_resolution": 20.0,
+      "lowpass_resolution_description": "Low-pass filter resolution in Angstroms for template matching. Higher values (20-30 Å) are more robust for initial picking.",
+      "angle_search_range": 180,
+      "angle_search_range_description": "Angular search range in degrees for template matching. 180 covers all orientations for symmetric particles."
     }
   },
   "react_workflow": {
     "steps": [
       {
         "name": "blob_picker",
-        "description": "Detect particles using GPU-accelerated Gaussian blob detection algorithm. The blob picker identifies circular features (blobs) in micrographs within a specified diameter range.",
+        "description": "Detect particles using GPU-accelerated Gaussian blob detection algorithm. Initial particle detection using circular feature detection.",
         "required_params": ["micrographs_job_uid", "particle_diameter"],
         "optional_params": ["diameter_max"],
         "depends_on": [],
-        "notes": "Requires completed micrograph selection or CTF estimation job as input. Uses 'blob_picker_gpu' job type in CryoSPARC. The micrographs_job_uid should point to a curate_exposures_v2 job with 'exposures_accepted' output containing curated micrographs."
+        "notes": "Uses 'blob_picker_gpu' job type in CryoSPARC. First step in the workflow."
       },
       {
         "name": "particle_extraction",
-        "description": "Extract particle images from micrographs using coordinates from blob picker. Creates particle stacks with specified box size and optional downsampling.",
+        "description": "Extract particle images from micrographs using particle coordinates. Uses same parameters for all extractions.",
         "required_params": ["micrographs_job_uid", "particle_locations_job_uid", "box_size_pix"],
         "optional_params": ["extract_downscale_factor", "bg_radius", "invert_contrast"],
         "depends_on": ["blob_picker"],
-        "notes": "Uses 'extract_micrographs_gpu' job type in CryoSPARC. The particle_locations_job_uid comes from blob_picker output. Box size should accommodate particle diameter with sufficient padding."
+        "notes": "Uses 'extract_micrographs_gpu' job type in CryoSPARC. Executed twice in workflow (after blob picker and after template picker) with same parameters."
       },
       {
         "name": "2d_classification",
-        "description": "Classify extracted particles into 2D class averages using online-EM algorithm. Helps assess particle quality and identify good particles for 3D reconstruction.",
+        "description": "Classify extracted particles into 2D class averages using online-EM algorithm. Uses same parameters for all classifications.",
         "required_params": ["particles_job_uid", "num_classes"],
         "optional_params": ["max_iterations", "initial_resolution", "final_resolution", "batch_size_per_class", "force_max_res"],
         "depends_on": ["particle_extraction"],
-        "notes": "Uses 'class_2D' job type in CryoSPARC. The particles_job_uid comes from extraction output. Good 2D classes indicate proper particle picking and extraction. Poor classes suggest issues with picking parameters or sample quality."
+        "notes": "Uses 'class_2D' job type in CryoSPARC. Executed twice in workflow with same parameters."
+      },
+      {
+        "name": "select_2d_classes",
+        "description": "Select top N 2D classes based on particle count. Uses same parameters for all selections.",
+        "required_params": ["class_2d_job_uid", "top_n_classes"],
+        "optional_params": [],
+        "depends_on": ["2d_classification"],
+        "notes": "Executed twice: once to generate templates for template picker, once for final particle selection. Same parameters both times."
+      },
+      {
+        "name": "template_picker",
+        "description": "Template-based particle picking using selected 2D class averages as templates. More accurate than blob picker.",
+        "required_params": ["micrographs_job_uid", "template_job_uid"],
+        "optional_params": ["lowpass_resolution", "angle_search_range"],
+        "depends_on": ["select_2d_classes"],
+        "notes": "Uses 'template_picker_gpu' job type in CryoSPARC. Uses selected classes from first round as templates."
       }
     ]
   }

@@ -62,6 +62,28 @@ class PickingTools:
         )
     
     @staticmethod
+    def create_select_2d_classes_tool(agent) -> Tool:
+        """Create tool for 2D class selection."""
+        return Tool(
+            name="select_2d_classes",
+            description="Select top N 2D classes based on particle count to use as templates. "
+                       "Required parameters: class_2d_job_uid (from 2D classification). "
+                       "Optional parameters: top_n_classes (default: 5), project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
+            func=agent._select_2d_classes_tool
+        )
+    
+    @staticmethod
+    def create_template_picker_tool(agent) -> Tool:
+        """Create tool for template-based particle picking."""
+        return Tool(
+            name="template_picker",
+            description="Template-based particle picking using 2D class averages as templates. More accurate than blob picker. "
+                       "Required parameters: micrographs_job_uid (from CTF/selection), template_job_uid (from select_2d_classes). "
+                       "Optional parameters: lowpass_resolution (default: 20.0 Å), project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
+            func=agent._template_picker_tool
+        )
+    
+    @staticmethod
     def create_reason_about_workflow_tool(agent) -> Tool:
         """Create tool for reasoning about particle picking workflow."""
         return Tool(

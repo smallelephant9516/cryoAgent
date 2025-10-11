@@ -1,6 +1,7 @@
 """ReAct-based particle picking workflow orchestrator."""
 
-from typing import Dict, Any, List, Optional
+import json
+from typing import Dict, Any, List, Optional, Tuple
 from dataclasses import dataclass
 from enum import Enum
 
@@ -13,6 +14,12 @@ class PickingStep(Enum):
     BLOB_PICKER = "blob_picker"
     EXTRACT_PARTICLES = "extract_particles"
     CLASS_2D = "class_2d"
+    SELECT_2D_CLASSES = "select_2d_classes"
+    TEMPLATE_PICKER = "template_picker"
+    EXTRACT_PARTICLES_2 = "extract_particles_2"
+    CLASS_2D_2 = "class_2d_2"
+    SELECT_FINAL_CLASSES = "select_final_classes"
+    FINAL_EXTRACTION = "final_extraction"
 
 
 @dataclass
@@ -88,19 +95,40 @@ class PickingWorkflow:
         batch_size_per_class = classification_config.get("batch_size_per_class", 200)
         force_max_res = classification_config.get("force_max_res", False)
         
+        # Select 2D classes parameters (used for BOTH selections)
+        select_config = workflow_config.get("select_2d_classes", {})
+        top_n_classes = select_config.get("top_n_classes", 5)
+        
+        # Template picker parameters
+        template_config = workflow_config.get("template_picker", {})
+        lowpass_resolution = template_config.get("lowpass_resolution", 20.0)
+        angle_search_range = template_config.get("angle_search_range", 180)
+        
         return {
+            # Blob picker parameters
             "particle_diameter": particle_diameter,
             "diameter_max": diameter_max,
+            
+            # Particle extraction parameters (used for BOTH extractions)
             "box_size_pix": box_size_pix,
             "extract_downscale_factor": extract_downscale_factor,
             "bg_radius": bg_radius,
             "invert_contrast": invert_contrast,
+            
+            # 2D classification parameters (used for BOTH classifications)
             "num_classes": num_classes,
             "max_iterations": max_iterations,
             "initial_resolution": initial_resolution,
             "final_resolution": final_resolution,
             "batch_size_per_class": batch_size_per_class,
-            "force_max_res": force_max_res
+            "force_max_res": force_max_res,
+            
+            # Selection parameters (used for BOTH selections)
+            "top_n_classes": top_n_classes,
+            
+            # Template picker parameters
+            "lowpass_resolution": lowpass_resolution,
+            "angle_search_range": angle_search_range
         }
     
     def run(
@@ -132,7 +160,14 @@ class PickingWorkflow:
         
         try:
             result = self.agent.run_react_workflow(workflow_input, conversation_id)
-            self._parse_workflow_result(result)
+            execution_log = self.agent.get_tool_execution_log()
+
+            if not self._log_contains_required_calls(execution_log):
+                # Fall back to deterministic execution when the LLM cannot call tools (e.g., DeepSeek)
+                self.agent.clear_tool_execution_log()
+                self._run_direct_workflow(micrographs_job_uid, result)
+            else:
+                self._parse_workflow_result(result)
             
         except Exception as e:
             error_result = PickingResult(
@@ -148,73 +183,91 @@ class PickingWorkflow:
     def _create_workflow_input(self, micrographs_job_uid: str) -> str:
         """Create the workflow input for the ReAct agent using config parameters."""
         # Get parameters from workflow_params
-        particle_diameter = self.workflow_params.get("particle_diameter", 180.0)
-        diameter_max = self.workflow_params.get("diameter_max")
-        box_size_pix = self.workflow_params.get("box_size_pix", 256)
-        num_classes = self.workflow_params.get("num_classes", 50)
-        max_iterations = self.workflow_params.get("max_iterations", 20)
-        initial_resolution = self.workflow_params.get("initial_resolution", 12.0)
-        final_resolution = self.workflow_params.get("final_resolution", 6.0)
+        p = self.workflow_params  # shorthand
         
-        diameter_range = f"{particle_diameter}-{diameter_max}" if diameter_max else f"{particle_diameter}-{particle_diameter * 2.0}"
-        diameter_max_text = f"   - Max diameter: {diameter_max} Å" if diameter_max else f"   - Max diameter: Auto (2.0 × min diameter)"
+        diameter_range = f"{p['particle_diameter']}-{p['diameter_max']}" if p['diameter_max'] else f"{p['particle_diameter']}-{p['particle_diameter'] * 2.0}"
         
         return f"""
-Execute the complete particle picking workflow with 3 steps:
+Execute the complete ADVANCED particle picking workflow with 9 steps (template-based refinement):
 
 **Input**: Micrographs from job {micrographs_job_uid}
 
-**Task**: Detect particles, extract them, and perform 2D classification
+**Task**: Use blob picker for initial detection, then refine with template-based picking for high-quality particles
 
-**Parameters** (from config):
-   - Micrographs Job UID: {micrographs_job_uid}
-   - Min particle diameter: {particle_diameter} Å
-{diameter_max_text}
-   - Diameter search range: {diameter_range} Å
-   - Box size for extraction: {box_size_pix} pixels
-   - Number of 2D classes: {num_classes}
-   - Max iterations: {max_iterations}
-   - Initial resolution: {initial_resolution} Å
-   - Final resolution: {final_resolution} Å
-   - Project: {self.config.workflow.project_uid}
-   - Workspace: {self.config.workflow.workspace_uid}
+**Project**: {self.config.workflow.project_uid} | **Workspace**: {self.config.workflow.workspace_uid}
 
 **Workflow Steps** (execute in order):
 
-1. **Blob Picker**: Detect particles using GPU-accelerated blob detection
-   - Execute blob_picker with particle_diameter={particle_diameter} and diameter_max={diameter_max or particle_diameter * 2.0}
-   - Use micrographs_job_uid={micrographs_job_uid}
-   - Wait for the blob picker job to complete
-   - Record the blob picker job UID
+═══ PHASE 1: Initial Blob-Based Picking ═══
 
-2. **Particle Extraction**: Extract particles from micrographs
-   - Execute extract_particles using:
-     * particles_job_uid (from blob picker)
-     * micrographs_job_uid={micrographs_job_uid} (same as blob picker input)
-     * box_size_pix={box_size_pix}
-   - Wait for the extraction job to complete
-   - Record the extraction job UID
+1. **Blob Picker** - Initial particle detection
+   - Tool: blob_picker
+   - Parameters: micrographs_job_uid={micrographs_job_uid}, particle_diameter={p['particle_diameter']}, diameter_max={p['diameter_max'] or p['particle_diameter'] * 2.0}
+   - Wait for completion and record job UID
 
-3. **2D Classification**: Classify extracted particles
-   - Execute class_2d using the extraction job UID
-   - Set num_classes={num_classes}
-   - Wait for the classification job to complete
-   - Report final results
+2. **Extract Particles (Round 1)** - Extract blob-picked particles
+   - Tool: extract_particles
+   - Parameters: particles_job_uid=[from step 1], micrographs_job_uid={micrographs_job_uid}, box_size_pix={p['box_size_pix']}
+   - Wait for completion and record job UID
 
-**Important**: 
-- Each step must complete successfully before proceeding to the next
-- Always wait for each job to complete before starting the next one
-- Particle extraction requires BOTH particles_job_uid (from blob picker) AND micrographs_job_uid={micrographs_job_uid}
-- Handle any errors gracefully and report them
-- Blob picker uses GPU-accelerated Gaussian blob detection
-- Box size should be ~1.5-2x the particle diameter
-- 2D classification helps assess particle quality and remove junk
+3. **2D Classification (Round 1)** - Classify initial particles
+   - Tool: class_2d
+   - Parameters: particles_job_uid=[from step 2], num_classes={p['num_classes']}
+   - Wait for completion and record job UID
 
-Start by reasoning about the workflow parameters and then proceed step by step.
+═══ PHASE 2: Template-Based Refinement ═══
+
+4. **Select Top Classes** - Select best {p['top_n_classes']} classes as templates
+   - Tool: select_2d_classes
+   - Parameters: class_2d_job_uid=[from step 3], top_n_classes={p['top_n_classes']}
+   - Wait for completion and record job UID
+
+5. **Template Picker** - Re-pick particles using class averages as templates
+   - Tool: template_picker
+   - Parameters: micrographs_job_uid={micrographs_job_uid}, template_job_uid=[from step 4], lowpass_resolution={p['lowpass_resolution']}
+   - More accurate than blob picker - uses actual particle images
+   - Wait for completion and record job UID
+
+6. **Extract Particles (Round 2)** - Extract template-picked particles
+   - Tool: extract_particles
+   - Parameters: particles_job_uid=[from step 5], micrographs_job_uid={micrographs_job_uid}, box_size_pix={p['box_size_pix']} (same as round 1)
+   - Wait for completion and record job UID
+
+7. **2D Classification (Round 2)** - Classify refined particles
+   - Tool: class_2d
+   - Parameters: particles_job_uid=[from step 6], num_classes={p['num_classes']} (same as round 1)
+   - Wait for completion and record job UID
+
+═══ PHASE 3: Final Selection ═══
+
+8. **Select Final Classes** - Select top {p['top_n_classes']} classes from round 2
+   - Tool: select_2d_classes
+   - Parameters: class_2d_job_uid=[from step 7], top_n_classes={p['top_n_classes']} (same as first selection)
+   - These are the highest quality particles
+   - Wait for completion and record job UID
+
+9. **Final Particles** - Particles ready for 3D reconstruction
+   - No additional tool needed - step 8 output contains final selected particles
+   - Report the select job UID from step 8 as final output
+
+**Critical Instructions**:
+- Execute ALL 9 steps in order - do not skip any steps
+- Each step MUST complete successfully before proceeding
+- Always wait_for_job after each CryoSPARC job
+- Track all job UIDs - each step depends on previous outputs
+- Template picking (step 5) requires BOTH micrographs AND templates
+- Both extractions (steps 2 & 6) require BOTH particles AND micrographs
+
+**Expected Outcome**:
+- High-quality particles from 2 rounds of picking and classification
+- Template-based refinement improves particle quality significantly
+- Final selected particles ready for 3D reconstruction
+
+Begin by executing step 1 (blob_picker) and proceed sequentially through all 9 steps.
 """
     
     def _parse_workflow_result(self, result: str) -> None:
-        """Parse the workflow result to extract results for all picking steps."""
+        """Parse the workflow result to extract results for all 9 picking steps."""
         execution_log = self.agent.get_tool_execution_log()
 
         if not execution_log:
@@ -239,31 +292,46 @@ Start by reasoning about the workflow parameters and then proceed step by step.
                 if job_uid:
                     waits[job_uid] = entry["result"]
 
-        # Check all three steps in order
-        for step in [PickingStep.BLOB_PICKER, PickingStep.EXTRACT_PARTICLES, PickingStep.CLASS_2D]:
-            records = tool_entries.get(step.value, [])
+        # Map workflow steps to tool names and their index in the tool call sequence
+        # Format: (step_enum, tool_name, tool_call_index)
+        step_mapping = [
+            (PickingStep.BLOB_PICKER, "blob_picker", 0),
+            (PickingStep.EXTRACT_PARTICLES, "extract_particles", 0),
+            (PickingStep.CLASS_2D, "class_2d", 0),
+            (PickingStep.SELECT_2D_CLASSES, "select_2d_classes", 0),
+            (PickingStep.TEMPLATE_PICKER, "template_picker", 0),
+            (PickingStep.EXTRACT_PARTICLES_2, "extract_particles", 1),
+            (PickingStep.CLASS_2D_2, "class_2d", 1),
+            (PickingStep.SELECT_FINAL_CLASSES, "select_2d_classes", 1),
+        ]
+
+        # Check all steps in order
+        for step_enum, tool_name, tool_index in step_mapping:
+            records = tool_entries.get(tool_name, [])
             
-            if not records:
+            # Check if we have enough invocations for this tool
+            if len(records) <= tool_index:
                 self.results.append(
                     PickingResult(
-                        step=step,
+                        step=step_enum,
                         success=False,
-                        error=f"{step.value} was never executed",
+                        error=f"{tool_name} invocation #{tool_index+1} was never executed",
                         message="No tool invocation recorded",
                         reasoning=result
                     )
                 )
                 continue
 
-            latest_record = records[-1]
-            error_message = latest_record.get("error")
-            result_payload = latest_record.get("result", {})
+            # Get the specific invocation for this step
+            record = records[tool_index]
+            error_message = record.get("error")
+            result_payload = record.get("result", {})
             job_uid = result_payload.get("job_uid") if isinstance(result_payload, dict) else None
 
             if error_message:
                 self.results.append(
                     PickingResult(
-                        step=step,
+                        step=step_enum,
                         success=False,
                         job_uid=job_uid,
                         error=error_message,
@@ -276,7 +344,7 @@ Start by reasoning about the workflow parameters and then proceed step by step.
             if not job_uid:
                 self.results.append(
                     PickingResult(
-                        step=step,
+                        step=step_enum,
                         success=False,
                         error="Tool did not return a job UID",
                         message="Unable to confirm CryoSPARC job submission",
@@ -289,7 +357,7 @@ Start by reasoning about the workflow parameters and then proceed step by step.
             if not wait_info:
                 self.results.append(
                     PickingResult(
-                        step=step,
+                        step=step_enum,
                         success=False,
                         job_uid=job_uid,
                         error="Job completion was not confirmed",
@@ -301,13 +369,13 @@ Start by reasoning about the workflow parameters and then proceed step by step.
 
             status = wait_info.get("status")
             success = status == "completed"
-            step_name = step.value.replace('_', ' ').title()
+            step_name = step_enum.value.replace('_', ' ').title()
             message = f"CryoSPARC {step_name} job {job_uid} completed successfully" if success else f"CryoSPARC {step_name} job {job_uid} finished with status '{status}'"
             error = None if success else f"Job status: {status}"
 
             self.results.append(
                 PickingResult(
-                    step=step,
+                    step=step_enum,
                     success=success,
                     job_uid=job_uid,
                     message=message,
@@ -315,7 +383,19 @@ Start by reasoning about the workflow parameters and then proceed step by step.
                     reasoning=result
                 )
             )
-    
+        
+        # Add final extraction step (no job, just uses output from select_final_classes)
+        if self.results and self.results[-1].success:
+            self.results.append(
+                PickingResult(
+                    step=PickingStep.FINAL_EXTRACTION,
+                    success=True,
+                    job_uid=self.results[-1].job_uid,  # Same as select_final_classes
+                    message="Final particles ready for 3D reconstruction (from select_final_classes output)",
+                    reasoning=result
+                )
+            )
+
     def get_workflow_summary(self) -> Dict[str, Any]:
         """Get a summary of the particle picking workflow execution."""
         summary = {
@@ -355,3 +435,374 @@ Start by reasoning about the workflow parameters and then proceed step by step.
         }
         self.agent.clear_reasoning_history()
 
+    # ------------------------------------------------------------------
+    # Fallback execution helpers
+    # ------------------------------------------------------------------
+
+    def _log_contains_required_calls(self, execution_log: List[Dict[str, Any]]) -> bool:
+        """Check whether the execution log contains any core CryoSPARC tool calls."""
+        if not execution_log:
+            return False
+
+        required_tools = {
+            "blob_picker",
+            "extract_particles",
+            "class_2d",
+            "template_picker",
+            "select_2d_classes"
+        }
+
+        return any(entry.get("tool") in required_tools for entry in execution_log)
+
+    def _run_direct_workflow(self, micrographs_job_uid: str, agent_reasoning: Optional[str]) -> None:
+        """Execute the particle picking workflow without relying on tool-calling LLM support."""
+        fallback_note = "Deterministic fallback execution triggered because no CryoSPARC tool calls were produced by the LLM."
+        combined_reasoning = (agent_reasoning.strip() + "\n\n" if agent_reasoning and agent_reasoning.strip() else "") + fallback_note
+
+        self.workflow_state["fallback_mode"] = True
+        self.workflow_state["fallback_details"] = {
+            "reason": fallback_note,
+            "trigger": "missing_tool_calls"
+        }
+        self.workflow_state["workflow_status"] = "fallback_running"
+
+        job_timeout = int(getattr(self.config.job_management, "default_timeout", 3600))
+        check_interval = int(getattr(self.config.job_management, "status_check_interval", 30))
+
+        p = self.workflow_params
+
+        # Step 1: Blob picker
+        blob_success, blob_job = self._execute_direct_step(
+            step=PickingStep.BLOB_PICKER,
+            tool_callable=self.agent._blob_picker_tool,
+            params=self._build_blob_picker_params(micrographs_job_uid, p, job_timeout, check_interval),
+            wait_timeout=job_timeout,
+            wait_interval=check_interval,
+            reasoning=combined_reasoning
+        )
+        if not blob_success:
+            self.workflow_state["workflow_status"] = "fallback_failed"
+            return
+
+        # Step 2: Particle extraction (round 1)
+        extract_success, extract_job = self._execute_direct_step(
+            step=PickingStep.EXTRACT_PARTICLES,
+            tool_callable=self.agent._extract_particles_tool,
+            params=self._build_extract_params(blob_job, micrographs_job_uid, p, job_timeout, check_interval),
+            wait_timeout=job_timeout,
+            wait_interval=check_interval,
+            reasoning=combined_reasoning
+        )
+        if not extract_success:
+            self.workflow_state["workflow_status"] = "fallback_failed"
+            return
+
+        # Step 3: 2D classification (round 1)
+        class_success, class_job = self._execute_direct_step(
+            step=PickingStep.CLASS_2D,
+            tool_callable=self.agent._class_2d_tool,
+            params=self._build_class2d_params(extract_job, p, job_timeout * 2, check_interval),
+            wait_timeout=job_timeout * 2,
+            wait_interval=check_interval,
+            reasoning=combined_reasoning
+        )
+        if not class_success:
+            self.workflow_state["workflow_status"] = "fallback_failed"
+            return
+
+        # Step 4: Select top classes
+        select_success, select_job = self._execute_direct_step(
+            step=PickingStep.SELECT_2D_CLASSES,
+            tool_callable=self.agent._select_2d_classes_tool,
+            params=self._build_select_params(class_job, p, job_timeout, check_interval),
+            wait_timeout=job_timeout,
+            wait_interval=check_interval,
+            reasoning=combined_reasoning
+        )
+        if not select_success:
+            self.workflow_state["workflow_status"] = "fallback_failed"
+            return
+
+        # Step 5: Template picker
+        template_success, template_job = self._execute_direct_step(
+            step=PickingStep.TEMPLATE_PICKER,
+            tool_callable=self.agent._template_picker_tool,
+            params=self._build_template_picker_params(micrographs_job_uid, select_job, p, job_timeout, check_interval),
+            wait_timeout=job_timeout,
+            wait_interval=check_interval,
+            reasoning=combined_reasoning
+        )
+        if not template_success:
+            self.workflow_state["workflow_status"] = "fallback_failed"
+            return
+
+        # Step 6: Particle extraction (round 2)
+        extract2_success, extract2_job = self._execute_direct_step(
+            step=PickingStep.EXTRACT_PARTICLES_2,
+            tool_callable=self.agent._extract_particles_tool,
+            params=self._build_extract_params(template_job, micrographs_job_uid, p, job_timeout, check_interval),
+            wait_timeout=job_timeout,
+            wait_interval=check_interval,
+            reasoning=combined_reasoning
+        )
+        if not extract2_success:
+            self.workflow_state["workflow_status"] = "fallback_failed"
+            return
+
+        # Step 7: 2D classification (round 2)
+        class2_success, class2_job = self._execute_direct_step(
+            step=PickingStep.CLASS_2D_2,
+            tool_callable=self.agent._class_2d_tool,
+            params=self._build_class2d_params(extract2_job, p, job_timeout * 2, check_interval),
+            wait_timeout=job_timeout * 2,
+            wait_interval=check_interval,
+            reasoning=combined_reasoning
+        )
+        if not class2_success:
+            self.workflow_state["workflow_status"] = "fallback_failed"
+            return
+
+        # Step 8: Final class selection
+        final_select_success, final_select_job = self._execute_direct_step(
+            step=PickingStep.SELECT_FINAL_CLASSES,
+            tool_callable=self.agent._select_2d_classes_tool,
+            params=self._build_select_params(class2_job, p, job_timeout, check_interval),
+            wait_timeout=job_timeout,
+            wait_interval=check_interval,
+            reasoning=combined_reasoning
+        )
+        if not final_select_success:
+            self.workflow_state["workflow_status"] = "fallback_failed"
+            return
+
+        # Step 9: Final extraction summary
+        self.results.append(
+            PickingResult(
+                step=PickingStep.FINAL_EXTRACTION,
+                success=True,
+                job_uid=final_select_job,
+                message="Final particles ready for 3D reconstruction (fallback mode)",
+                reasoning=combined_reasoning
+            )
+        )
+        self.workflow_state["completed_steps"].append(PickingStep.FINAL_EXTRACTION.value)
+        self.workflow_state["workflow_status"] = "fallback_completed"
+
+    def _execute_direct_step(
+        self,
+        *,
+        step: PickingStep,
+        tool_callable,
+        params: Dict[str, Any],
+        wait_timeout: int,
+        wait_interval: int,
+        reasoning: str
+    ) -> Tuple[bool, Optional[str]]:
+        """Execute a single CryoSPARC tool via the agent wrappers and wait for completion."""
+        self.workflow_state["current_step"] = step.value
+
+        job_uid: Optional[str] = None
+
+        try:
+            job_uid, _ = self._invoke_agent_tool(tool_callable, params)
+        except Exception as exc:
+            self.results.append(
+                PickingResult(
+                    step=step,
+                    success=False,
+                    message="Tool execution failed in fallback mode",
+                    error=str(exc),
+                    reasoning=reasoning
+                )
+            )
+            self.workflow_state["failed_steps"].append(step.value)
+            return False, None
+
+        try:
+            wait_result = self._invoke_wait_for_job(job_uid, wait_timeout, wait_interval)
+        except Exception as exc:
+            self.results.append(
+                PickingResult(
+                    step=step,
+                    success=False,
+                    job_uid=job_uid,
+                    message="Failed while waiting for CryoSPARC job completion (fallback mode)",
+                    error=str(exc),
+                    reasoning=reasoning
+                )
+            )
+            self.workflow_state["failed_steps"].append(step.value)
+            return False, job_uid
+
+        status = wait_result.get("status")
+        success = status == "completed"
+        step_name = step.value.replace('_', ' ').title()
+
+        if success:
+            message = f"CryoSPARC {step_name} job {job_uid} completed successfully (fallback mode)"
+            error = None
+            self.workflow_state["completed_steps"].append(step.value)
+        else:
+            message = f"CryoSPARC {step_name} job {job_uid} finished with status '{status}' (fallback mode)"
+            error = f"Job status: {status}"
+            self.workflow_state["failed_steps"].append(step.value)
+
+        self.workflow_state["active_jobs"][step.value] = {
+            "job_uid": job_uid,
+            "status": status,
+            "details": wait_result
+        }
+
+        self.results.append(
+            PickingResult(
+                step=step,
+                success=success,
+                job_uid=job_uid,
+                message=message,
+                error=error,
+                reasoning=reasoning
+            )
+        )
+
+        if success and job_uid:
+            self.current_job_uids[step] = job_uid
+            return True, job_uid
+
+        return False, job_uid
+
+    def _invoke_agent_tool(self, tool_callable, params: Dict[str, Any]) -> Tuple[str, Dict[str, Any]]:
+        """Invoke an agent tool directly and return the recorded result payload."""
+        input_str = json.dumps(params)
+        prior_len = len(self.agent.tool_execution_log)
+        tool_callable(input_str)
+
+        if len(self.agent.tool_execution_log) <= prior_len:
+            raise RuntimeError("Tool execution was not recorded in the execution log")
+
+        entry = self.agent.tool_execution_log[prior_len]
+        if entry.get("error"):
+            raise RuntimeError(entry["error"])
+
+        result_payload = entry.get("result", {})
+        if not isinstance(result_payload, dict):
+            raise RuntimeError("Tool result payload missing or malformed")
+
+        job_uid = result_payload.get("job_uid")
+        if not job_uid:
+            raise RuntimeError("Tool did not return a job UID")
+
+        return job_uid, result_payload
+
+    def _invoke_wait_for_job(self, job_uid: str, timeout: int, check_interval: int) -> Dict[str, Any]:
+        """Invoke the wait_for_job tool and return its status payload."""
+        wait_params = {
+            "job_uid": job_uid,
+            "timeout": timeout,
+            "check_interval": check_interval
+        }
+        input_str = json.dumps(wait_params)
+        prior_len = len(self.agent.tool_execution_log)
+        self.agent._wait_for_job_tool(input_str)
+
+        if len(self.agent.tool_execution_log) <= prior_len:
+            raise RuntimeError("wait_for_job did not produce a log entry")
+
+        entry = self.agent.tool_execution_log[prior_len]
+        if entry.get("error"):
+            raise RuntimeError(entry["error"])
+
+        result_payload = entry.get("result", {})
+        if not isinstance(result_payload, dict):
+            raise RuntimeError("wait_for_job result payload missing or malformed")
+
+        return result_payload
+
+    def _build_blob_picker_params(
+        self,
+        micrographs_job_uid: str,
+        params: Dict[str, Any],
+        timeout: int,
+        check_interval: int
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "micrographs_job_uid": micrographs_job_uid,
+            "particle_diameter": params.get("particle_diameter"),
+            "wait_for_completion": "true",
+            "timeout": timeout,
+            "check_interval": check_interval
+        }
+        if params.get("diameter_max"):
+            payload["diameter_max"] = params.get("diameter_max")
+        return payload
+
+    def _build_extract_params(
+        self,
+        particles_job_uid: str,
+        micrographs_job_uid: str,
+        params: Dict[str, Any],
+        timeout: int,
+        check_interval: int
+    ) -> Dict[str, Any]:
+        return {
+            "particles_job_uid": particles_job_uid,
+            "micrographs_job_uid": micrographs_job_uid,
+            "box_size_pix": params.get("box_size_pix"),
+            "wait_for_completion": "true",
+            "timeout": timeout,
+            "check_interval": check_interval
+        }
+
+    def _build_class2d_params(
+        self,
+        particles_job_uid: str,
+        params: Dict[str, Any],
+        timeout: int,
+        check_interval: int
+    ) -> Dict[str, Any]:
+        return {
+            "particles_job_uid": particles_job_uid,
+            "num_classes": params.get("num_classes"),
+            "wait_for_completion": "true",
+            "timeout": timeout,
+            "check_interval": check_interval
+        }
+
+    def _build_select_params(
+        self,
+        class_2d_job_uid: str,
+        params: Dict[str, Any],
+        timeout: int,
+        check_interval: int
+    ) -> Dict[str, Any]:
+        return {
+            "class_2d_job_uid": class_2d_job_uid,
+            "top_n_classes": params.get("top_n_classes"),
+            "wait_for_completion": "true",
+            "timeout": timeout,
+            "check_interval": check_interval
+        }
+
+    def _build_template_picker_params(
+        self,
+        micrographs_job_uid: str,
+        template_job_uid: str,
+        params: Dict[str, Any],
+        timeout: int,
+        check_interval: int
+    ) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {
+            "micrographs_job_uid": micrographs_job_uid,
+            "template_job_uid": template_job_uid,
+            "lowpass_resolution": params.get("lowpass_resolution"),
+            "particle_diameter": params.get("particle_diameter"),
+            "lowpass_micrograph": params.get("lowpass_resolution"),
+            "blob_picker_job_uid": self.current_job_uids.get(PickingStep.BLOB_PICKER),
+            "wait_for_completion": "true",
+            "timeout": timeout,
+            "check_interval": check_interval
+        }
+        if params.get("angle_search_range") is not None:
+            payload["angular_spacing_deg"] = params.get("angle_search_range")
+        if params.get("min_distance") is not None:
+            payload["min_distance"] = params.get("min_distance")
+        return payload

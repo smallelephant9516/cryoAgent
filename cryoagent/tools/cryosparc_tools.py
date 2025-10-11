@@ -1098,6 +1098,411 @@ class CryoSPARCTools:
         except Exception as e:
             raise RuntimeError(f"Failed to start 2D classification: {e}")
     
+    def select_2d_classes(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        class_2d_job_uid: str,
+        top_n_classes: int = 5,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 300,
+        check_interval: int = 10,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Select top N 2D classes based on particle count.
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            workspace_uid: CryoSPARC workspace UID
+            class_2d_job_uid: UID of the 2D classification job
+            top_n_classes: Number of top classes to select
+            lane: Compute lane to use
+            hostname: Specific hostname to run on
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            check_interval: Time between status checks in seconds
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+
+            job_params: Dict[str, Any] = {}
+            selection_metadata: Optional[Dict[str, Any]] = None
+
+            # Create selection job with both particles and class averages connected
+            job = workspace.create_job(
+                "select_2D",
+                params=job_params,
+                connections={
+                    "particles": (class_2d_job_uid, "particles"),
+                    "templates": (class_2d_job_uid, "class_averages")
+                }
+            )
+            
+            # Queue the job
+            used_lane = lane
+            try:
+                job.queue(lane=lane, hostname=hostname)
+            except Exception as queue_error:
+                message = str(queue_error)
+                if (lane is None and hostname is None and "Must specify a lane" in message):
+                    try:
+                        lanes = self.cs.get_lanes()
+                        if not lanes:
+                            raise queue_error
+                        used_lane = lanes[0]["name"]
+                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
+                        job.queue(lane=used_lane)
+                    except Exception:
+                        raise queue_error
+                else:
+                    raise queue_error
+            print(f"Queued 2D class selection job: {job.uid}")
+            
+            self._job_cache[job.uid] = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }
+            result = {
+                "job_uid": job.uid,
+                "job_type": "select_2D",
+                "status": "queued",
+                "params": job_params,
+                "connections": {
+                    "particles": class_2d_job_uid,
+                    "templates": class_2d_job_uid
+                },
+                "lane": used_lane,
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }
+
+            # Wait for interactive job to become ready (status 'waiting')
+            selected_indices: List[int] = []
+            try:
+                job.wait_for_status("waiting", timeout=timeout)
+            except Exception:
+                # If the job transitions directly to running/completed we continue
+                pass
+
+            # Auto-select top N classes based on particle count
+            try:
+                class_info = job.interact("get_class_info")
+                if isinstance(class_info, list) and class_info:
+                    top_n = max(0, int(top_n_classes)) if top_n_classes is not None else 0
+                    if top_n > 0:
+                        sorted_classes = sorted(
+                            class_info,
+                            key=lambda c: c.get("num_particles_total", 0),
+                            reverse=True
+                        )
+                        selected = sorted_classes[:min(top_n, len(sorted_classes))]
+                        selected_indices = [int(entry["class_idx"]) for entry in selected]
+                        for entry in class_info:
+                            class_idx = int(entry.get("class_idx", -1))
+                            should_select = class_idx in selected_indices
+                            job.interact(
+                                "set_class_selected",
+                                {
+                                    "class_idx": class_idx,
+                                    "selected": should_select
+                                }
+                            )
+                        selection_metadata = {
+                            "requested_top_n": top_n,
+                            "selected_indices": selected_indices,
+                            "class_counts": {
+                                int(entry.get("class_idx", -1)): int(entry.get("num_particles_total", 0))
+                                for entry in selected
+                            }
+                        }
+            except Exception as auto_select_error:
+                print(f"⚠️ Unable to auto-select top classes interactively: {auto_select_error}")
+
+            # Close the interactive session (continues even if finish fails)
+            try:
+                job.interact("finish")
+            except Exception as finish_error:
+                print(f"⚠️ select_2D finish interaction failed: {finish_error}")
+
+            if selected_indices:
+                result["selected_template_indices"] = selected_indices
+            if selection_metadata:
+                result["selection_metadata"] = selection_metadata
+
+            # Wait for completion if requested
+            if wait_for_completion:
+                print(f"⏳ Waiting for 2D class selection job {job.uid} to complete...")
+                try:
+                    final_status = self.wait_for_job_completion(
+                        project_uid,
+                        job.uid,
+                        workspace_uid,
+                        timeout,
+                        check_interval
+                    )
+                    result["status"] = final_status["status"]
+                    result["final_status"] = final_status
+                    if final_status["status"] == "completed":
+                        print(f"✅ 2D class selection job {job.uid} completed successfully!")
+                    else:
+                        print(f"⚠️ 2D class selection job {job.uid} finished with status: {final_status['status']}")
+                except TimeoutError:
+                    result["status"] = "timeout"
+                    print(f"⏰ 2D class selection job {job.uid} timed out after {timeout} seconds")
+                except Exception as e:
+                    result["status"] = "error"
+                    print(f"❌ Error monitoring 2D class selection job {job.uid}: {e}")
+            
+            return result
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to start 2D class selection: {e}")
+    
+    def template_picker(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        micrographs_job_uid: str,
+        template_job_uid: str,
+        lowpass_resolution: float = 20.0,
+        *,
+        particle_diameter: Optional[float] = None,
+        lowpass_micrograph: Optional[float] = None,
+        angular_spacing_deg: Optional[float] = None,
+        min_distance: Optional[float] = None,
+        use_ctf: Optional[bool] = None,
+        blob_picker_job_uid: Optional[str] = None,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Template-based particle picking using 2D class averages as templates.
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            workspace_uid: CryoSPARC workspace UID
+            micrographs_job_uid: UID of the micrograph job (CTF or selection)
+            template_job_uid: UID of the job containing template images (selected 2D classes)
+            lowpass_resolution: Low-pass filter resolution in Angstroms
+            lane: Compute lane to use
+            hostname: Specific hostname to run on
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            check_interval: Time between status checks in seconds
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            # Find project and workspace
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+            
+            job_params: Dict[str, Any] = {}
+
+            if particle_diameter is None and blob_picker_job_uid:
+                particle_diameter = self._infer_particle_diameter_from_blob(project_uid, blob_picker_job_uid)
+
+            if particle_diameter is None:
+                raise RuntimeError(
+                    "Template picker requires particle_diameter but none was provided and it could not be inferred from blob picker job"
+                )
+
+            job_params["diameter"] = float(particle_diameter)
+
+            if lowpass_resolution is not None:
+                job_params["lowpass_res_template"] = float(lowpass_resolution)
+
+            if lowpass_micrograph is not None:
+                job_params["lowpass_res"] = float(lowpass_micrograph)
+            elif lowpass_resolution is not None:
+                job_params.setdefault("lowpass_res", float(lowpass_resolution))
+
+            if angular_spacing_deg is not None:
+                job_params["angular_spacing_deg"] = float(angular_spacing_deg)
+
+            if min_distance is not None:
+                job_params["min_distance"] = float(min_distance)
+
+            if use_ctf is not None:
+                job_params["use_ctf"] = bool(use_ctf)
+
+            # Allow only supported additional parameters from kwargs
+            allowed_optional_params = {
+                "sigma_multiplier",
+                "thresh_low",
+                "thresh_high",
+                "max_prune_dist",
+                "rotation_step",
+                "num_plot",
+                "ice_multiplier"
+            }
+            for key, value in kwargs.items():
+                if key in allowed_optional_params and value is not None:
+                    job_params[key] = value
+            
+            # Create template picker job with connections to both micrographs and templates
+            # Try different combinations of output labels
+            connection_errors = []
+            job = None
+            
+            # Try different combinations of output labels
+            template_labels = (
+                "templates_selected",
+                "class_averages",
+                "templates_excluded",
+                "templates"
+            )
+            micrograph_labels = ("exposures_accepted", "micrographs", "exposures")
+            
+            for template_label in template_labels:
+                for micrograph_label in micrograph_labels:
+                    try:
+                        job = workspace.create_job(
+                            "template_picker_gpu",  # Template picker job type
+                            params=job_params,
+                            connections={
+                                "templates": (template_job_uid, template_label),
+                                "micrographs": (micrographs_job_uid, micrograph_label)
+                            }
+                        )
+                        print(f"✅ Connected template picker:")
+                        print(f"   - Templates: {template_job_uid}.{template_label}")
+                        print(f"   - Micrographs: {micrographs_job_uid}.{micrograph_label}")
+                        break
+                    except Exception as exc:
+                        connection_errors.append((template_label, micrograph_label, exc))
+                        job = None
+                if job is not None:
+                    break
+            
+            if job is None:
+                error_messages = "\n".join(
+                    f"  templates '{t_label}' + micrographs '{m_label}': {err}" 
+                    for t_label, m_label, err in connection_errors
+                ) or "unknown"
+                raise RuntimeError(
+                    f"Unable to connect template picker to job outputs:\n{error_messages}"
+                )
+            
+            # Queue the job
+            used_lane = lane
+            try:
+                job.queue(lane=lane, hostname=hostname)
+            except Exception as queue_error:
+                message = str(queue_error)
+                if (lane is None and hostname is None and "Must specify a lane" in message):
+                    try:
+                        lanes = self.cs.get_lanes()
+                        if not lanes:
+                            raise queue_error
+                        used_lane = lanes[0]["name"]
+                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
+                        job.queue(lane=used_lane)
+                    except Exception:
+                        raise queue_error
+                else:
+                    raise queue_error
+            print(f"Queued template picker job: {job.uid}")
+            
+            self._job_cache[job.uid] = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }
+            result = {
+                "job_uid": job.uid,
+                "job_type": "template_picker_gpu",
+                "status": "queued",
+                "params": job_params,
+                "connections": {
+                    "templates": template_job_uid,
+                    "micrographs": micrographs_job_uid
+                },
+                "lane": used_lane,
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }
+            
+            # Wait for completion if requested
+            if wait_for_completion:
+                print(f"⏳ Waiting for template picker job {job.uid} to complete...")
+                try:
+                    final_status = self.wait_for_job_completion(
+                        project_uid,
+                        job.uid,
+                        workspace_uid,
+                        timeout,
+                        check_interval
+                    )
+                    result["status"] = final_status["status"]
+                    result["final_status"] = final_status
+                    if final_status["status"] == "completed":
+                        print(f"✅ Template picker job {job.uid} completed successfully!")
+                    else:
+                        print(f"⚠️ Template picker job {job.uid} finished with status: {final_status['status']}")
+                except TimeoutError:
+                    result["status"] = "timeout"
+                    print(f"⏰ Template picker job {job.uid} timed out after {timeout} seconds")
+                except Exception as e:
+                    result["status"] = "error"
+                    print(f"❌ Error monitoring template picker job {job.uid}: {e}")
+            
+            return result
+
+        except Exception as e:
+            raise RuntimeError(f"Failed to start template picker: {e}")
+
+    def _infer_particle_diameter_from_blob(
+        self,
+        project_uid: str,
+        blob_job_uid: str
+    ) -> Optional[float]:
+        cache_entry = self._job_cache.get(blob_job_uid, {})
+        cached_params = cache_entry.get("params", {}) if isinstance(cache_entry, dict) else {}
+        diameter = cached_params.get("diameter") or cached_params.get("particle_diameter")
+        if diameter is not None:
+            try:
+                return float(diameter)
+            except (TypeError, ValueError):
+                pass
+
+        try:
+            job = self.cs.find_job(project_uid, blob_job_uid)
+            doc = getattr(job, "doc", {})
+            if isinstance(doc, dict):
+                params_spec = doc.get("params_spec", {})
+                if isinstance(params_spec, dict):
+                    spec_entry = params_spec.get("diameter")
+                    if isinstance(spec_entry, dict) and spec_entry.get("value") is not None:
+                        return float(spec_entry["value"])
+                params_base = doc.get("params_base", {})
+                if isinstance(params_base, dict):
+                    base_entry = params_base.get("diameter")
+                    if isinstance(base_entry, dict) and base_entry.get("value") is not None:
+                        return float(base_entry["value"])
+        except Exception:
+            pass
+
+        if isinstance(diameter, (int, float)):
+            return float(diameter)
+        try:
+            return float(diameter)  # handle numeric strings
+        except (TypeError, ValueError):
+            return None
+
     def get_job_output_directory(
         self,
         project_uid: str,

@@ -35,6 +35,8 @@ class PickingAgent(BaseReActAgent):
             PickingTools.create_blob_picker_tool(self),
             PickingTools.create_extract_particles_tool(self),
             PickingTools.create_class_2d_tool(self),
+            PickingTools.create_select_2d_classes_tool(self),
+            PickingTools.create_template_picker_tool(self),
             PickingTools.create_get_job_status_tool(self),
             PickingTools.create_wait_for_job_tool(self),
             PickingTools.create_reason_about_workflow_tool(self)
@@ -267,6 +269,98 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             self._record_tool_execution("class_2d", context, error=str(e))
             return f"❌ Error starting 2D classification: {str(e)}"
     
+    def _select_2d_classes_tool(self, input_str: str) -> str:
+        """Tool wrapper for 2D class selection."""
+        params: Dict[str, Any] = {}
+        used_params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            
+            # Get top_n_classes from params or config (default 5)
+            top_n_classes = params.get("top_n_classes")
+            if not top_n_classes:
+                top_n_classes = getattr(self.config.workflow, "top_n_classes", 5)
+            
+            used_params = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+                "class_2d_job_uid": params.get("class_2d_job_uid"),
+                "top_n_classes": int(top_n_classes),
+                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "timeout": int(params.get("timeout", 300)),
+                "check_interval": int(params.get("check_interval", 10))
+            }
+
+            result = self.cryosparc_tools.select_2d_classes(**used_params)
+            self._record_tool_execution("select_2d_classes", used_params, result=result)
+            
+            return f"✅ Successfully queued 2D class selection job: {result['job_uid']} (selecting top {top_n_classes} classes)"
+            
+        except Exception as e:
+            context = used_params or params or {"raw_input": input_str}
+            self._record_tool_execution("select_2d_classes", context, error=str(e))
+            return f"❌ Error starting 2D class selection: {str(e)}"
+    
+    def _template_picker_tool(self, input_str: str) -> str:
+        """Tool wrapper for template-based picking."""
+        params: Dict[str, Any] = {}
+        used_params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            
+            # Get micrographs_job_uid
+            micrographs_job_uid = params.get("micrographs_job_uid")
+            if not micrographs_job_uid:
+                return "❌ Error: micrographs_job_uid parameter is required for template picker"
+            
+            # Resolve template picker parameters (fall back to recorded blob picker values if needed)
+            lowpass_resolution = params.get("lowpass_resolution") or getattr(self.config.workflow, "lowpass_resolution", 20.0)
+
+            particle_diameter = params.get("particle_diameter") or getattr(self.config.workflow, "particle_diameter", None)
+            angular_spacing_deg = params.get("angular_spacing_deg") or params.get("angle_search_range")
+            blob_picker_job_uid = params.get("blob_picker_job_uid")
+
+            if not particle_diameter or not blob_picker_job_uid:
+                for entry in reversed(self.tool_execution_log):
+                    if entry.get("tool") == "blob_picker" and isinstance(entry.get("result"), dict):
+                        blob_picker_job_uid = blob_picker_job_uid or entry["result"].get("job_uid")
+                        blob_params = entry["result"].get("params", {})
+                        if not particle_diameter:
+                            particle_diameter = blob_params.get("diameter") or blob_params.get("particle_diameter")
+                        if blob_picker_job_uid and particle_diameter:
+                            break
+
+            used_params = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+                "micrographs_job_uid": micrographs_job_uid,
+                "template_job_uid": params.get("template_job_uid"),
+                "lowpass_resolution": float(lowpass_resolution),
+                "particle_diameter": float(particle_diameter) if particle_diameter else None,
+                "lowpass_micrograph": float(params.get("lowpass_micrograph")) if params.get("lowpass_micrograph") else None,
+                "angular_spacing_deg": float(angular_spacing_deg) if angular_spacing_deg else None,
+                "min_distance": float(params.get("min_distance")) if params.get("min_distance") else None,
+                "use_ctf": params.get("use_ctf"),
+                "blob_picker_job_uid": blob_picker_job_uid,
+                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
+                "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
+            }
+
+            result = self.cryosparc_tools.template_picker(**used_params)
+            self._record_tool_execution("template_picker", used_params, result=result)
+            
+            return f"✅ Successfully queued template picker job: {result['job_uid']} (lowpass: {lowpass_resolution} Å)"
+            
+        except Exception as e:
+            context = used_params or params or {"raw_input": input_str}
+            self._record_tool_execution("template_picker", context, error=str(e))
+            return f"❌ Error starting template picker: {str(e)}"
+    
     def _reason_about_workflow_tool(self, input_str: str) -> str:
         """Tool for reasoning about particle picking workflow state."""
         try:
@@ -328,4 +422,3 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
         except Exception as e:
             self._record_tool_execution("reason_about_workflow", {"input": input_str}, error=str(e))
             return f"❌ Error in workflow reasoning: {str(e)}"
-

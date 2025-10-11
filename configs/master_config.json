@@ -89,7 +89,7 @@
   },
   "job_management": {
     "default_timeout": 3600,
-    "status_check_interval": 1,
+    "status_check_interval": 5,
     "max_retries": 3,
     "retry_delay": 60
   },
