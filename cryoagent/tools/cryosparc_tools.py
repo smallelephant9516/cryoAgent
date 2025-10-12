@@ -1551,3 +1551,356 @@ class CryoSPARCTools:
             
         except Exception as e:
             raise RuntimeError(f"Failed to get job output directory for {job_uid}: {e}")
+    
+    def ab_initio_reconstruction(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        particles_job_uid: str,
+        num_classes: int = 1,
+        initial_resolution: float = 20.0,
+        final_resolution: float = 10.0,
+        max_iterations: int = 50,
+        symmetry: str = "C1",
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Run ab initio reconstruction to generate initial 3D model(s) from 2D particles.
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            workspace_uid: CryoSPARC workspace UID
+            particles_job_uid: UID of the particles job (from 2D selection or extraction)
+            num_classes: Number of 3D classes to generate (default: 1)
+            initial_resolution: Starting resolution in Angstroms (default: 20.0)
+            final_resolution: Target resolution in Angstroms (default: 10.0)
+            max_iterations: Maximum number of iterations (default: 50)
+            symmetry: Symmetry group (e.g., C1, C2, D7) (default: C1)
+            lane: Compute lane to use
+            hostname: Specific hostname to run on
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            check_interval: Time between status checks in seconds
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+            
+            # Create ab initio reconstruction job
+            # Note: Start with empty params - CryoSPARC will use defaults
+            # Parameter names may vary by CryoSPARC version
+            job_params: Dict[str, Any] = {}
+            
+            # Try to add parameters only if we know they're valid
+            # These names might not be correct - let CryoSPARC use defaults for now
+            # TODO: Verify correct parameter names for your CryoSPARC version
+            
+            # Create the job
+            # Note: Use "particles_selected" for connections from selection jobs
+            job = workspace.create_job(
+                "homo_abinit",  # Ab initio reconstruction job type
+                connections={
+                    "particles": (particles_job_uid, "particles_selected")
+                },
+                params=job_params
+            )
+            
+            # Queue the job with lane auto-detection
+            used_lane = lane
+            try:
+                job.queue(lane=lane, hostname=hostname)
+            except Exception as queue_error:
+                message = str(queue_error)
+                if (lane is None and hostname is None and "Must specify a lane" in message):
+                    try:
+                        lanes = self.cs.get_lanes()
+                        if not lanes:
+                            raise queue_error
+                        used_lane = lanes[0]["name"]
+                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
+                        job.queue(lane=used_lane)
+                    except Exception:
+                        raise queue_error
+                else:
+                    raise queue_error
+            print(f"Queued ab initio reconstruction job: {job.uid}")
+            
+            job_uid = job.uid
+            
+            result = {
+                "success": True,
+                "job_uid": job_uid,
+                "job_type": "ab_initio_reconstruction",
+                "message": f"Ab initio reconstruction job {job_uid} queued successfully",
+                "num_classes": num_classes,
+                "initial_resolution": initial_resolution,
+                "final_resolution": final_resolution,
+                "max_iterations": max_iterations,
+                "symmetry": symmetry,
+                "lane": used_lane
+            }
+            
+            if wait_for_completion:
+                status_result = self.wait_for_job_completion(
+                    project_uid=project_uid,
+                    job_uid=job_uid,
+                    timeout=timeout,
+                    check_interval=check_interval
+                )
+                result.update(status_result)
+            
+            return result
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "job_type": "ab_initio_reconstruction",
+                "message": f"Failed to queue ab initio reconstruction job: {str(e)}"
+            }
+    
+    def homogeneous_refinement(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        particles_job_uid: str,
+        volume_job_uid: str,
+        refinement_resolution: Optional[float] = None,
+        symmetry: str = "C1",
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Run homogeneous refinement to refine a single 3D structure.
+        
+        Note: For homogeneous refinement, both particles and volume come from the ab initio job.
+        The connections used are:
+        - particles: (volume_job_uid, "particles_all_classes")
+        - volume: (volume_job_uid, "volume_class_0")
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            workspace_uid: CryoSPARC workspace UID
+            particles_job_uid: UID of particles job (kept for compatibility, not used in connections)
+            volume_job_uid: UID of the ab initio job (used for both particles and volume)
+            refinement_resolution: Target resolution in Angstroms (optional)
+            symmetry: Symmetry group (e.g., C1, C2, D7) (default: C1)
+            lane: Compute lane to use
+            hostname: Specific hostname to run on
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            check_interval: Time between status checks in seconds
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+            
+            # Create homogeneous refinement job
+            # Note: Only set parameters that exist for homo_refine_new job type
+            job_params: Dict[str, Any] = {
+                "refine_defocus_refine": True,  # Enable per-particle defocus refinement
+                "refine_ctf_global_refine": True  # Enable global CTF refinement
+            }
+            
+            # Add refinement resolution if specified
+            if refinement_resolution is not None:
+                job_params["refine_res_max"] = refinement_resolution
+            
+            # Add symmetry if specified and not C1
+            if symmetry and symmetry != "C1":
+                job_params["refine_symmetry"] = symmetry
+            
+            # Create the job
+            # Note: For homogeneous refinement, particles and volume typically come from ab initio
+            # particles: use "particles_all_classes" from ab initio job
+            # volume: use "volume_class_0" for the first (or only) class from ab initio
+            job = workspace.create_job(
+                "homo_refine_new",  # Homogeneous refinement job type
+                connections={
+                    "particles": (volume_job_uid, "particles_all_classes"),
+                    "volume": (volume_job_uid, "volume_class_0")
+                },
+                params=job_params
+            )
+            
+            # Queue the job with lane auto-detection
+            used_lane = lane
+            try:
+                job.queue(lane=lane, hostname=hostname)
+            except Exception as queue_error:
+                message = str(queue_error)
+                if (lane is None and hostname is None and "Must specify a lane" in message):
+                    try:
+                        lanes = self.cs.get_lanes()
+                        if not lanes:
+                            raise queue_error
+                        used_lane = lanes[0]["name"]
+                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
+                        job.queue(lane=used_lane)
+                    except Exception:
+                        raise queue_error
+                else:
+                    raise queue_error
+            print(f"Queued homogeneous refinement job: {job.uid}")
+            
+            job_uid = job.uid
+            
+            result = {
+                "success": True,
+                "job_uid": job_uid,
+                "job_type": "homogeneous_refinement",
+                "message": f"Homogeneous refinement job {job_uid} queued successfully",
+                "symmetry": symmetry,
+                "refinement_resolution": refinement_resolution,
+                "lane": used_lane
+            }
+            
+            if wait_for_completion:
+                status_result = self.wait_for_job_completion(
+                    project_uid=project_uid,
+                    job_uid=job_uid,
+                    timeout=timeout,
+                    check_interval=check_interval
+                )
+                result.update(status_result)
+            
+            return result
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "job_type": "homogeneous_refinement",
+                "message": f"Failed to queue homogeneous refinement job: {str(e)}"
+            }
+    
+    def heterogeneous_refinement(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        particles_job_uid: str,
+        volume_job_uids: List[str],
+        num_classes: Optional[int] = None,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Run heterogeneous refinement to refine multiple 3D structures simultaneously.
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            workspace_uid: CryoSPARC workspace UID
+            particles_job_uid: UID of the particles job
+            volume_job_uids: List of volume job UIDs (from ab initio)
+            num_classes: Number of classes (default: length of volume_job_uids)
+            lane: Compute lane to use
+            hostname: Specific hostname to run on
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            check_interval: Time between status checks in seconds
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+            
+            # Determine number of classes
+            if num_classes is None:
+                num_classes = len(volume_job_uids)
+            
+            # Create heterogeneous refinement job
+            # Note: Only set parameters that exist for hetrefine_new job type
+            job_params: Dict[str, Any] = {
+                "hetrefine_N": num_classes  # Number of classes
+            }
+            
+            # Build connections for all volumes
+            connections = {
+                "particles": (particles_job_uid, "particles_selected" if "select" in particles_job_uid.lower() else "particles")
+            }
+            
+            # Add volume connections
+            for i, volume_job_uid in enumerate(volume_job_uids):
+                connections[f"volume_{i}"] = (volume_job_uid, "volume")
+            
+            # Create the job
+            job = workspace.create_job(
+                "hetrefine_new",  # Heterogeneous refinement job type
+                connections=connections,
+                params=job_params
+            )
+            
+            # Queue the job with lane auto-detection
+            used_lane = lane
+            try:
+                job.queue(lane=lane, hostname=hostname)
+            except Exception as queue_error:
+                message = str(queue_error)
+                if (lane is None and hostname is None and "Must specify a lane" in message):
+                    try:
+                        lanes = self.cs.get_lanes()
+                        if not lanes:
+                            raise queue_error
+                        used_lane = lanes[0]["name"]
+                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
+                        job.queue(lane=used_lane)
+                    except Exception:
+                        raise queue_error
+                else:
+                    raise queue_error
+            print(f"Queued heterogeneous refinement job: {job.uid}")
+            
+            job_uid = job.uid
+            
+            result = {
+                "success": True,
+                "job_uid": job_uid,
+                "job_type": "heterogeneous_refinement",
+                "message": f"Heterogeneous refinement job {job_uid} queued successfully",
+                "num_classes": num_classes,
+                "num_volumes": len(volume_job_uids),
+                "lane": used_lane
+            }
+            
+            if wait_for_completion:
+                status_result = self.wait_for_job_completion(
+                    project_uid=project_uid,
+                    job_uid=job_uid,
+                    timeout=timeout,
+                    check_interval=check_interval
+                )
+                result.update(status_result)
+            
+            return result
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "job_type": "heterogeneous_refinement",
+                "message": f"Failed to queue heterogeneous refinement job: {str(e)}"
+            }

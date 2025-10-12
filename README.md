@@ -213,6 +213,20 @@ correction using the imported movies.
 - **CryoSPARCTools**: Direct interface to CryoSPARC operations
 - **ConfigLoader**: JSON-based configuration management with validation
 
+### Modular Stage Agents
+
+CryoAgent includes specialized modular agents for each stage of the cryoEM workflow:
+
+- **PreprocessingAgent**: Handles movie import, motion correction, CTF estimation, and micrograph selection
+- **PickingAgent**: Manages particle detection using blob picker and template-based picking with 2D classification
+- **ReconstructionAgent**: Generates initial 3D models using ab initio reconstruction (see [3D Reconstruction Agent Documentation](docs/3D_RECONSTRUCTION_AGENT.md))
+
+Each modular agent follows the same architectural pattern with:
+- ReAct framework implementation
+- Dedicated tools and workflow orchestration
+- JSON-based configuration
+- Comprehensive documentation
+
 ### ReAct Workflow Process
 
 1. **Reasoning Phase**: Agent analyzes current state and determines next actions

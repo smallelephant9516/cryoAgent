@@ -698,14 +698,17 @@ class ParticlePickingAgent(StageAgent):
 
 
 class ReconstructionAgent(StageAgent):
-    """Specialized agent for 3D reconstruction stage (placeholder - not yet implemented)."""
+    """Specialized agent for 3D reconstruction stage."""
     
     def __init__(self, config_path: str):
         super().__init__("reconstruction", config_path)
     
     def initialize(self) -> bool:
-        """Initialize the reconstruction agent (placeholder)."""
+        """Initialize the reconstruction agent."""
         try:
+            from .cryosparc_reconstruction import ReconstructionAgent as ModularReconstructionAgent
+            from .cryosparc_reconstruction import ReconstructionWorkflow
+            
             # Load basic configuration
             master_config_path = "configs/master_config.json"
             config_loader = ConfigLoader(self.config_path, master_config_path)
@@ -714,11 +717,11 @@ class ReconstructionAgent(StageAgent):
             # Initialize CryoSPARC tools
             self.cryosparc_tools = CryoSPARCTools(self.config.cryosparc)
             
-            # Note: No modular reconstruction agent yet - this is a placeholder
-            self.modular_agent = None
-            self.modular_workflow = None
+            # Initialize modular reconstruction agent and workflow
+            self.modular_agent = ModularReconstructionAgent(self.cryosparc_tools, self.config)
+            self.modular_workflow = ReconstructionWorkflow(self.modular_agent, self.config, stage_config_path=self.config_path)
             
-            self.logger.info(f"Stage agent {self.stage_name} initialized (placeholder - not yet implemented)")
+            self.logger.info(f"Stage agent {self.stage_name} initialized with modular reconstruction agent")
             return True
             
         except Exception as e:
@@ -729,21 +732,247 @@ class ReconstructionAgent(StageAgent):
         """Execute the 3D reconstruction stage."""
         start_time = time.time()
         
-        # Placeholder implementation
-        self.logger.info("3D reconstruction stage not yet implemented")
+        try:
+            # Get particles job UID from context (from picking stage)
+            particles_job_uid = context.stage_outputs.get("picked_particles")
+            if not particles_job_uid:
+                # Try alternative sources
+                particles_job_uid = context.stage_outputs.get("selected_particles")
+                if not particles_job_uid:
+                    particles_job_uid = context.stage_outputs.get("final_selection_job_uid")
+            
+            # If still not found, try to read from particle picking output JSON file
+            if not particles_job_uid:
+                particles_job_uid = self._get_particles_from_output_file()
+            
+            if not particles_job_uid:
+                return StageResult(
+                    stage=WorkflowStage.RECONSTRUCTION,
+                    success=False,
+                    error="No particles job UID found in context or output files. Please complete particle picking first.",
+                    execution_time=time.time() - start_time
+                )
+            
+            self.logger.info(f"Starting 3D reconstruction with particles from job {particles_job_uid}")
+            
+            # Run the modular workflow
+            results = self.modular_workflow.run(
+                particles_job_uid=particles_job_uid,
+                conversation_id=conversation_id,
+                run_refinement=False  # Only run ab initio by default
+            )
+            
+            # Extract stage outputs
+            stage_outputs = self._extract_reconstruction_outputs(results)
+            
+            # Validate results
+            validation = self._validate_reconstruction_results(stage_outputs)
+            
+            if not validation["success"]:
+                return StageResult(
+                    stage=WorkflowStage.RECONSTRUCTION,
+                    success=False,
+                    error=validation["error"],
+                    stage_outputs=stage_outputs,
+                    execution_time=time.time() - start_time
+                )
+            
+            # Save results to JSON
+            output_file = self._save_reconstruction_results(stage_outputs, context, success=True)
+            
+            return StageResult(
+                stage=WorkflowStage.RECONSTRUCTION,
+                success=True,
+                stage_outputs=stage_outputs,
+                execution_time=time.time() - start_time,
+                output_file=output_file
+            )
+            
+        except Exception as e:
+            self.logger.error(f"3D reconstruction stage failed: {e}")
+            return StageResult(
+                stage=WorkflowStage.RECONSTRUCTION,
+                success=False,
+                error=str(e),
+                execution_time=time.time() - start_time
+            )
+    
+    def _extract_reconstruction_outputs(self, results: List) -> Dict[str, Any]:
+        """Extract job UIDs and metadata from reconstruction workflow results."""
+        stage_outputs = {
+            "ab_initio_job_uid": None,
+            "homogeneous_refinement_job_uid": None,
+            "heterogeneous_refinement_job_uid": None,
+            "final_volume_job_uid": None,
+            "reconstruction_type": "ab_initio"
+        }
         
-        return StageResult(
-            stage=WorkflowStage.RECONSTRUCTION,
-            success=False,
-            error="3D reconstruction stage not yet implemented",
-            execution_time=time.time() - start_time
-        )
+        # Extract job UIDs from results
+        for result in results:
+            step_name = result.step.value
+            if result.success and result.job_uid:
+                if step_name == "ab_initio_reconstruction":
+                    stage_outputs["ab_initio_job_uid"] = result.job_uid
+                    stage_outputs["final_volume_job_uid"] = result.job_uid
+                elif step_name == "homogeneous_refinement":
+                    stage_outputs["homogeneous_refinement_job_uid"] = result.job_uid
+                    stage_outputs["final_volume_job_uid"] = result.job_uid
+                    stage_outputs["reconstruction_type"] = "homogeneous"
+                elif step_name == "heterogeneous_refinement":
+                    stage_outputs["heterogeneous_refinement_job_uid"] = result.job_uid
+                    stage_outputs["final_volume_job_uid"] = result.job_uid
+                    stage_outputs["reconstruction_type"] = "heterogeneous"
+        
+        # Get volume output directory if available
+        final_volume_job_uid = stage_outputs.get("final_volume_job_uid")
+        project_uid = getattr(self.config.workflow, "project_uid", None)
+        
+        if final_volume_job_uid and project_uid:
+            try:
+                job_info = self.cryosparc_tools.get_job_output_directory(project_uid, final_volume_job_uid)
+                job_directory = job_info.get("job_directory")
+                stage_outputs["volume_location"] = job_directory
+                stage_outputs["volume_job_metadata"] = job_info
+                
+                # Add absolute paths for final volume
+                if job_directory:
+                    from pathlib import Path
+                    job_path = Path(job_directory)
+                    stage_outputs["final_volume_absolute_path"] = str(job_path.absolute())
+                    
+            except Exception as exc:
+                self.logger.warning(
+                    "Failed to resolve volume job directory for %s: %s",
+                    final_volume_job_uid,
+                    exc
+                )
+        
+        return stage_outputs
+    
+    def _get_particles_from_output_file(self) -> Optional[str]:
+        """
+        Read particles job UID from particle picking output JSON file.
+        
+        Returns:
+            Particles job UID if found, None otherwise
+        """
+        import json
+        import glob
+        from pathlib import Path
+        
+        try:
+            # Find the most recent particle picking results file
+            outputs_path = Path("outputs")
+            if not outputs_path.exists():
+                return None
+            
+            # Search for particle picking result files
+            result_files = list(outputs_path.glob("particle_picking_results_*.json"))
+            if not result_files:
+                return None
+            
+            # Get the most recent file
+            latest_file = max(result_files, key=lambda f: f.stat().st_mtime)
+            self.logger.info(f"Reading particles job UID from {latest_file}")
+            
+            # Read the JSON file
+            with open(latest_file, 'r') as f:
+                picking_results = json.load(f)
+            
+            # Try to get particles job UID from various fields
+            # First priority: final_selection_job_uid (from select_2d_classes)
+            particles_job_uid = picking_results.get("job_uids", {}).get("final_selection")
+            
+            if not particles_job_uid:
+                # Second priority: selected_particles_job_uid in outputs
+                particles_job_uid = picking_results.get("outputs", {}).get("selected_particles_job_uid")
+            
+            if not particles_job_uid:
+                # Third priority: classified_particles (2D classification output)
+                particles_job_uid = picking_results.get("outputs", {}).get("classified_particles")
+            
+            if not particles_job_uid:
+                # Fourth priority: extracted_particles
+                particles_job_uid = picking_results.get("outputs", {}).get("extracted_particles")
+            
+            if particles_job_uid:
+                self.logger.info(f"Found particles job UID from output file: {particles_job_uid}")
+            else:
+                self.logger.warning("No particles job UID found in particle picking output file")
+            
+            return particles_job_uid
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to read particles job UID from output file: {e}")
+            return None
+    
+    def _validate_reconstruction_results(self, stage_outputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate that the 3D reconstruction workflow completed successfully."""
+        ab_initio_job_uid = stage_outputs.get("ab_initio_job_uid")
+        
+        if not ab_initio_job_uid:
+            return {
+                "success": False,
+                "error": "Ab initio reconstruction did not complete successfully"
+            }
+        
+        return {
+            "success": True,
+            "error": None
+        }
+    
+    def _save_reconstruction_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True) -> str:
+        """Save 3D reconstruction results to a JSON file."""
+        import datetime
+        from pathlib import Path
+        
+        # Create output directory if it doesn't exist
+        output_dir = Path("outputs")
+        output_dir.mkdir(exist_ok=True)
+        
+        # Create reconstruction results dictionary
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        status = "completed" if success else "failed"
+        
+        reconstruction_results = {
+            "stage": "3d_reconstruction",
+            "status": status,
+            "timestamp": timestamp,
+            "project_uid": context.project_uid,
+            "workspace_uid": context.workspace_uid,
+            "input_particles_job_uid": context.stage_outputs.get("picked_particles"),
+            "reconstruction_type": stage_outputs.get("reconstruction_type"),
+            "job_uids": {
+                "ab_initio": stage_outputs.get("ab_initio_job_uid"),
+                "homogeneous_refinement": stage_outputs.get("homogeneous_refinement_job_uid"),
+                "heterogeneous_refinement": stage_outputs.get("heterogeneous_refinement_job_uid"),
+                "final_volume": stage_outputs.get("final_volume_job_uid")
+            },
+            "outputs": {
+                "final_volume_job_uid": stage_outputs.get("final_volume_job_uid"),
+                "volume_location": stage_outputs.get("volume_location"),
+                "final_volume_absolute_path": stage_outputs.get("final_volume_absolute_path")
+            },
+            "usage_notes": {
+                "next_stage": "refinement_or_analysis",
+                "volume_usage": "Use the final_volume_job_uid for further refinement or analysis",
+                "final_volume_path": "The final_volume_absolute_path field contains the absolute path to the job directory with the reconstructed volume"
+            }
+        }
+        
+        # Save to JSON file
+        output_file = output_dir / f"3d_reconstruction_results_{timestamp}.json"
+        with open(output_file, 'w') as f:
+            json.dump(reconstruction_results, f, indent=2)
+        
+        self.logger.info(f"3D reconstruction results saved to {output_file}")
+        return str(output_file)
     
     def get_stage_description(self) -> str:
-        return "3D Reconstruction: Generate initial models and refine 3D structures"
+        return "3D Reconstruction: Generate initial models using ab initio reconstruction"
     
     def get_required_inputs(self) -> List[str]:
-        return ["picked_particles", "particle_coordinates"]
+        return ["picked_particles", "selected_particles"]
 
 
 class MasterOrchestrator:
