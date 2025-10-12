@@ -21,6 +21,7 @@ This approach provides transparent, reliable workflow execution with intelligent
 - **🔄 Error Handling**: Robust error handling and job status monitoring
 - **📊 Workflow Monitoring**: Real-time workflow state tracking and reasoning history
 - **🎯 Unified Interface**: Single script for all workflow types
+- **📁 Output Path Tracking**: Automatic absolute path resolution for final picking results (see [docs/particle_picking_output_format.md](docs/particle_picking_output_format.md))
 
 ## 🚀 Quick Start
 

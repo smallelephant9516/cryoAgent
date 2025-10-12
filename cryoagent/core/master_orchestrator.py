@@ -538,22 +538,80 @@ class ParticlePickingAgent(StageAgent):
             "blob_picker_job_uid": None,
             "extraction_job_uid": None,
             "classification_2d_job_uid": None,
+            "template_picker_job_uid": None,
+            "extraction_job_uid_round2": None,
+            "classification_2d_job_uid_round2": None,
+            "initial_selection_job_uid": None,
+            "final_selection_job_uid": None,
             "picked_particles": None,
             "extracted_particles": None,
-            "classified_particles": None
+            "classified_particles": None,
+            "selected_particles_location": None,
+            "selected_particles_job_metadata": None
         }
-        
+
         # Extract job UIDs from modular workflow results
         for result in results:
             step_name = result.step.value
             if result.success and result.job_uid:
                 if step_name == "blob_picker":
                     stage_outputs["blob_picker_job_uid"] = result.job_uid
+                    stage_outputs["picked_particles"] = result.job_uid
                 elif step_name == "extract_particles":
-                    stage_outputs["extraction_job_uid"] = result.job_uid
+                    if stage_outputs["extraction_job_uid"] is None:
+                        stage_outputs["extraction_job_uid"] = result.job_uid
+                    else:
+                        stage_outputs["extraction_job_uid_round2"] = result.job_uid
+                    stage_outputs["extracted_particles"] = result.job_uid
                 elif step_name == "class_2d":
-                    stage_outputs["classification_2d_job_uid"] = result.job_uid
-        
+                    if stage_outputs["classification_2d_job_uid"] is None:
+                        stage_outputs["classification_2d_job_uid"] = result.job_uid
+                    else:
+                        stage_outputs["classification_2d_job_uid_round2"] = result.job_uid
+                    stage_outputs["classified_particles"] = result.job_uid
+                elif step_name == "select_2d_classes":
+                    stage_outputs["initial_selection_job_uid"] = result.job_uid
+                elif step_name == "template_picker":
+                    stage_outputs["template_picker_job_uid"] = result.job_uid
+                elif step_name == "select_final_classes":
+                    stage_outputs["final_selection_job_uid"] = result.job_uid
+                elif step_name == "final_extraction" and stage_outputs.get("final_selection_job_uid") is None:
+                    # Fallback mode returns final particles as last entry
+                    stage_outputs["final_selection_job_uid"] = result.job_uid
+
+        final_job_uid = stage_outputs.get("final_selection_job_uid")
+        project_uid = getattr(self.config.workflow, "project_uid", None)
+
+        if final_job_uid and project_uid:
+            try:
+                job_info = self.cryosparc_tools.get_job_output_directory(project_uid, final_job_uid)
+                job_directory = job_info.get("job_directory")
+                stage_outputs["selected_particles_location"] = job_directory
+                stage_outputs["selected_particles_job_metadata"] = job_info
+                
+                # Add absolute paths for final particle outputs
+                if job_directory:
+                    from pathlib import Path
+                    job_path = Path(job_directory)
+                    stage_outputs["final_particles_absolute_path"] = str(job_path.absolute())
+                    
+                    # Common output file patterns in CryoSPARC selection jobs
+                    particles_cs_file = job_path / "particles_selected.cs"
+                    if particles_cs_file.exists():
+                        stage_outputs["final_particles_cs_file"] = str(particles_cs_file.absolute())
+                    
+                    # Also check for passthrough files
+                    passthrough_file = job_path / "particles_selected_passthrough.cs"
+                    if passthrough_file.exists():
+                        stage_outputs["final_particles_passthrough_file"] = str(passthrough_file.absolute())
+                        
+            except Exception as exc:
+                self.logger.warning(
+                    "Failed to resolve selected particle job directory for %s: %s",
+                    final_job_uid,
+                    exc
+                )
+
         return stage_outputs
     
     def _validate_picking_results(self, stage_outputs: Dict[str, Any]) -> Dict[str, Any]:
@@ -605,17 +663,28 @@ class ParticlePickingAgent(StageAgent):
             "job_uids": {
                 "blob_picker": stage_outputs.get("blob_picker_job_uid"),
                 "particle_extraction": stage_outputs.get("extraction_job_uid"),
-                "2d_classification": stage_outputs.get("classification_2d_job_uid")
+                "2d_classification": stage_outputs.get("classification_2d_job_uid"),
+                "template_picker": stage_outputs.get("template_picker_job_uid"),
+                "particle_extraction_round2": stage_outputs.get("extraction_job_uid_round2"),
+                "2d_classification_round2": stage_outputs.get("classification_2d_job_uid_round2"),
+                "final_selection": stage_outputs.get("final_selection_job_uid")
             },
             "outputs": {
                 "picked_particles": stage_outputs.get("picked_particles"),
                 "extracted_particles": stage_outputs.get("extracted_particles"),
-                "classified_particles": stage_outputs.get("classified_particles")
+                "classified_particles": stage_outputs.get("classified_particles"),
+                "selected_particles_job_uid": stage_outputs.get("final_selection_job_uid"),
+                "selected_particles_location": stage_outputs.get("selected_particles_location"),
+                "final_particles_absolute_path": stage_outputs.get("final_particles_absolute_path"),
+                "final_particles_cs_file": stage_outputs.get("final_particles_cs_file"),
+                "final_particles_passthrough_file": stage_outputs.get("final_particles_passthrough_file")
             },
             "usage_notes": {
                 "next_stage": "3d_reconstruction",
                 "classification_2d_job_uid_usage": "Use the 2d_classification job UID for 3D reconstruction or further refinement",
-                "particle_classes": "2D classes are stored in the classification job output and can be used for particle selection"
+                "particle_classes": "2D classes are stored in the classification job output and can be used for particle selection",
+                "final_particles_path": "The final_particles_absolute_path field contains the absolute path to the job directory with final selected particles",
+                "final_particles_files": "The final_particles_cs_file and final_particles_passthrough_file fields contain absolute paths to specific particle data files if they exist"
             }
         }
         
