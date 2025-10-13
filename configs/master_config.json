@@ -25,7 +25,7 @@
         "name": "reconstruction",
         "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
         "enabled": false,
-        "config_file": "configs/reconstruction_config.json",
+        "config_file": "configs/3d_reconstruction_config.json",
         "agent_class": "ReconstructionAgent",
         "required_inputs": ["picked_particles", "particle_coordinates"],
         "outputs": ["final_structure", "resolution", "reconstruction_job_uid"]

@@ -1605,11 +1605,26 @@ class CryoSPARCTools:
             # TODO: Verify correct parameter names for your CryoSPARC version
             
             # Create the job
-            # Note: Use "particles_selected" for connections from selection jobs
+            # Note: Use "particles_selected" for connections from selection jobs, 
+            # "particles" for extraction or classification jobs
+            # Determine the correct output slot based on the job type
+            particles_output_slot = "particles"
+            try:
+                # Try to determine the job type to use the correct output slot
+                source_job = project.find_job(particles_job_uid)
+                job_type = source_job.doc.get("type", "")
+                # Selection jobs use "particles_selected", others use "particles"
+                if "select" in job_type.lower():
+                    particles_output_slot = "particles_selected"
+            except Exception:
+                # Fallback: Check if job UID contains "select" pattern
+                if "select" in particles_job_uid.lower():
+                    particles_output_slot = "particles_selected"
+            
             job = workspace.create_job(
                 "homo_abinit",  # Ab initio reconstruction job type
                 connections={
-                    "particles": (particles_job_uid, "particles_selected")
+                    "particles": (particles_job_uid, particles_output_slot)
                 },
                 params=job_params
             )

@@ -557,24 +557,26 @@ class ParticlePickingAgent(StageAgent):
                 if step_name == "blob_picker":
                     stage_outputs["blob_picker_job_uid"] = result.job_uid
                     stage_outputs["picked_particles"] = result.job_uid
-                elif step_name == "extract_particles":
+                elif step_name == "extract_particles" or step_name == "extract_particles_2":
                     if stage_outputs["extraction_job_uid"] is None:
                         stage_outputs["extraction_job_uid"] = result.job_uid
                     else:
                         stage_outputs["extraction_job_uid_round2"] = result.job_uid
                     stage_outputs["extracted_particles"] = result.job_uid
-                elif step_name == "class_2d":
+                elif step_name == "class_2d" or step_name == "class_2d_2":
                     if stage_outputs["classification_2d_job_uid"] is None:
                         stage_outputs["classification_2d_job_uid"] = result.job_uid
                     else:
                         stage_outputs["classification_2d_job_uid_round2"] = result.job_uid
                     stage_outputs["classified_particles"] = result.job_uid
-                elif step_name == "select_2d_classes":
-                    stage_outputs["initial_selection_job_uid"] = result.job_uid
+                elif step_name == "select_2d_classes" or step_name == "select_final_classes":
+                    # First selection goes to initial_selection, second goes to final_selection
+                    if stage_outputs["initial_selection_job_uid"] is None:
+                        stage_outputs["initial_selection_job_uid"] = result.job_uid
+                    else:
+                        stage_outputs["final_selection_job_uid"] = result.job_uid
                 elif step_name == "template_picker":
                     stage_outputs["template_picker_job_uid"] = result.job_uid
-                elif step_name == "select_final_classes":
-                    stage_outputs["final_selection_job_uid"] = result.job_uid
                 elif step_name == "final_extraction" and stage_outputs.get("final_selection_job_uid") is None:
                     # Fallback mode returns final particles as last entry
                     stage_outputs["final_selection_job_uid"] = result.job_uid
