@@ -39,6 +39,7 @@ class PreprocessingAgent(BaseReActAgent):
             PreprocessingTools.create_micrograph_selection_tool(self),
             PreprocessingTools.create_get_job_status_tool(self),
             PreprocessingTools.create_wait_for_job_tool(self),
+            PreprocessingTools.create_get_job_log_tool(self),
             PreprocessingTools.create_reason_about_workflow_tool(self)
         ]
     

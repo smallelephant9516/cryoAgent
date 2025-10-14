@@ -41,7 +41,7 @@
       "force_max_res_description": "Whether to force maximum resolution limit throughout classification. If false, resolution increases adaptively during iterations."
     },
     "select_2d_classes": {
-      "top_n_classes": 5,
+      "top_n_classes": 7,
       "top_n_classes_description": "Number of top classes to select based on particle count. Used for BOTH selections (first and final). These classes will be used as templates for template-based picking."
     },
     "template_picker": {

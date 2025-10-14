@@ -11,6 +11,7 @@ from ...config.config_loader import CryoAgentConfig
 class ReconstructionStep(Enum):
     """Enumeration of 3D reconstruction workflow steps."""
     AB_INITIO = "ab_initio_reconstruction"
+    HOMOGENEOUS_RECONSTRUCTION = "homogeneous_reconstruction"
     HOMOGENEOUS_REFINEMENT = "homogeneous_refinement"
     HETEROGENEOUS_REFINEMENT = "heterogeneous_refinement"
 
@@ -67,13 +68,23 @@ class ReconstructionWorkflow:
         """Parse workflow parameters from stage config."""
         workflow_config = self.stage_config.get("workflow", {})
         
+        # Reconstruction method
+        reconstruction_method_config = workflow_config.get("reconstruction_method", {})
+        reconstruction_method = reconstruction_method_config.get("type", "ab_initio")  # "ab_initio" or "homogeneous"
+        
         # Ab initio parameters
         ab_initio_config = workflow_config.get("ab_initio", {})
         num_classes = ab_initio_config.get("num_classes", 1)
-        initial_resolution = ab_initio_config.get("initial_resolution", 20.0)
-        final_resolution = ab_initio_config.get("final_resolution", 10.0)
+        ab_initial_resolution = ab_initio_config.get("initial_resolution", 20.0)
+        ab_final_resolution = ab_initio_config.get("final_resolution", 10.0)
         max_iterations = ab_initio_config.get("max_iterations", 50)
-        symmetry = ab_initio_config.get("symmetry", "C1")
+        ab_symmetry = ab_initio_config.get("symmetry", "C1")
+        
+        # Homogeneous reconstruction parameters
+        homo_recon_config = workflow_config.get("homogeneous_reconstruction", {})
+        homo_initial_resolution = homo_recon_config.get("initial_resolution", 20.0)
+        homo_final_resolution = homo_recon_config.get("final_resolution", 8.0)
+        homo_symmetry = homo_recon_config.get("symmetry", "C1")
         
         # Refinement parameters
         refinement_config = workflow_config.get("refinement", {})
@@ -81,12 +92,20 @@ class ReconstructionWorkflow:
         refinement_resolution = refinement_config.get("resolution", None)
         
         return {
+            # Reconstruction method selection
+            "reconstruction_method": reconstruction_method,
+            
             # Ab initio parameters
             "num_classes": num_classes,
-            "initial_resolution": initial_resolution,
-            "final_resolution": final_resolution,
+            "ab_initial_resolution": ab_initial_resolution,
+            "ab_final_resolution": ab_final_resolution,
             "max_iterations": max_iterations,
-            "symmetry": symmetry,
+            "ab_symmetry": ab_symmetry,
+            
+            # Homogeneous reconstruction parameters
+            "homo_initial_resolution": homo_initial_resolution,
+            "homo_final_resolution": homo_final_resolution,
+            "homo_symmetry": homo_symmetry,
             
             # Refinement parameters
             "refinement_type": refinement_type,
@@ -140,35 +159,61 @@ class ReconstructionWorkflow:
         """Create the workflow input for the ReAct agent using config parameters."""
         p = self.workflow_params  # shorthand
         
+        # Determine which reconstruction method to use
+        recon_method = p.get('reconstruction_method', 'ab_initio')
+        
+        if recon_method == 'homogeneous':
+            method_name = "Homogeneous Reconstruction"
+            tool_name = "homogeneous_reconstruction"
+            initial_res = p['homo_initial_resolution']
+            final_res = p['homo_final_resolution']
+            symmetry = p['homo_symmetry']
+            method_description = "This uses an optimized algorithm for single structure reconstruction"
+            params_str = f"""     * particles_job_uid={particles_job_uid}
+     * initial_resolution={initial_res}
+     * final_resolution={final_res}
+     * symmetry={symmetry}"""
+        else:  # ab_initio
+            method_name = "Ab Initio Reconstruction"
+            tool_name = "ab_initio_reconstruction"
+            initial_res = p['ab_initial_resolution']
+            final_res = p['ab_final_resolution']
+            symmetry = p['ab_symmetry']
+            method_description = "This generates 3D structures without requiring a reference model"
+            num_classes_note = f"Generating {p['num_classes']} class" + ("es" if p['num_classes'] > 1 else "") + " to handle potential heterogeneity" if p['num_classes'] > 1 else "Generating a single homogeneous 3D model"
+            params_str = f"""     * particles_job_uid={particles_job_uid}
+     * num_classes={p['num_classes']}
+     * initial_resolution={initial_res}
+     * final_resolution={final_res}
+     * max_iterations={p['max_iterations']}
+     * symmetry={symmetry}"""
+        
         workflow_description = f"""
-Execute the 3D reconstruction workflow starting with ab initio reconstruction:
+Execute the 3D reconstruction workflow starting with {method_name.lower()}:
 
 **Input**: Particles from job {particles_job_uid}
 
-**Task**: Generate initial 3D model(s) from 2D particles using ab initio reconstruction
+**Task**: Generate initial 3D model(s) from 2D particles using {method_name.lower()}
 
 **Project**: {self.config.workflow.project_uid} | **Workspace**: {self.config.workflow.workspace_uid}
 
 **Workflow Steps** (execute in order):
 
-═══ PHASE 1: Initial Model Generation (Ab Initio) ═══
+═══ PHASE 1: Initial Model Generation ({method_name}) ═══
 
-1. **Ab Initio Reconstruction** - Generate initial 3D model(s) de novo
-   - Tool: ab_initio_reconstruction
+1. **{method_name}** - Generate initial 3D model(s)
+   - Tool: {tool_name}
    - Parameters: 
-     * particles_job_uid={particles_job_uid}
-     * num_classes={p['num_classes']}
-     * initial_resolution={p['initial_resolution']}
-     * final_resolution={p['final_resolution']}
-     * max_iterations={p['max_iterations']}
-     * symmetry={p['symmetry']}
-   - This generates 3D structures without requiring a reference model
-   - {"Generating " + str(p['num_classes']) + " class" + ("es" if p['num_classes'] > 1 else "") + " to handle potential heterogeneity" if p['num_classes'] > 1 else "Generating a single homogeneous 3D model"}
+{params_str}
+   - {method_description}
+   - {"" if recon_method == 'homogeneous' else num_classes_note}
    - Wait for completion and record job UID
 """
         
         if run_refinement and p['refinement_type'] != 'none':
             if p['refinement_type'] == 'homogeneous':
+                # Use symmetry from the reconstruction method being used
+                symmetry = p['ab_symmetry'] if recon_method == 'ab_initio' else p['homo_symmetry']
                 workflow_description += f"""
 ═══ PHASE 2: Homogeneous Refinement ═══
 
@@ -177,7 +222,7 @@ Execute the 3D reconstruction workflow starting with ab initio reconstruction:
    - Parameters:
      * particles_job_uid={particles_job_uid}
      * volume_job_uid=[from step 1]
-     * symmetry={p['symmetry']}
+     * symmetry={symmetry}
      * refinement_resolution={p['refinement_resolution'] if p['refinement_resolution'] else "auto"}
    - Improves resolution and quality of the structure
    - Wait for completion and record job UID
@@ -201,15 +246,15 @@ Execute the 3D reconstruction workflow starting with ab initio reconstruction:
 - Execute ALL steps in order - do not skip any steps
 - Each step MUST complete successfully before proceeding
 - Always wait_for_job after each CryoSPARC job
-- Track all job UIDs - refinement depends on ab initio output
-- Ab initio reconstruction can take significant time (minutes to hours)
+- Track all job UIDs - refinement depends on initial reconstruction output
+- Reconstruction can take significant time (minutes to hours)
 
 **Expected Outcome**:
-- Initial 3D model(s) from ab initio reconstruction
+- Initial 3D model(s) from {method_name.lower()}
 {"- Refined structure(s) with improved resolution" if run_refinement else ""}
 - Ready for further refinement or analysis
 
-Begin by executing step 1 (ab_initio_reconstruction){"and proceed to refinement after completion" if run_refinement else ""}.
+Begin by executing step 1 ({tool_name}){"and proceed to refinement after completion" if run_refinement else ""}.
 """
         
         return workflow_description
@@ -218,9 +263,13 @@ Begin by executing step 1 (ab_initio_reconstruction){"and proceed to refinement 
         """Parse the workflow result to extract results for reconstruction steps."""
         execution_log = self.agent.get_tool_execution_log()
 
+        # Determine which reconstruction method was used
+        recon_method = self.workflow_params.get('reconstruction_method', 'ab_initio')
+        initial_step = ReconstructionStep.HOMOGENEOUS_RECONSTRUCTION if recon_method == 'homogeneous' else ReconstructionStep.AB_INITIO
+
         if not execution_log:
             error_result = ReconstructionResult(
-                step=ReconstructionStep.AB_INITIO,
+                step=initial_step,
                 success=False,
                 error="No CryoSPARC tool calls were recorded during workflow execution",
                 message="Agent response did not trigger any tool invocations",
@@ -240,9 +289,9 @@ Begin by executing step 1 (ab_initio_reconstruction){"and proceed to refinement 
                 if job_uid:
                     waits[job_uid] = entry["result"]
 
-        # Check ab initio step
+        # Check initial reconstruction step (ab initio or homogeneous reconstruction)
         self._check_step_result(
-            ReconstructionStep.AB_INITIO,
+            initial_step,
             tool_entries,
             waits,
             result

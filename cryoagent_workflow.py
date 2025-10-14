@@ -37,6 +37,7 @@ from cryoagent.core.master_orchestrator import (
     MasterOrchestrator,
     WorkflowStage
 )
+from cryoagent.utils.general_llm_logger import GeneralLLMLogger
 
 
 def setup_logging(verbose: bool = False):
@@ -123,6 +124,7 @@ class CryoAgentMasterWorkflow:
         self.master_config_path = master_config_path
         self.orchestrator = None
         self.start_time = None
+        self.llm_logger = GeneralLLMLogger()
         
     def initialize(self) -> bool:
         """
@@ -142,6 +144,9 @@ class CryoAgentMasterWorkflow:
             if not self.orchestrator.initialize():
                 print("❌ Failed to initialize master orchestrator")
                 return False
+            
+            # Set the general LLM logger for all stage agents
+            self.orchestrator.set_general_llm_logger(self.llm_logger)
             
             print("✅ Master orchestrator initialized")
             
@@ -189,6 +194,10 @@ class CryoAgentMasterWorkflow:
             return True
         
         try:
+            # Start LLM conversation logging
+            llm_log_file = self.llm_logger.start_workflow_log(conversation_id)
+            print(f"💬 LLM conversation log: {llm_log_file}")
+            
             print("🎯 Starting Complete 3-Stage CryoEM Workflow")
             print("=" * 70)
             print("This will execute all three stages:")
@@ -231,9 +240,11 @@ class CryoAgentMasterWorkflow:
                 print("   ✅ All stages completed with proper monitoring")
                 print("   🔗 Stage dependencies properly handled")
                 print("   ⏱️ Each stage waited for completion before claiming success")
+                self.llm_logger.end_workflow_log(True, "Complete workflow executed successfully")
             else:
                 print("❌ Complete workflow failed!")
                 print("   ⚠️ One or more stages did not complete successfully")
+                self.llm_logger.end_workflow_log(False, "Workflow failed - one or more stages did not complete")
             
             return success
             

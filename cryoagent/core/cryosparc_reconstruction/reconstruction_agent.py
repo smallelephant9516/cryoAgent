@@ -34,10 +34,12 @@ class ReconstructionAgent(BaseReActAgent):
         """Create 3D reconstruction-specific tools."""
         return [
             ReconstructionTools.create_ab_initio_tool(self),
+            ReconstructionTools.create_homogeneous_reconstruction_tool(self),
             ReconstructionTools.create_homogeneous_refinement_tool(self),
             ReconstructionTools.create_heterogeneous_refinement_tool(self),
             ReconstructionTools.create_get_job_status_tool(self),
             ReconstructionTools.create_wait_for_job_tool(self),
+            ReconstructionTools.create_get_job_log_tool(self),
             ReconstructionTools.create_reason_about_workflow_tool(self)
         ]
     
@@ -65,6 +67,15 @@ You specialize in generating and refining 3D structures from 2D particle images.
    - Can generate multiple classes if structural heterogeneity is suspected
    - Uses stochastic gradient descent with branch and bound optimization
 
+2. **Homogeneous Reconstruction**: Alternative method to generate 3D model from 2D particles
+   - Required: particles_job_uid (from 2D class selection or extraction)
+   - Optional: initial_resolution (starting resolution in Å, default: 20.0)
+   - Optional: final_resolution (target resolution in Å, default: 8.0)
+   - Optional: symmetry (e.g., C1, C2, D7, default: C1)
+   - Often faster and more robust than ab initio for homogeneous datasets
+   - Uses a different algorithm optimized for single structure reconstruction
+   - Good alternative when ab initio struggles to converge
+
 ### Phase 2: Refinement (Optional)
 2. **Homogeneous Refinement**: Refine a single 3D structure
    - Required: particles_job_uid, volume_job_uid (from ab initio)
@@ -83,12 +94,50 @@ For each step, you MUST follow this pattern:
 **Action**: [The specific tool to use with exact parameters]
 **Observation**: [What happened as a result of the action]
 
-## CRITICAL: Job Monitoring and Waiting
+## CRITICAL: Job Monitoring and Failure Recovery
 - After starting ANY reconstruction job, you MUST wait for it to complete
 - Use wait_for_job with the job UID to wait for completion
 - Do NOT proceed to the next step until the current job is completed
 - Ab initio reconstruction can take significant time (minutes to hours)
-- If a job fails, report the error and stop the workflow
+
+## ADAPTIVE RETRY MECHANISM:
+**IMPORTANT**: Only start adaptive retry strategy when a job has FAILED, not when it has already completed successfully.
+
+When a job FAILS (status = "failed"), you MUST implement an adaptive retry strategy with AT LEAST 3 attempts:
+
+1. **FIRST check job status** using get_job_status tool to confirm the job has failed
+2. **IMMEDIATELY read the job log** using get_job_log tool to understand the failure
+3. **Analyze error patterns** and identify the root cause from CryoSPARC logs
+4. **Implement adaptive retry strategy** with different parameter combinations:
+
+   **ATTEMPT 1 (Default)**: Start with standard parameters
+   
+   **ATTEMPT 2 (CTF Issues)**: If CTF refinement fails:
+   - refine_defocus_refine=false, refine_ctf_global_refine=false
+   
+   **ATTEMPT 3 (Resolution Issues)**: If resolution too aggressive:
+   - refinement_resolution=15.0 (more conservative)
+   
+   **ATTEMPT 4 (Conservative)**: If convergence fails:
+   - refinement_resolution=None (auto), symmetry=C1, no CTF refinement
+   
+   **ATTEMPT 5 (Alternative)**: If all refinement attempts fail:
+   - Try homogeneous reconstruction instead of refinement
+   
+4. **Learn from each failure** and adapt parameters based on error analysis
+5. **Document reasoning** for each parameter choice
+6. **Continue until success** or all reasonable strategies exhausted
+
+CRITICAL: You MUST try at least 3 different parameter combinations before giving up!
+
+**DO NOT START RETRY STRATEGY IF:**
+- Job status is "completed" (successful completion)
+- Job status is "cancelled" (manually cancelled)
+- Job is still "running" (wait for it to finish first)
+- Job status is "queued" or "started" (wait for completion)
+
+**ONLY START RETRY STRATEGY IF:**
+- Job status is "failed" (actual failure requiring retry)
 
 ## Tool Usage Guidelines:
 
@@ -99,6 +148,14 @@ For each step, you MUST follow this pattern:
   * Optional: final_resolution (8-12 Å for initial models)
   * Optional: max_iterations (50 is usually sufficient)
   * Optional: symmetry (C1 for no symmetry, C2/D7 etc. if known)
+  * Start the job, then wait for completion
+  
+- **homogeneous_reconstruction**: Generate single 3D model (alternative to ab initio)
+  * Required: particles_job_uid (from 2D class selection or extraction)
+  * Optional: initial_resolution (20.0 Å is typical starting point)
+  * Optional: final_resolution (8.0 Å for initial models)
+  * Optional: symmetry (C1 for no symmetry, C2/D7 etc. if known)
+  * Often faster and more robust than ab initio for homogeneous datasets
   * Start the job, then wait for completion
   
 - **homogeneous_refinement**: Refine single structure
@@ -161,10 +218,16 @@ For each step, you MUST follow this pattern:
 
 ## Example Workflows:
 
-**Simple Homogeneous Case**:
+**Simple Homogeneous Case (Ab Initio)**:
 1. Run ab_initio_reconstruction with num_classes=1
 2. Wait for completion
 3. Optionally run homogeneous_refinement
+4. Wait for completion
+
+**Simple Homogeneous Case (Alternative)**:
+1. Run homogeneous_reconstruction
+2. Wait for completion
+3. Optionally run homogeneous_refinement with the resulting volume
 4. Wait for completion
 
 **Heterogeneous Case**:
@@ -187,11 +250,12 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             params = self._parse_tool_input(tool_input)
             
             # Extract required parameters
-            particles_job_uid = params.get("particles_job_uid")
+            # Support both "particles_job_uid" and "job_uid" for flexibility
+            particles_job_uid = params.get("particles_job_uid") or params.get("job_uid")
             if not particles_job_uid:
                 return json.dumps({
                     "success": False,
-                    "error": "Missing required parameter: particles_job_uid"
+                    "error": "Missing required parameter: particles_job_uid or job_uid"
                 })
             
             # Get project and workspace UIDs
@@ -235,6 +299,57 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             self._record_tool_execution("ab_initio_reconstruction", params if 'params' in locals() else {}, error=str(e))
             return json.dumps(error_result)
     
+    def _homogeneous_reconstruction_tool(self, tool_input: str) -> str:
+        """Execute homogeneous reconstruction."""
+        try:
+            params = self._parse_tool_input(tool_input)
+            
+            # Extract required parameters
+            # Support both "particles_job_uid" and "job_uid" for flexibility
+            particles_job_uid = params.get("particles_job_uid") or params.get("job_uid")
+            if not particles_job_uid:
+                return json.dumps({
+                    "success": False,
+                    "error": "Missing required parameter: particles_job_uid or job_uid"
+                })
+            
+            # Get project and workspace UIDs
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            
+            # Extract optional parameters
+            initial_resolution = params.get("initial_resolution", 20.0)
+            final_resolution = params.get("final_resolution", 8.0)
+            symmetry = params.get("symmetry", "C1")
+            
+            # Job control parameters
+            wait_for_completion = params.get("wait_for_completion", "false").lower() == "true"
+            timeout = int(params.get("timeout", self.config.job_management.default_timeout))
+            check_interval = int(params.get("check_interval", self.config.job_management.status_check_interval))
+            
+            # Execute homogeneous reconstruction
+            result = self.cryosparc_tools.homogeneous_reconstruction(
+                project_uid=project_uid,
+                workspace_uid=workspace_uid,
+                particles_job_uid=particles_job_uid,
+                initial_resolution=initial_resolution,
+                final_resolution=final_resolution,
+                symmetry=symmetry,
+                wait_for_completion=wait_for_completion,
+                timeout=timeout,
+                check_interval=check_interval
+            )
+            
+            # Log the tool execution
+            self._record_tool_execution("homogeneous_reconstruction", params, result=result)
+            
+            return json.dumps(result)
+            
+        except Exception as e:
+            error_result = {"success": False, "error": str(e)}
+            self._record_tool_execution("homogeneous_reconstruction", params if 'params' in locals() else {}, error=str(e))
+            return json.dumps(error_result)
+    
     def _homogeneous_refinement_tool(self, tool_input: str) -> str:
         """Execute homogeneous refinement."""
         try:
@@ -257,6 +372,8 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             # Extract optional parameters
             refinement_resolution = params.get("refinement_resolution", None)
             symmetry = params.get("symmetry", "C1")
+            refine_defocus_refine = params.get("refine_defocus_refine", "true").lower() == "true"
+            refine_ctf_global_refine = params.get("refine_ctf_global_refine", "true").lower() == "true"
             
             # Job control parameters
             wait_for_completion = params.get("wait_for_completion", "false").lower() == "true"
@@ -271,6 +388,8 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 volume_job_uid=volume_job_uid,
                 refinement_resolution=refinement_resolution,
                 symmetry=symmetry,
+                refine_defocus_refine=refine_defocus_refine,
+                refine_ctf_global_refine=refine_ctf_global_refine,
                 wait_for_completion=wait_for_completion,
                 timeout=timeout,
                 check_interval=check_interval
@@ -348,9 +467,11 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
 **Current State**: {input_str}
 
 **Workflow Dependencies**:
-1. Ab Initio Reconstruction (requires particles from 2D class selection or extraction)
-2. Optional: Homogeneous Refinement (requires ab initio volume + particles)
-3. Optional: Heterogeneous Refinement (requires multiple ab initio volumes + particles)
+1. Initial Model Generation:
+   - Ab Initio Reconstruction (requires particles from 2D class selection or extraction)
+   - OR Homogeneous Reconstruction (alternative to ab initio for homogeneous datasets)
+2. Optional: Homogeneous Refinement (requires volume + particles)
+3. Optional: Heterogeneous Refinement (requires multiple volumes + particles)
 
 **Ab Initio Reconstruction Parameters**:
 - **num_classes**: 1 for homogeneous, 2-4 for heterogeneous datasets
@@ -359,13 +480,21 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
 - **symmetry**: C1 (no symmetry) is safest default
 - **max_iterations**: 50 is typical, 100 for difficult cases
 
+**Homogeneous Reconstruction Parameters**:
+- **initial_resolution**: Start at 20-30 Å for stability
+- **final_resolution**: Target 8.0 Å (can be more aggressive than ab initio)
+- **symmetry**: C1 (no symmetry) is safest default
+- Often faster and more robust than ab initio for single structure datasets
+
 **Next Steps Analysis**:
-- If no reconstruction jobs are running: Start with ab_initio_reconstruction
-- If ab initio is running: Wait for completion, then assess results
-- If ab initio completed successfully: Decide on refinement strategy
+- If no reconstruction jobs are running: Choose between:
+  * ab_initio_reconstruction (standard approach, supports multiple classes)
+  * homogeneous_reconstruction (faster alternative for single structure)
+- If reconstruction is running: Wait for completion, then assess results
+- If initial model completed successfully: Decide on refinement strategy
   * Single good class → homogeneous refinement
   * Multiple distinct classes → heterogeneous refinement
-  * Poor results → re-run with adjusted parameters
+  * Poor results → try alternative method or re-run with adjusted parameters
 
 **Recommended Actions**:
 - Always wait for ab initio to complete before refinement

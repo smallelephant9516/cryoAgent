@@ -81,4 +81,16 @@ class PreprocessingTools:
                        "Optional parameters: timeout.",
             func=agent._wait_for_job_tool
         )
+    
+    @staticmethod
+    def create_get_job_log_tool(agent) -> Tool:
+        """Create tool for reading job logs and analyzing errors."""
+        return Tool(
+            name="get_job_log",
+            description="Read and analyze the log file of a CryoSPARC job to understand failures and get suggestions. "
+                       "Required parameters: job_uid. "
+                       "Optional parameters: project_uid, workspace_uid. "
+                       "This tool helps diagnose why a job failed and provides suggestions for fixing the issues.",
+            func=agent._get_job_log_tool
+        )
 

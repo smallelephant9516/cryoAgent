@@ -1,8 +1,20 @@
 {
   "stage": "3d_reconstruction",
-  "description": "Configuration for 3D reconstruction workflow including ab initio reconstruction and optional refinement",
+  "description": "Two-step 3D reconstruction workflow: Ab Initio Reconstruction → Homogeneous Refinement",
   
   "workflow": {
+    "steps": {
+      "1": "Ab Initio Reconstruction (homo_abinit) - Generate initial 3D model",
+      "2": "Homogeneous Refinement (homo_refine_new) - Refine the structure"
+    },
+    
+    "reconstruction_method": {
+      "type": "ab_initio",
+      "description": {
+        "type": "STEP 1: Ab initio reconstruction to generate initial 3D model"
+      }
+    },
+    
     "ab_initio": {
       "num_classes": 1,
       "initial_resolution": 20.0,
@@ -10,7 +22,7 @@
       "max_iterations": 50,
       "symmetry": "C1",
       "description": {
-        "num_classes": "Number of 3D classes to generate (1 for homogeneous, 2-4 for heterogeneous)",
+        "num_classes": "Number of 3D classes to generate (1 for homogeneous dataset)",
         "initial_resolution": "Starting resolution in Angstroms for ab initio",
         "final_resolution": "Target resolution in Angstroms for ab initio (don't set < 8 Å initially)",
         "max_iterations": "Maximum number of iterations for ab initio (50 is typical)",
@@ -19,10 +31,10 @@
     },
     
     "refinement": {
-      "type": "none",
+      "type": "homogeneous",
       "resolution": null,
       "description": {
-        "type": "Refinement type: 'none' (no refinement), 'homogeneous', or 'heterogeneous'",
+        "type": "STEP 2: Homogeneous refinement to improve resolution",
         "resolution": "Target resolution for refinement in Angstroms (optional, null for auto)"
       }
     }
@@ -30,13 +42,31 @@
   
   "examples": {
     "homogeneous_single_class": {
-      "description": "Single homogeneous structure - most common case",
+      "description": "Single homogeneous structure using ab initio - most common case",
+      "reconstruction_method": {
+        "type": "ab_initio"
+      },
       "ab_initio": {
         "num_classes": 1,
         "initial_resolution": 20.0,
         "final_resolution": 10.0,
         "max_iterations": 50,
         "symmetry": "C1"
+      },
+      "refinement": {
+        "type": "none"
+      }
+    },
+    
+    "homogeneous_reconstruction_fast": {
+      "description": "Single homogeneous structure using homogeneous reconstruction - faster alternative",
+      "reconstruction_method": {
+        "type": "homogeneous"
+      },
+      "homogeneous_reconstruction": {
+        "initial_resolution": 20.0,
+        "final_resolution": 8.0,
+        "symmetry": "D7"
       },
       "refinement": {
         "type": "none"
@@ -89,11 +119,17 @@
   },
   
   "parameter_guidelines": {
+    "reconstruction_method": {
+      "ab_initio": "Standard method, supports multiple classes (1-4), works for both homogeneous and heterogeneous datasets",
+      "homogeneous": "Faster alternative optimized for single structure, often more robust for homogeneous datasets",
+      "recommendation": "Try homogeneous reconstruction first for known homogeneous datasets; use ab initio when heterogeneity is suspected"
+    },
+    
     "num_classes": {
       "1": "Use when all particles represent the same structure (homogeneous dataset)",
       "2-3": "Use when mild structural heterogeneity is expected",
       "3-4": "Use when significant structural variation is present",
-      "note": "More classes = longer computation time"
+      "note": "More classes = longer computation time (only applies to ab initio)"
     },
     
     "resolution": {
@@ -126,16 +162,24 @@
   
   "typical_workflows": {
     "quick_validation": {
-      "description": "Quick ab initio to check if particles are good",
+      "description": "Quick reconstruction to check if particles are good",
       "steps": [
-        "Run ab initio with num_classes=1, initial_res=25, final_res=12"
+        "Run homogeneous reconstruction (faster) OR ab initio with num_classes=1"
       ]
     },
     
     "standard_homogeneous": {
       "description": "Standard workflow for homogeneous particles",
       "steps": [
-        "Run ab initio with num_classes=1",
+        "Run ab initio with num_classes=1 OR homogeneous reconstruction",
+        "Optionally run homogeneous refinement for better resolution"
+      ]
+    },
+    
+    "fast_homogeneous": {
+      "description": "Fast workflow using homogeneous reconstruction",
+      "steps": [
+        "Run homogeneous reconstruction (often faster than ab initio)",
         "Optionally run homogeneous refinement for better resolution"
       ]
     },
@@ -159,12 +203,27 @@
   },
   
   "notes": {
+    "reconstruction_methods": [
+      "Choose ab initio for heterogeneous datasets or when multiple classes are expected",
+      "Choose homogeneous reconstruction for faster results with homogeneous datasets",
+      "Homogeneous reconstruction is often more robust and faster for single structure cases",
+      "Both methods work without requiring a reference model"
+    ],
+    
     "ab_initio": [
       "Ab initio is computationally intensive and can take hours",
       "No reference model needed - generates structures de novo",
       "Works best with at least 10,000-50,000 particles",
       "Multiple classes help identify heterogeneity but increase runtime",
       "Initial model quality improves with more particles and better SNR"
+    ],
+    
+    "homogeneous_reconstruction": [
+      "Often faster than ab initio for homogeneous datasets",
+      "Uses a different algorithm optimized for single structure reconstruction",
+      "Good alternative when ab initio struggles to converge",
+      "Can achieve better initial resolution (8 Å vs 10-12 Å for ab initio)",
+      "Particularly effective with high-quality, well-aligned particles"
     ],
     
     "refinement": [
@@ -176,11 +235,13 @@
     ],
     
     "best_practices": [
-      "Start with ab initio only to validate particles",
-      "Check ab initio results in CryoSPARC before refinement",
-      "Use conservative resolution targets for ab initio (8-12 Å)",
+      "For homogeneous datasets, try homogeneous reconstruction first (often faster)",
+      "For heterogeneous datasets or when uncertain, use ab initio",
+      "Check reconstruction results in CryoSPARC before refinement",
+      "Use conservative resolution targets for initial reconstruction",
       "Save aggressive resolution targeting for refinement stages",
-      "Monitor FSC curves to track resolution improvement"
+      "Monitor FSC curves to track resolution improvement",
+      "If one method fails, try the alternative (ab initio vs homogeneous reconstruction)"
     ]
   }
 }

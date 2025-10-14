@@ -39,6 +39,7 @@ class PickingAgent(BaseReActAgent):
             PickingTools.create_template_picker_tool(self),
             PickingTools.create_get_job_status_tool(self),
             PickingTools.create_wait_for_job_tool(self),
+            PickingTools.create_get_job_log_tool(self),
             PickingTools.create_reason_about_workflow_tool(self)
         ]
     

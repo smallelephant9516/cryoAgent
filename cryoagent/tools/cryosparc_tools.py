@@ -1691,6 +1691,8 @@ class CryoSPARCTools:
         volume_job_uid: str,
         refinement_resolution: Optional[float] = None,
         symmetry: str = "C1",
+        refine_defocus_refine: bool = True,
+        refine_ctf_global_refine: bool = True,
         lane: Optional[str] = None,
         hostname: Optional[str] = None,
         wait_for_completion: bool = False,
@@ -1713,6 +1715,8 @@ class CryoSPARCTools:
             volume_job_uid: UID of the ab initio job (used for both particles and volume)
             refinement_resolution: Target resolution in Angstroms (optional)
             symmetry: Symmetry group (e.g., C1, C2, D7) (default: C1)
+            refine_defocus_refine: Enable per-particle defocus refinement (default: True)
+            refine_ctf_global_refine: Enable global CTF refinement (default: True)
             lane: Compute lane to use
             hostname: Specific hostname to run on
             wait_for_completion: Whether to wait for job completion
@@ -1727,11 +1731,37 @@ class CryoSPARCTools:
             project = self.cs.find_project(project_uid)
             workspace = project.find_workspace(workspace_uid)
             
-            # Create homogeneous refinement job
-            # Note: Only set parameters that exist for homo_refine_new job type
+            # Determine the correct output slots based on source job type
+            try:
+                source_job = project.find_job(volume_job_uid)
+                source_job_type = source_job.doc.get("type", "")
+                
+                # Ab initio jobs (homo_abinit) use these slots:
+                if "abinit" in source_job_type.lower():
+                    particles_slot = "particles_all_classes"
+                    volume_slot = "volume_class_0"
+                # Homogeneous reconstruction (homo_recon) might use these:
+                elif "recon" in source_job_type.lower():
+                    # Try to detect actual output slots
+                    particles_slot = "particles"  # Common for homo_recon
+                    volume_slot = "volume"  # Common for homo_recon
+                else:
+                    # Default to ab initio convention
+                    particles_slot = "particles_all_classes"
+                    volume_slot = "volume_class_0"
+                    
+                print(f"ℹ️  Detected source job type: {source_job_type}")
+                print(f"ℹ️  Using particles slot: '{particles_slot}', volume slot: '{volume_slot}'")
+            except Exception as e:
+                # Fallback to ab initio convention
+                particles_slot = "particles_all_classes"
+                volume_slot = "volume_class_0"
+                print(f"⚠️  Could not detect job type, using default slots: {e}")
+            
+            # Create homogeneous refinement job with configurable CTF refinement
             job_params: Dict[str, Any] = {
-                "refine_defocus_refine": True,  # Enable per-particle defocus refinement
-                "refine_ctf_global_refine": True  # Enable global CTF refinement
+                "refine_defocus_refine": refine_defocus_refine,  # Enable per-particle defocus refinement
+                "refine_ctf_global_refine": refine_ctf_global_refine  # Enable global CTF refinement
             }
             
             # Add refinement resolution if specified
@@ -1742,15 +1772,12 @@ class CryoSPARCTools:
             if symmetry and symmetry != "C1":
                 job_params["refine_symmetry"] = symmetry
             
-            # Create the job
-            # Note: For homogeneous refinement, particles and volume typically come from ab initio
-            # particles: use "particles_all_classes" from ab initio job
-            # volume: use "volume_class_0" for the first (or only) class from ab initio
+            # Create the job - matches user's example exactly
             job = workspace.create_job(
                 "homo_refine_new",  # Homogeneous refinement job type
                 connections={
-                    "particles": (volume_job_uid, "particles_all_classes"),
-                    "volume": (volume_job_uid, "volume_class_0")
+                    "particles": (volume_job_uid, particles_slot),
+                    "volume": (volume_job_uid, volume_slot)
                 },
                 params=job_params
             )
@@ -1919,3 +1946,187 @@ class CryoSPARCTools:
                 "job_type": "heterogeneous_refinement",
                 "message": f"Failed to queue heterogeneous refinement job: {str(e)}"
             }
+    
+    def get_job_log(self, job_uid: str, project_uid: Optional[str] = None, workspace_uid: Optional[str] = None) -> Dict[str, Any]:
+        """
+        Read the log file of a CryoSPARC job to analyze errors and failures.
+        
+        Args:
+            job_uid: UID of the job to read logs for
+            project_uid: Optional project UID containing the job
+            workspace_uid: Optional workspace UID containing the job
+            
+        Returns:
+            Dictionary containing log content and analysis
+        """
+        try:
+            # Try to construct log file path using common CryoSPARC project structure
+            # This is a more direct approach that doesn't rely on get_job_info
+            log_file_paths = []
+            
+            # Try different possible log file locations
+            if project_uid and workspace_uid:
+                # Try the full path structure
+                log_file_paths.append(f"/home/daoyi/cryosparc/cryosparc_projects/{project_uid}/{workspace_uid}/{job_uid}/job.log")
+            
+            # Try the example path structure from the user
+            log_file_paths.append(f"/home/daoyi/cryosparc/cryosparc_projects/CS-test/{job_uid}/job.log")
+            
+            # Try to find the log file in any of the possible locations
+            log_file_path = None
+            for path in log_file_paths:
+                try:
+                    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
+                        # Just try to read a small part to test if file exists
+                        f.read(100)
+                    log_file_path = path
+                    break
+                except (FileNotFoundError, PermissionError):
+                    continue
+            
+            if not log_file_path:
+                return {
+                    "success": False,
+                    "error": "Log file not found",
+                    "message": f"Could not locate job log file for {job_uid} in any expected location"
+                }
+            
+            # Read the full log content
+            try:
+                with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    log_content = f.read()
+            except Exception as e:
+                return {
+                    "success": False,
+                    "error": f"Error reading log file: {str(e)}",
+                    "message": f"Failed to read log file: {log_file_path}"
+                }
+            
+            # Analyze the log for common error patterns
+            error_analysis = self._analyze_job_log(log_content)
+            
+            return {
+                "success": True,
+                "job_uid": job_uid,
+                "log_file_path": log_file_path,
+                "log_content": log_content,
+                "log_size": len(log_content),
+                "error_analysis": error_analysis,
+                "message": f"Successfully read log for job {job_uid}"
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "message": f"Failed to read job log for {job_uid}: {str(e)}"
+            }
+    
+    def _analyze_job_log(self, log_content: str) -> Dict[str, Any]:
+        """
+        Analyze job log content for common error patterns and provide insights.
+        
+        Args:
+            log_content: Raw log content from the job
+            
+        Returns:
+            Dictionary with error analysis and suggestions
+        """
+        analysis = {
+            "has_errors": False,
+            "error_types": [],
+            "suggestions": [],
+            "critical_errors": [],
+            "warnings": [],
+            "summary": ""
+        }
+        
+        # Common error patterns to look for
+        error_patterns = {
+            "memory_error": [
+                "out of memory", "memory error", "insufficient memory",
+                "memory allocation failed", "oom", "killed"
+            ],
+            "parameter_error": [
+                "invalid parameter", "parameter error", "bad parameter",
+                "invalid value", "parameter out of range"
+            ],
+            "file_error": [
+                "file not found", "no such file", "permission denied",
+                "access denied", "file error", "path not found"
+            ],
+            "convergence_error": [
+                "failed to converge", "convergence failed", "did not converge",
+                "convergence error", "optimization failed"
+            ],
+            "symmetry_error": [
+                "symmetry error", "invalid symmetry", "symmetry failed",
+                "symmetry mismatch"
+            ],
+            "gpu_error": [
+                "gpu error", "cuda error", "gpu memory", "gpu failed",
+                "cuda out of memory", "gpu timeout"
+            ],
+            "timeout_error": [
+                "timeout", "timed out", "time limit exceeded",
+                "execution timeout"
+            ]
+        }
+        
+        # Check for error patterns
+        log_lower = log_content.lower()
+        for error_type, patterns in error_patterns.items():
+            for pattern in patterns:
+                if pattern in log_lower:
+                    analysis["has_errors"] = True
+                    if error_type not in analysis["error_types"]:
+                        analysis["error_types"].append(error_type)
+        
+        # Generate suggestions based on error types
+        if "memory_error" in analysis["error_types"]:
+            analysis["suggestions"].append("Consider reducing batch size or using fewer particles")
+            analysis["suggestions"].append("Try reducing the resolution or using a smaller patch size")
+        
+        if "parameter_error" in analysis["error_types"]:
+            analysis["suggestions"].append("Check parameter values and ranges")
+            analysis["suggestions"].append("Verify input data format and compatibility")
+        
+        if "file_error" in analysis["error_types"]:
+            analysis["suggestions"].append("Verify file paths and permissions")
+            analysis["suggestions"].append("Check if input files exist and are accessible")
+        
+        if "convergence_error" in analysis["error_types"]:
+            analysis["suggestions"].append("Try increasing max_iterations or adjusting convergence criteria")
+            analysis["suggestions"].append("Consider using different initial parameters or symmetry")
+        
+        if "symmetry_error" in analysis["error_types"]:
+            analysis["suggestions"].append("Try using C1 symmetry (no symmetry) as a starting point")
+            analysis["suggestions"].append("Verify the symmetry parameter matches your expected structure")
+        
+        if "gpu_error" in analysis["error_types"]:
+            analysis["suggestions"].append("Try running on CPU instead of GPU")
+            analysis["suggestions"].append("Reduce GPU memory usage by decreasing batch size")
+        
+        if "timeout_error" in analysis["error_types"]:
+            analysis["suggestions"].append("Increase timeout limits or reduce job complexity")
+            analysis["suggestions"].append("Consider breaking the job into smaller parts")
+        
+        # Extract critical errors (lines containing ERROR)
+        lines = log_content.split('\n')
+        for line in lines:
+            if 'error' in line.lower() and ('error:' in line.lower() or 'failed' in line.lower()):
+                analysis["critical_errors"].append(line.strip())
+        
+        # Extract warnings
+        for line in lines:
+            if 'warning' in line.lower() or 'warn:' in line.lower():
+                analysis["warnings"].append(line.strip())
+        
+        # Generate summary
+        if analysis["has_errors"]:
+            error_count = len(analysis["error_types"])
+            analysis["summary"] = f"Job failed with {error_count} error type(s): {', '.join(analysis['error_types'])}"
+        else:
+            analysis["summary"] = "No obvious errors detected in log"
+        
+        return analysis

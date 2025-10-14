@@ -12,6 +12,9 @@ from langchain_core.messages import SystemMessage
 from ..tools.cryosparc_tools import CryoSPARCTools
 from ..config.config_loader import CryoAgentConfig
 from .llm_factory import LLMFactory
+from ..utils.conversation_logger import ConversationLogger
+from ..utils.realtime_conversation_logger import RealtimeConversationLogger
+from ..utils.general_llm_logger import GeneralLLMLogger
 
 
 class BaseReActAgent(ABC):
@@ -47,6 +50,12 @@ class BaseReActAgent(ABC):
         self.conversation_count = 0
         self.last_conversation_id = None
         self.conversation_memory: List[Dict[str, Any]] = []
+        
+        # Conversation logging
+        self.conversation_logger = ConversationLogger()
+        self.realtime_logger = RealtimeConversationLogger()
+        self.general_llm_logger = None  # Will be set by the workflow
+        self.enable_conversation_logging = True
     
     def _ensure_valid_provider(self):
         """Ensure that the current provider has a valid API key, auto-select if not."""
@@ -177,6 +186,13 @@ class BaseReActAgent(ABC):
         if error is not None:
             entry["error"] = error
         self.tool_execution_log.append(entry)
+        
+        # Also log to real-time conversation log
+        if self.enable_conversation_logging and self.realtime_logger.current_log_file:
+            result_str = str(result) if result is not None else "No result"
+            if error is not None:
+                result_str = f"ERROR: {error}"
+            self.realtime_logger.log_tool_execution(tool_name, params, result_str)
     
     def get_tool_execution_log(self) -> List[Dict[str, Any]]:
         """Return a copy of the recorded tool executions."""
@@ -198,6 +214,10 @@ class BaseReActAgent(ABC):
             Result of the workflow execution
         """
         try:
+            # Start real-time conversation logging if enabled
+            if self.enable_conversation_logging:
+                self._start_realtime_conversation_log(workflow_input, conversation_id)
+            
             # Reset execution log for this run
             self.clear_tool_execution_log()
 
@@ -220,11 +240,33 @@ class BaseReActAgent(ABC):
             # Add ReAct-specific instructions to the input
             react_input = self._format_react_input(workflow_input)
             
+            # Log the formatted input in real-time
+            if self.enable_conversation_logging:
+                self.realtime_logger.log_user_input(react_input)
+            
             result = self.agent_executor.invoke({"input": react_input})
+            
+            # Log the result in real-time
+            if self.enable_conversation_logging:
+                self.realtime_logger.log_assistant_response(result["output"])
+                self._end_realtime_conversation_log(success=True)
+            
+            # Also log to general LLM logger if available
+            if self.general_llm_logger:
+                stage_name = getattr(self, 'stage_name', 'unknown')
+                self.general_llm_logger.log_llm_response(stage_name, result["output"])
+            
             return result["output"]
             
         except Exception as e:
-            return f"❌ ReAct workflow execution failed: {str(e)}"
+            error_msg = f"❌ ReAct workflow execution failed: {str(e)}"
+            
+            # Log the error in real-time
+            if self.enable_conversation_logging:
+                self.realtime_logger.log_error(str(e))
+                self._end_realtime_conversation_log(success=False, error=str(e))
+            
+            return error_msg
     
     def _format_react_input(self, workflow_input: str) -> str:
         """
@@ -422,7 +464,32 @@ Begin with reasoning about the current workflow state.
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
 
-            print(f"🛰️ Waiting for job {job_uid} to complete (checking every {check_interval}s)...")
+            # First, check the current job status
+            print(f"🔍 Checking current status of job {job_uid}...")
+            current_status = self.cryosparc_tools.get_job_status(
+                job_uid,
+                project_uid=project_uid,
+                workspace_uid=workspace_uid
+            )
+            
+            # If job is already completed, return immediately without starting retry
+            if current_status["status"] in ["completed", "failed", "cancelled"]:
+                print(f"ℹ️ Job {job_uid} is already {current_status['status']}. No retry needed.")
+                self._record_tool_execution(
+                    "wait_for_job",
+                    {
+                        "job_uid": job_uid,
+                        "project_uid": project_uid,
+                        "workspace_uid": workspace_uid,
+                        "timeout": timeout,
+                        "check_interval": check_interval
+                    },
+                    result=current_status
+                )
+                return f"✅ Job {job_uid} is already {current_status['status']}. No adaptive retry needed."
+            
+            # Only wait for completion if job is still running
+            print(f"🛰️ Job {job_uid} is {current_status['status']}. Waiting for completion (checking every {check_interval}s)...")
             status = self.cryosparc_tools.wait_for_job_completion(
                 project_uid,
                 job_uid,
@@ -447,4 +514,104 @@ Begin with reasoning about the current workflow state.
             context = params or {"raw_input": input_str}
             self._record_tool_execution("wait_for_job", context, error=str(e))
             return f"❌ Error waiting for job: {str(e)}"
+    
+    def _get_job_log_tool(self, input_str: str) -> str:
+        """Common tool wrapper for reading job logs."""
+        params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            job_uid = params.get("job_uid")
+            
+            if not job_uid:
+                return f"❌ Error: job_uid parameter is required. Input was: '{input_str}'"
+            
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+
+            log_result = self.cryosparc_tools.get_job_log(
+                job_uid,
+                project_uid=project_uid,
+                workspace_uid=workspace_uid
+            )
+            
+            self._record_tool_execution("get_job_log", {
+                "job_uid": job_uid,
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }, result=log_result)
+            
+            if log_result.get("success", False):
+                analysis = log_result.get("error_analysis", {})
+                summary = analysis.get("summary", "No analysis available")
+                suggestions = analysis.get("suggestions", [])
+                
+                response = f"📋 Job {job_uid} log analysis:\n{summary}\n"
+                if suggestions:
+                    response += f"\n💡 Suggestions:\n" + "\n".join(f"  - {s}" for s in suggestions)
+                
+                if analysis.get("critical_errors"):
+                    response += f"\n🚨 Critical errors found:\n" + "\n".join(f"  - {e}" for e in analysis["critical_errors"][:5])
+                
+                return response
+            else:
+                return f"❌ Error reading job log: {log_result.get('error', 'Unknown error')}"
+            
+        except Exception as e:
+            context = params or {"raw_input": input_str}
+            self._record_tool_execution("get_job_log", context, error=str(e))
+            return f"❌ Error reading job log: {str(e)}"
+    
+    def _start_realtime_conversation_log(self, workflow_input: str, conversation_id: Optional[str] = None):
+        """Start real-time logging of a conversation."""
+        if not conversation_id:
+            conversation_id = f"conversation_{int(time.time())}"
+        
+        # Determine stage name from the agent type
+        stage_name = getattr(self, 'stage_name', 'unknown')
+        workflow_type = getattr(self, 'workflow_type', 'cryoem')
+        
+        # Start real-time logging
+        log_file = self.realtime_logger.start_conversation(
+            conversation_id=conversation_id,
+            workflow_type=workflow_type,
+            stage_name=stage_name
+        )
+        
+        # Log the initial workflow input
+        self.realtime_logger.log_system_message(
+            f"Starting {stage_name} workflow",
+            metadata={"workflow_input": workflow_input}
+        )
+        
+        if self.config.agent.verbose:
+            print(f"💬 Real-time LLM conversation log: {log_file}")
+    
+    def _end_realtime_conversation_log(self, success: bool, error: Optional[str] = None):
+        """End the real-time conversation log."""
+        summary = "Workflow completed successfully" if success else f"Workflow failed: {error}"
+        self.realtime_logger.end_conversation(success=success, summary=summary)
+        
+        if self.config.agent.verbose:
+            log_file = self.realtime_logger.get_log_file_path()
+            if log_file:
+                print(f"💬 Real-time LLM conversation log completed: {log_file}")
+    
+    def set_general_llm_logger(self, logger: GeneralLLMLogger):
+        """Set the general LLM logger for this agent."""
+        self.general_llm_logger = logger
+    
+    def get_conversation_log_file(self) -> Optional[str]:
+        """Get the path to the most recent conversation log file."""
+        # Return the real-time log file if available
+        realtime_log = self.realtime_logger.get_log_file_path()
+        if realtime_log:
+            return realtime_log
+        
+        # Fallback to the JSON conversation log
+        if hasattr(self.conversation_logger, 'current_log') and self.conversation_logger.current_log:
+            try:
+                return self.conversation_logger.save_conversation_log()
+            except:
+                return None
+        return None
 

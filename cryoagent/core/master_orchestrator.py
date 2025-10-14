@@ -21,6 +21,7 @@ from .cryosparc_preprocessing import PreprocessingAgent as ModularPreprocessingA
 from .cryosparc_picking import PickingAgent as ModularPickingAgent, PickingWorkflow
 from ..config.config_loader import ConfigLoader, CryoAgentConfig
 from ..tools.cryosparc_tools import CryoSPARCTools
+from ..utils.general_llm_logger import GeneralLLMLogger
 
 
 class WorkflowStage(Enum):
@@ -191,6 +192,10 @@ class PreprocessingAgent(StageAgent):
                 cryosparc_tools=self.cryosparc_tools,
                 config=self.config
             )
+            
+            # Set stage name and workflow type for conversation logging
+            self.modular_agent.stage_name = "preprocessing"
+            self.modular_agent.workflow_type = "cryoem"
             
             # Initialize preprocessing workflow
             self.modular_workflow = PreprocessingWorkflow(
@@ -435,6 +440,10 @@ class ParticlePickingAgent(StageAgent):
                 cryosparc_tools=self.cryosparc_tools,
                 config=self.config
             )
+            
+            # Set stage name and workflow type for conversation logging
+            self.modular_agent.stage_name = "particle_picking"
+            self.modular_agent.workflow_type = "cryoem"
             
             # Initialize picking workflow with stage config path
             self.modular_workflow = PickingWorkflow(
@@ -723,6 +732,10 @@ class ReconstructionAgent(StageAgent):
             self.modular_agent = ModularReconstructionAgent(self.cryosparc_tools, self.config)
             self.modular_workflow = ReconstructionWorkflow(self.modular_agent, self.config, stage_config_path=self.config_path)
             
+            # Set stage name and workflow type for conversation logging
+            self.modular_agent.stage_name = "reconstruction"
+            self.modular_agent.workflow_type = "cryoem"
+            
             self.logger.info(f"Stage agent {self.stage_name} initialized with modular reconstruction agent")
             return True
             
@@ -757,11 +770,20 @@ class ReconstructionAgent(StageAgent):
             
             self.logger.info(f"Starting 3D reconstruction with particles from job {particles_job_uid}")
             
+            # Check if refinement is enabled in config
+            refinement_type = self.modular_workflow.workflow_params.get('refinement_type', 'none')
+            run_refinement = refinement_type != 'none'
+            
+            if run_refinement:
+                self.logger.info(f"Refinement enabled: {refinement_type}")
+            else:
+                self.logger.info("Refinement disabled (set refinement.type in config to enable)")
+            
             # Run the modular workflow
             results = self.modular_workflow.run(
                 particles_job_uid=particles_job_uid,
                 conversation_id=conversation_id,
-                run_refinement=False  # Only run ab initio by default
+                run_refinement=run_refinement
             )
             
             # Extract stage outputs
@@ -782,12 +804,14 @@ class ReconstructionAgent(StageAgent):
             # Save results to JSON
             output_file = self._save_reconstruction_results(stage_outputs, context, success=True)
             
+            # Add output file path to stage_outputs for reference
+            stage_outputs["output_file"] = output_file
+            
             return StageResult(
                 stage=WorkflowStage.RECONSTRUCTION,
                 success=True,
                 stage_outputs=stage_outputs,
-                execution_time=time.time() - start_time,
-                output_file=output_file
+                execution_time=time.time() - start_time
             )
             
         except Exception as e:
@@ -803,10 +827,11 @@ class ReconstructionAgent(StageAgent):
         """Extract job UIDs and metadata from reconstruction workflow results."""
         stage_outputs = {
             "ab_initio_job_uid": None,
+            "homogeneous_reconstruction_job_uid": None,
             "homogeneous_refinement_job_uid": None,
             "heterogeneous_refinement_job_uid": None,
             "final_volume_job_uid": None,
-            "reconstruction_type": "ab_initio"
+            "reconstruction_type": "unknown"
         }
         
         # Extract job UIDs from results
@@ -816,14 +841,21 @@ class ReconstructionAgent(StageAgent):
                 if step_name == "ab_initio_reconstruction":
                     stage_outputs["ab_initio_job_uid"] = result.job_uid
                     stage_outputs["final_volume_job_uid"] = result.job_uid
+                    stage_outputs["reconstruction_type"] = "ab_initio"
+                elif step_name == "homogeneous_reconstruction":
+                    stage_outputs["homogeneous_reconstruction_job_uid"] = result.job_uid
+                    stage_outputs["final_volume_job_uid"] = result.job_uid
+                    stage_outputs["reconstruction_type"] = "homogeneous_reconstruction"
                 elif step_name == "homogeneous_refinement":
                     stage_outputs["homogeneous_refinement_job_uid"] = result.job_uid
                     stage_outputs["final_volume_job_uid"] = result.job_uid
-                    stage_outputs["reconstruction_type"] = "homogeneous"
+                    # Only update type if it's still initial reconstruction
+                    if stage_outputs["reconstruction_type"] in ["ab_initio", "homogeneous_reconstruction"]:
+                        stage_outputs["reconstruction_type"] = "refined_" + stage_outputs["reconstruction_type"]
                 elif step_name == "heterogeneous_refinement":
                     stage_outputs["heterogeneous_refinement_job_uid"] = result.job_uid
                     stage_outputs["final_volume_job_uid"] = result.job_uid
-                    stage_outputs["reconstruction_type"] = "heterogeneous"
+                    stage_outputs["reconstruction_type"] = "heterogeneous_refined"
         
         # Get volume output directory if available
         final_volume_job_uid = stage_outputs.get("final_volume_job_uid")
@@ -946,6 +978,7 @@ class ReconstructionAgent(StageAgent):
             "reconstruction_type": stage_outputs.get("reconstruction_type"),
             "job_uids": {
                 "ab_initio": stage_outputs.get("ab_initio_job_uid"),
+                "homogeneous_reconstruction": stage_outputs.get("homogeneous_reconstruction_job_uid"),
                 "homogeneous_refinement": stage_outputs.get("homogeneous_refinement_job_uid"),
                 "heterogeneous_refinement": stage_outputs.get("heterogeneous_refinement_job_uid"),
                 "final_volume": stage_outputs.get("final_volume_job_uid")
@@ -971,7 +1004,7 @@ class ReconstructionAgent(StageAgent):
         return str(output_file)
     
     def get_stage_description(self) -> str:
-        return "3D Reconstruction: Generate initial models using ab initio reconstruction"
+        return "3D Reconstruction: Generate initial models using ab initio or homogeneous reconstruction"
     
     def get_required_inputs(self) -> List[str]:
         return ["picked_particles", "selected_particles"]
@@ -1169,9 +1202,15 @@ class MasterOrchestrator:
                     print("⚠️ Pre-processing failed - stopping workflow")
                     break
         
+        # Collect conversation log files from all stages
+        conversation_log_files = self._collect_conversation_logs()
+        
         # Generate workflow summary
         total_time = time.time() - self.start_time
         summary = self._generate_workflow_summary(total_time)
+        
+        # Add conversation log files to summary
+        summary['conversation_log_files'] = conversation_log_files
         
         # Display results
         self._display_workflow_results(summary)
@@ -1327,6 +1366,14 @@ class MasterOrchestrator:
             print("🎉 Complete workflow executed successfully!")
         else:
             print("⚠️ Workflow completed with some failures")
+        
+        # Display conversation log files
+        if 'conversation_log_files' in summary and summary['conversation_log_files']:
+            print("\n💬 LLM Conversation Logs:")
+            print("=" * 50)
+            for stage_name, log_file in summary['conversation_log_files'].items():
+                print(f"   {stage_name.replace('_', ' ').title()}: {log_file}")
+            print()
     
     def get_workflow_status(self) -> Dict[str, Any]:
         """Get current workflow status."""
@@ -1348,3 +1395,35 @@ class MasterOrchestrator:
                 # Modular agents don't have clear_reasoning_history method
                 # They handle memory differently
                 pass
+    
+    def _collect_conversation_logs(self) -> Dict[str, str]:
+        """
+        Collect conversation log files from all stage agents.
+        
+        Returns:
+            Dictionary mapping stage names to conversation log file paths
+        """
+        conversation_logs = {}
+        
+        for stage_name, stage_agent in self.stage_agents.items():
+            try:
+                # Check if the stage agent has a modular agent with conversation logging
+                if (hasattr(stage_agent, 'modular_agent') and 
+                    stage_agent.modular_agent and 
+                    hasattr(stage_agent.modular_agent, 'get_conversation_log_file')):
+                    
+                    log_file = stage_agent.modular_agent.get_conversation_log_file()
+                    if log_file:
+                        conversation_logs[stage_name] = log_file
+                        self.logger.info(f"Found conversation log for {stage_name}: {log_file}")
+                        
+            except Exception as e:
+                self.logger.warning(f"Could not collect conversation log for {stage_name}: {e}")
+        
+        return conversation_logs
+    
+    def set_general_llm_logger(self, logger: GeneralLLMLogger):
+        """Set the general LLM logger for all stage agents."""
+        for stage_agent in self.stage_agents.values():
+            if hasattr(stage_agent, 'modular_agent') and stage_agent.modular_agent:
+                stage_agent.modular_agent.set_general_llm_logger(logger)

@@ -23,6 +23,20 @@ class ReconstructionTools:
         )
     
     @staticmethod
+    def create_homogeneous_reconstruction_tool(agent) -> Tool:
+        """Create tool for homogeneous reconstruction."""
+        return Tool(
+            name="homogeneous_reconstruction",
+            description="Generate a 3D model from 2D particles using homogeneous reconstruction. "
+                       "This is an alternative to ab initio that's often faster and more robust for homogeneous datasets. "
+                       "Required parameters: particles_job_uid (from 2D class selection or extraction). "
+                       "Optional parameters: initial_resolution (starting resolution in Å, default: 20.0), "
+                       "final_resolution (target resolution in Å, default: 8.0), "
+                       "symmetry (default: C1), project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
+            func=agent._homogeneous_reconstruction_tool
+        )
+    
+    @staticmethod
     def create_homogeneous_refinement_tool(agent) -> Tool:
         """Create tool for homogeneous refinement."""
         return Tool(
@@ -30,6 +44,8 @@ class ReconstructionTools:
             description="Refine a single 3D structure with all particles. "
                        "Required parameters: particles_job_uid, volume_job_uid (from ab initio). "
                        "Optional parameters: refinement_resolution (target resolution in Å), symmetry, "
+                       "refine_defocus_refine (enable defocus refinement, default: true), "
+                       "refine_ctf_global_refine (enable global CTF refinement, default: true), "
                        "project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
             func=agent._homogeneous_refinement_tool
         )
@@ -65,6 +81,18 @@ class ReconstructionTools:
                        "Required parameters: job_uid. "
                        "Optional parameters: timeout.",
             func=agent._wait_for_job_tool
+        )
+    
+    @staticmethod
+    def create_get_job_log_tool(agent) -> Tool:
+        """Create tool for reading job logs and analyzing errors."""
+        return Tool(
+            name="get_job_log",
+            description="Read and analyze the log file of a CryoSPARC job to understand failures and get suggestions. "
+                       "Required parameters: job_uid. "
+                       "Optional parameters: project_uid, workspace_uid. "
+                       "This tool helps diagnose why a job failed and provides suggestions for fixing the issues.",
+            func=agent._get_job_log_tool
         )
     
     @staticmethod
