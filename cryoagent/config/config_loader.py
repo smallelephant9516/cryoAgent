@@ -57,13 +57,9 @@ class CryoSPARCSettings(BaseModel):
 class WorkflowSettings(BaseModel):
     """Settings for cryoEM workflow parameters."""
     
-    # Import movies parameters
-    movies_path: str = Field(default="/path/to/your/movies", description="Path to movie files")
-    gain_ref_path: Optional[str] = Field(default="/path/to/gain_ref.mrc", description="Path to gain reference file")
-    pixel_size: float = Field(default=1.0, description="Pixel size in Angstroms")
-    voltage: float = Field(default=300.0, description="Acceleration voltage in kV")
-    cs_mm: float = Field(default=2.7, description="Spherical aberration in mm")
-    dose: float = Field(default=1.0, description="Electron dose per frame in e-/Å²")
+    # Import movies parameters (now loaded from microscope_config.json)
+    # movies_path and gain_ref_path are loaded from microscope_config.json
+    # pixel_size, voltage, cs_mm, dose are loaded from microscope_config.json
     
     # Motion correction parameters
     motion_correction_binning: int = Field(default=1, description="Binning for motion correction")
@@ -76,6 +72,9 @@ class WorkflowSettings(BaseModel):
     # Project and workspace settings
     project_uid: str = Field(default="P1", description="CryoSPARC project UID")
     workspace_uid: str = Field(default="W1", description="CryoSPARC workspace UID")
+    
+    # Microscope configuration path
+    microscope_config_path: Optional[str] = Field(default="configs/microscope_config.json", description="Path to microscope configuration file")
     
     class Config:
         """Pydantic configuration."""
@@ -356,7 +355,7 @@ class ConfigLoader:
         # Parse workflow settings
         workflow_data = config_data.get("workflow", {})
         
-        # Extract import movies parameters
+        # Extract workflow parameters (import_movies parameters now loaded from microscope_config.json)
         import_movies = workflow_data.pop("import_movies", {})
         motion_correction = workflow_data.pop("motion_correction", {})
         ctf_estimation = workflow_data.pop("ctf_estimation", {})
@@ -364,7 +363,7 @@ class ConfigLoader:
         # Merge all workflow parameters
         workflow_params = {
             **workflow_data,
-            **import_movies,
+            **import_movies,  # This now only contains microscope_config_path
             "motion_correction_binning": motion_correction.get("binning", 1),
             "motion_correction_patch_size": motion_correction.get("patch_size", 5),
             "ctf_min_res": ctf_estimation.get("min_res", 30.0),

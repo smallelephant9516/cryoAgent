@@ -6,12 +6,7 @@
   },
   "workflow": {
     "import_movies": {
-      "movies_path": "/home/daoyi/cryoEM_dataset/10025_subset/agent_test/*.tif",
-      "gain_ref_path": "/home/daoyi/cryoEM_dataset/10025_subset/agent_test/norm-amibox05-0.mrc",
-      "pixel_size": 0.6575,
-      "voltage": 300.0,
-      "cs_mm": 2.7,
-      "dose": 53.0
+      "microscope_config_path": "configs/microscope_config.json"
     },
     "motion_correction": {
       "binning": 1,
@@ -35,8 +30,8 @@
       {
         "name": "import_movies",
         "description": "Import movie files into CryoSPARC",
-        "required_params": ["movies_path", "pixel_size", "voltage", "cs_mm", "dose"],
-        "optional_params": ["gain_ref_path"],
+        "required_params": ["microscope_config_path"],
+        "optional_params": [],
         "depends_on": []
       },
       {

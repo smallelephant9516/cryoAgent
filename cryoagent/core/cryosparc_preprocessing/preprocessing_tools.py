@@ -13,8 +13,9 @@ class PreprocessingTools:
         return Tool(
             name="import_movies",
             description="Import movie files into CryoSPARC for processing. "
-                       "Required parameters: movies_path, pixel_size, voltage, cs_mm, dose. "
-                       "Optional parameters: gain_ref_path, project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
+                       "Required parameters: None (all loaded from microscope_config.json). "
+                       "Optional parameters: project_uid, workspace_uid, wait_for_completion, timeout, check_interval. "
+                       "All microscope parameters (movies_path, gain_ref_path, pixel_size, voltage, cs_mm, dose) are automatically loaded from microscope_config.json.",
             func=agent._import_movies_tool
         )
     

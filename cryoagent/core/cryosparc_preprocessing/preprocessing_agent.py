@@ -1,9 +1,11 @@
 """ReAct-based preprocessing agent for CryoEM data processing."""
 
+import json
 from typing import Dict, Any, List
 from langchain.tools import Tool
 from langchain_core.language_models import BaseLanguageModel
 from typing import Optional
+from pathlib import Path
 
 from ..base_react_agent import BaseReActAgent
 from .preprocessing_tools import PreprocessingTools
@@ -29,6 +31,40 @@ class PreprocessingAgent(BaseReActAgent):
             llm: Language model for the agent
         """
         super().__init__(cryosparc_tools, config, llm)
+        # Load microscope configuration
+        self.microscope_config = self._load_microscope_config()
+    
+    def _load_microscope_config(self) -> Dict[str, Any]:
+        """Load microscope configuration from separate config file."""
+        try:
+            # Get the microscope config path from the workflow configuration
+            microscope_config_path = getattr(self.config.workflow, 'microscope_config_path', 'configs/microscope_config.json')
+            
+            # If it's a relative path, make it relative to the project root
+            if not Path(microscope_config_path).is_absolute():
+                # Assume the config is relative to the project root
+                microscope_config_path = Path.cwd() / microscope_config_path
+            
+            config_path = Path(microscope_config_path)
+            
+            if not config_path.exists():
+                raise FileNotFoundError(f"Microscope configuration file not found: {config_path}")
+            
+            with open(config_path, 'r') as f:
+                microscope_data = json.load(f)
+            
+            # Return the microscope parameters
+            return microscope_data.get('microscope_parameters', {})
+            
+        except Exception as e:
+            print(f"Warning: Could not load microscope configuration: {e}")
+            # Return default values if loading fails
+            return {
+                "pixel_size": 0.6575,
+                "voltage": 300.0,
+                "cs_mm": 2.7,
+                "dose": 53.0
+            }
     
     def _create_tools(self) -> List[Tool]:
         """Create preprocessing-specific tools."""
@@ -45,6 +81,9 @@ class PreprocessingAgent(BaseReActAgent):
     
     def _get_react_system_prompt(self) -> str:
         """Get the preprocessing-specific ReAct system prompt."""
+        # Safely get microscope config values, handling case where it might not be set yet
+        microscope_config = getattr(self, 'microscope_config', {})
+        
         return f"""You are a CryoEM preprocessing assistant using the ReAct (Reasoning + Acting) framework. 
 You specialize in the initial stages of cryoEM data processing: movie import, motion correction, CTF estimation, and micrograph selection.
 
@@ -55,8 +94,9 @@ You specialize in the initial stages of cryoEM data processing: movie import, mo
 
 ## Preprocessing Workflow Steps (in order):
 1. **Import Movies**: Import raw movie files into CryoSPARC
-   - Required: movies_path, pixel_size, voltage, cs_mm, dose
-   - Optional: gain_ref_path, project_uid, workspace_uid
+   - Required: None (all parameters loaded from microscope_config.json)
+   - Optional: project_uid, workspace_uid
+   - Note: All microscope parameters (movies_path, gain_ref_path, pixel_size, voltage, cs_mm, dose) are automatically loaded from microscope_config.json
    
 2. **Motion Correction**: Correct beam-induced motion in movies
    - Required: movies_job_uid (from import_movies)
@@ -104,9 +144,11 @@ For each step, you MUST follow this pattern:
 ## Current Configuration:
 - Project UID: {self.config.workflow.project_uid}
 - Workspace UID: {self.config.workflow.workspace_uid}
-- Movies Path: {self.config.workflow.movies_path}
-- Pixel Size: {self.config.workflow.pixel_size} Å
-- Voltage: {self.config.workflow.voltage} kV
+- Microscope Config: {getattr(self.config.workflow, 'microscope_config_path', 'configs/microscope_config.json')}
+- Movies Path: {microscope_config.get('movies_path', 'N/A')}
+- Gain Ref Path: {microscope_config.get('gain_ref_path', 'N/A')}
+- Pixel Size: {microscope_config.get('pixel_size', 'N/A')} Å
+- Voltage: {microscope_config.get('voltage', 'N/A')} kV
 
 Remember: Always follow the Thought → Action → Observation pattern and WAIT for each job to complete!"""
     
@@ -119,15 +161,19 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             params = self._parse_tool_input(input_str)
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            
+            # Safely get microscope config values, handling case where it might not be set yet
+            microscope_config = getattr(self, 'microscope_config', {})
+            
             used_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
-                "movies_path": params.get("movies_path", self.config.workflow.movies_path),
-                "gain_ref_path": params.get("gain_ref_path", self.config.workflow.gain_ref_path),
-                "pixel_size": float(params.get("pixel_size", self.config.workflow.pixel_size)),
-                "voltage": float(params.get("voltage", self.config.workflow.voltage)),
-                "cs_mm": float(params.get("cs_mm", self.config.workflow.cs_mm)),
-                "dose": float(params.get("dose", self.config.workflow.dose)),
+                "movies_path": params.get("movies_path", microscope_config.get("movies_path", "/path/to/movies/*.tif")),
+                "gain_ref_path": params.get("gain_ref_path", microscope_config.get("gain_ref_path")),
+                "pixel_size": float(params.get("pixel_size", microscope_config.get("pixel_size", 0.6575))),
+                "voltage": float(params.get("voltage", microscope_config.get("voltage", 300.0))),
+                "cs_mm": float(params.get("cs_mm", microscope_config.get("cs_mm", 2.7))),
+                "dose": float(params.get("dose", microscope_config.get("dose", 53.0))),
                 "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
                 "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
                 "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))

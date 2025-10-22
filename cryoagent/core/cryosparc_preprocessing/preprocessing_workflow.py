@@ -82,24 +82,27 @@ class PreprocessingWorkflow:
     
     def _create_workflow_input(self) -> str:
         """Create the workflow input for the ReAct agent."""
+        # Get microscope config from the agent
+        microscope_config = getattr(self.agent, 'microscope_config', {})
+        
         return f"""
 Execute the complete cryoEM preprocessing workflow with these steps:
 
-1. **Import Movies**: Import movie files from {self.config.workflow.movies_path}
-   - Pixel size: {self.config.workflow.pixel_size} Å
-   - Voltage: {self.config.workflow.voltage} kV
-   - CS: {self.config.workflow.cs_mm} mm
-   - Dose: {self.config.workflow.dose} e-/Å²
+1. **Import Movies**: Import movie files from {microscope_config.get('movies_path', 'N/A')}
+   - Pixel size: {microscope_config.get('pixel_size', 'N/A')} Å
+   - Voltage: {microscope_config.get('voltage', 'N/A')} kV
+   - CS: {microscope_config.get('cs_mm', 'N/A')} mm
+   - Dose: {microscope_config.get('dose', 'N/A')} e-/Å²
    - Project: {self.config.workflow.project_uid}
    - Workspace: {self.config.workflow.workspace_uid}
 
 2. **Motion Correction**: Correct motion in the imported movies
-   - Binning: {self.config.workflow.motion_correction_binning}
-   - Patch size: {self.config.workflow.motion_correction_patch_size}
+   - Binning: {getattr(self.config.workflow, 'motion_correction_binning', 1)}
+   - Patch size: {getattr(self.config.workflow, 'motion_correction_patch_size', 5)}
 
 3. **CTF Estimation**: Estimate CTF parameters for micrographs
-   - Min resolution: {self.config.workflow.ctf_min_res} Å
-   - Max resolution: {self.config.workflow.ctf_max_res} Å
+   - Min resolution: {getattr(self.config.workflow, 'ctf_min_res', 30.0)} Å
+   - Max resolution: {getattr(self.config.workflow, 'ctf_max_res', 4.0)} Å
 
 4. **Micrograph Selection**: Select micrographs with resolution better than 5 Å
    - Min resolution threshold: 5.0 Å

@@ -1,0 +1,1 @@
+relion class ranker has to be download manually, the dest_dir need to change

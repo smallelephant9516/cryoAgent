@@ -1,0 +1,23 @@
+{
+  "microscope_info": {
+    "name": "microscope_parameters",
+    "description": "Basic microscope parameters for cryoEM data collection",
+    "version": "1.0.0"
+  },
+  "microscope_parameters": {
+    "pixel_size": 0.6575,
+    "voltage": 300.0,
+    "cs_mm": 2.7,
+    "dose": 53.0,
+    "movies_path": "/home/daoyi/cryoEM_dataset/10025_subset/agent_test/*.tif",
+    "gain_ref_path": "/home/daoyi/cryoEM_dataset/10025_subset/agent_test/norm-amibox05-0.mrc"
+  },
+  "parameter_descriptions": {
+    "pixel_size": "Physical pixel size in Angstroms",
+    "voltage": "Accelerating voltage in kV",
+    "cs_mm": "Spherical aberration coefficient in mm",
+    "dose": "Electron dose per frame in e-/Å²",
+    "movies_path": "Path to movie files (supports wildcards like *.tif)",
+    "gain_ref_path": "Path to gain reference file (.mrc format)"
+  }
+}
