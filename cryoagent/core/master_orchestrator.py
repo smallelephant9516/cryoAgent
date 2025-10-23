@@ -19,6 +19,7 @@ from enum import Enum
 # Import modular agents
 from .cryosparc_preprocessing import PreprocessingAgent as ModularPreprocessingAgent, PreprocessingWorkflow
 from .cryosparc_picking import PickingAgent as ModularPickingAgent, PickingWorkflow
+# RELION preprocessing will be handled within the standard PreprocessingAgent
 from ..config.config_loader import ConfigLoader, CryoAgentConfig
 from ..tools.cryosparc_tools import CryoSPARCTools
 from ..utils.general_llm_logger import GeneralLLMLogger
@@ -184,27 +185,60 @@ class PreprocessingAgent(StageAgent):
             config_loader = ConfigLoader(self.config_path, master_config_path)
             self.config = config_loader.load_config()
             
-            # Initialize CryoSPARC tools
-            self.cryosparc_tools = CryoSPARCTools(self.config.cryosparc)
-            
-            # Initialize modular preprocessing agent
-            self.modular_agent = ModularPreprocessingAgent(
-                cryosparc_tools=self.cryosparc_tools,
-                config=self.config
-            )
-            
-            # Set stage name and workflow type for conversation logging
-            self.modular_agent.stage_name = "preprocessing"
-            self.modular_agent.workflow_type = "cryoem"
-            
-            # Initialize preprocessing workflow
-            self.modular_workflow = PreprocessingWorkflow(
-                agent=self.modular_agent,
-                config=self.config
-            )
-            
-            self.logger.info(f"Stage agent {self.stage_name} initialized successfully with modular architecture")
-            return True
+            # Determine backend from config path (cryosparc or relion)
+            if "relion" in self.config_path:
+                # Use RELION preprocessing - create a simple RELION backend
+                try:
+                    # For RELION, we'll use a simplified approach without CryoSPARC tools
+                    # The actual RELION commands will be executed directly
+                    self.cryosparc_tools = None  # No CryoSPARC tools needed for RELION
+                    
+                    # Create a simple RELION preprocessing agent
+                    # This will use the existing modular architecture but with RELION-specific logic
+                    self.modular_agent = ModularPreprocessingAgent(
+                        cryosparc_tools=None,  # No CryoSPARC tools
+                        config=self.config
+                    )
+                    
+                    # Set stage name and workflow type for conversation logging
+                    self.modular_agent.stage_name = "preprocessing"
+                    self.modular_agent.workflow_type = "cryoem"
+                    
+                    # Initialize preprocessing workflow
+                    self.modular_workflow = PreprocessingWorkflow(
+                        agent=self.modular_agent,
+                        config=self.config
+                    )
+                    
+                    self.logger.info(f"Stage agent {self.stage_name} initialized successfully with RELION backend")
+                    return True
+                    
+                except Exception as relion_error:
+                    self.logger.error(f"Failed to initialize RELION backend: {relion_error}")
+                    return False
+            else:
+                # Use CryoSPARC preprocessing (default)
+                # Initialize CryoSPARC tools
+                self.cryosparc_tools = CryoSPARCTools(self.config.cryosparc)
+                
+                # Initialize modular preprocessing agent
+                self.modular_agent = ModularPreprocessingAgent(
+                    cryosparc_tools=self.cryosparc_tools,
+                    config=self.config
+                )
+                
+                # Set stage name and workflow type for conversation logging
+                self.modular_agent.stage_name = "preprocessing"
+                self.modular_agent.workflow_type = "cryoem"
+                
+                # Initialize preprocessing workflow
+                self.modular_workflow = PreprocessingWorkflow(
+                    agent=self.modular_agent,
+                    config=self.config
+                )
+                
+                self.logger.info(f"Stage agent {self.stage_name} initialized successfully with CryoSPARC backend")
+                return True
             
         except Exception as e:
             self.logger.error(f"Failed to initialize stage agent {self.stage_name}: {e}")
@@ -270,6 +304,196 @@ class PreprocessingAgent(StageAgent):
     
     def get_required_inputs(self) -> List[str]:
         return ["movies_path", "pixel_size", "voltage", "cs_mm", "dose"]
+
+
+class RelionPreprocessingAgent(StageAgent):
+    """Specialized agent for RELION pre-processing stage using modular architecture."""
+    
+    def __init__(self, config_path: str):
+        super().__init__("preprocessing", config_path)
+    
+    def initialize(self) -> bool:
+        """Initialize the RELION preprocessing agent with modular architecture."""
+        try:
+            # Load stage-specific configuration with master config
+            master_config_path = "configs/master_config.json"
+            config_loader = ConfigLoader(self.config_path, master_config_path)
+            self.config = config_loader.load_config()
+            
+            # Initialize RELION preprocessing agent (no CryoSPARC tools needed)
+            self.modular_agent = RelionPreprocessingAgent(
+                config=self.config
+            )
+            
+            # Set stage name and workflow type for conversation logging
+            self.modular_agent.stage_name = "preprocessing"
+            self.modular_agent.workflow_type = "cryoem"
+            
+            # Initialize preprocessing workflow
+            self.modular_workflow = RelionPreprocessingWorkflow(
+                agent=self.modular_agent,
+                config=self.config
+            )
+            
+            self.logger.info(f"RELION stage agent {self.stage_name} initialized successfully with modular architecture")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize RELION stage agent {self.stage_name}: {e}")
+            return False
+    
+    def execute_stage(self, context: WorkflowContext, conversation_id: Optional[str] = None) -> StageResult:
+        """Execute the RELION pre-processing stage using modular workflow."""
+        start_time = time.time()
+        
+        try:
+            self.logger.info(f"Starting {self.get_stage_description()}")
+            
+            # Execute the preprocessing workflow using modular architecture
+            results = self.modular_workflow.run(conversation_id=conversation_id)
+            
+            # Parse results and extract stage outputs
+            stage_outputs = self._parse_relion_preprocessing_results(results)
+            
+            # Validate that jobs were actually executed
+            validation_result = self._validate_relion_preprocessing_results(stage_outputs)
+            
+            # Save preprocessing results to JSON file
+            result_file_path = self._save_relion_preprocessing_results(stage_outputs, context, validation_result["success"])
+            self.logger.info(f"RELION preprocessing results saved to: {result_file_path}")
+            print(f"📄 RELION preprocessing results saved to: {result_file_path}")
+            
+            # Add result file path to stage outputs
+            stage_outputs["result_file"] = result_file_path
+            
+            execution_time = time.time() - start_time
+            
+            # Return result based on validation
+            if not validation_result["success"]:
+                self.logger.error(f"RELION pre-processing validation failed: {validation_result['error']}")
+                return StageResult(
+                    stage=WorkflowStage.PREPROCESSING,
+                    success=False,
+                    stage_outputs=stage_outputs,
+                    error=validation_result["error"],
+                    execution_time=execution_time
+                )
+            
+            return StageResult(
+                stage=WorkflowStage.PREPROCESSING,
+                success=True,
+                stage_outputs=stage_outputs,
+                execution_time=execution_time
+            )
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self.logger.error(f"RELION pre-processing stage failed: {e}")
+            
+            return StageResult(
+                stage=WorkflowStage.PREPROCESSING,
+                success=False,
+                error=str(e),
+                execution_time=execution_time
+            )
+    
+    def get_stage_description(self) -> str:
+        return "RELION Pre-processing: Import movies, motion correction, CTF estimation, and micrograph selection"
+    
+    def get_required_inputs(self) -> List[str]:
+        return ["movies_path", "pixel_size", "voltage", "cs_mm", "q0", "beamtilt_x", "beamtilt_y"]
+    
+    def _parse_relion_preprocessing_results(self, results: List) -> Dict[str, Any]:
+        """Parse RELION preprocessing results to extract stage outputs."""
+        stage_outputs = {
+            "import_job_dir": None,
+            "motion_correction_job_dir": None,
+            "ctf_job_dir": None,
+            "selection_job_dir": None,
+            "movies_star_file": None,
+            "corrected_micrographs_star": None,
+            "ctf_star_file": None,
+            "selected_micrographs_star": None
+        }
+        
+        # Extract job directories and output files from workflow results
+        for result in results:
+            step_name = result.step.value
+            if result.success:
+                if step_name == "import_movies":
+                    stage_outputs["import_job_dir"] = result.job_dir
+                    stage_outputs["movies_star_file"] = result.output_file
+                elif step_name == "motion_correction":
+                    stage_outputs["motion_correction_job_dir"] = result.job_dir
+                    stage_outputs["corrected_micrographs_star"] = result.output_file
+                elif step_name == "ctf_estimation":
+                    stage_outputs["ctf_job_dir"] = result.job_dir
+                    stage_outputs["ctf_star_file"] = result.output_file
+                elif step_name == "micrograph_selection":
+                    stage_outputs["selection_job_dir"] = result.job_dir
+                    stage_outputs["selected_micrographs_star"] = result.output_file
+        
+        return stage_outputs
+    
+    def _validate_relion_preprocessing_results(self, stage_outputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Validate that RELION preprocessing jobs were executed successfully."""
+        try:
+            # Check that all required output files exist
+            required_files = [
+                stage_outputs.get("movies_star_file"),
+                stage_outputs.get("corrected_micrographs_star"),
+                stage_outputs.get("ctf_star_file"),
+                stage_outputs.get("selected_micrographs_star")
+            ]
+            
+            missing_files = [f for f in required_files if not f or not Path(f).exists()]
+            
+            if missing_files:
+                return {
+                    "success": False,
+                    "error": f"Missing output files: {missing_files}"
+                }
+            
+            return {"success": True, "error": None}
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Validation error: {str(e)}"
+            }
+    
+    def _save_relion_preprocessing_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool) -> str:
+        """Save RELION preprocessing results to JSON file."""
+        try:
+            # Create outputs directory
+            outputs_dir = Path("outputs")
+            outputs_dir.mkdir(exist_ok=True)
+            
+            # Generate timestamp for unique filename
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            result_file = outputs_dir / f"relion_preprocessing_results_{timestamp}.json"
+            
+            # Prepare results data
+            results_data = {
+                "timestamp": timestamp,
+                "status": "completed" if success else "failed",
+                "stage": "preprocessing",
+                "agent_type": "relion",
+                "project_uid": context.project_uid,
+                "workspace_uid": context.workspace_uid,
+                "stage_outputs": stage_outputs,
+                "metadata": context.metadata
+            }
+            
+            # Save to JSON file
+            with open(result_file, 'w') as f:
+                json.dump(results_data, f, indent=2)
+            
+            return str(result_file)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to save RELION preprocessing results: {e}")
+            return ""
     
     def _parse_modular_preprocessing_results(self, results: List) -> Dict[str, Any]:
         """Parse modular preprocessing results to extract stage outputs."""

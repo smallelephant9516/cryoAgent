@@ -1,0 +1,133 @@
+{
+  "stage_info": {
+    "name": "preprocessing",
+    "description": "Pre-processing stage: Import movies, motion correction, CTF estimation, and micrograph selection using RELION",
+    "version": "1.0.0"
+  },
+  "required_inputs": [
+    "movies_path",
+    "pixel_size",
+    "voltage",
+    "cs_mm",
+    "q0",
+    "beamtilt_x",
+    "beamtilt_y"
+  ],
+  "outputs": [
+    "selected_micrographs",
+    "ctf_parameters",
+    "movies_star_file",
+    "corrected_micrographs_star",
+    "ctf_star_file",
+    "selected_micrographs_star"
+  ],
+  "workflow": {
+    "import_movies": {
+      "microscope_config_path": "configs/microscope_config.json",
+      "optics_group_name": "opticsGroup1",
+      "continue_job": true
+    },
+    "motion_correction": {
+      "use_motioncor2": true,
+      "motioncor2_exe": "/home/daoyi/tools/motioncor/MotionCor2_1.6.4_Cuda118_Mar312023",
+      "gpu": "0",
+      "bin_factor": 1,
+      "bfactor": 150,
+      "dose_per_frame": 1.39,
+      "preexposure": 0,
+      "patch_x": 1,
+      "patch_y": 1,
+      "eer_grouping": 32,
+      "gain_rot": 0,
+      "gain_flip": 0,
+      "dose_weighting": true,
+      "first_frame_sum": 1,
+      "last_frame_sum": -1,
+      "gain_ref": "/home/daoyi/relion/relion_test/norm-amibox05-0.mrc"
+    },
+    "ctf_estimation": {
+      "box_size": 512,
+      "res_min": 30,
+      "res_max": 5,
+      "df_min": 5000,
+      "df_max": 50000,
+      "fstep": 500,
+      "dast": 100,
+      "ctffind_exe": "/home/daoyi/tools/ctffind/ctffind_4_1_14/ctffind",
+      "ctf_win": -1,
+      "is_ctffind4": true,
+      "fast_search": true,
+      "only_do_unfinished": true
+    },
+    "micrograph_selection": {
+      "min_resolution": 5.0,
+      "quality_threshold": 0.8
+    }
+  },
+  "react_workflow": {
+    "steps": [
+      {
+        "name": "import_movies",
+        "description": "Import movie files into RELION using relion_import",
+        "required_params": [
+          "microscope_config_path",
+          "optics_group_name"
+        ],
+        "optional_params": [
+          "continue_job"
+        ],
+        "depends_on": []
+      },
+      {
+        "name": "motion_correction",
+        "description": "Perform motion correction using relion_run_motioncorr with MotionCor2",
+        "required_params": [
+          "movies_star_file"
+        ],
+        "optional_params": [
+          "use_motioncor2",
+          "motioncor2_exe",
+          "gpu",
+          "bin_factor",
+          "bfactor",
+          "dose_per_frame"
+        ],
+        "depends_on": [
+          "import_movies"
+        ]
+      },
+      {
+        "name": "ctf_estimation",
+        "description": "Estimate CTF parameters using relion_run_ctffind",
+        "required_params": [
+          "corrected_micrographs_star"
+        ],
+        "optional_params": [
+          "box_size",
+          "res_min",
+          "res_max",
+          "df_min",
+          "df_max",
+          "ctffind_exe"
+        ],
+        "depends_on": [
+          "motion_correction"
+        ]
+      },
+      {
+        "name": "micrograph_selection",
+        "description": "Select micrographs with resolution better than specified threshold",
+        "required_params": [
+          "ctf_star_file"
+        ],
+        "optional_params": [
+          "min_resolution",
+          "quality_threshold"
+        ],
+        "depends_on": [
+          "ctf_estimation"
+        ]
+      }
+    ]
+  }
+}

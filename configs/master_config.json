@@ -8,27 +8,21 @@
         "description": "Pre-processing stage: Import movies, motion correction, CTF estimation, and micrograph selection",
         "enabled": true,
         "agent_group": "cryosparc",
-        "agent_class": "PreprocessingAgent",
-        "required_inputs": ["movies_path", "pixel_size", "voltage", "cs_mm", "dose"],
-        "outputs": ["selected_micrographs", "ctf_parameters", "micrograph_job_uid"]
+        "agent_class": "PreprocessingAgent"
       },
       {
         "name": "particle_picking",
         "description": "Particle picking stage: Detect and extract particles from micrographs",
-        "enabled": true,
+        "enabled": false,
         "agent_group": "cryosparc",
-        "agent_class": "ParticlePickingAgent",
-        "required_inputs": ["selected_micrographs", "ctf_parameters"],
-        "outputs": ["picked_particles", "particle_coordinates", "particle_job_uid"]
+        "agent_class": "ParticlePickingAgent"
       },
       {
         "name": "reconstruction",
         "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
-        "enabled": true,
+        "enabled": false,
         "agent_group": "cryosparc",
-        "agent_class": "ReconstructionAgent",
-        "required_inputs": ["picked_particles", "particle_coordinates"],
-        "outputs": ["final_structure", "resolution", "reconstruction_job_uid"]
+        "agent_class": "ReconstructionAgent"
       }
     ],
     "execution_mode": "sequential",
@@ -42,6 +36,11 @@
     "username": "lidaoyi16@hotmail.com",
     "password": "Password123",
     "license_id": "${LICENSE_ID}"
+  },
+  "relion": {
+    "relion_exe": "/usr/local/bin/relion",
+    "continue_job": true,
+    "relion_dir": "/home/daoyi/relion/relion_test"
   },
   "agent": {
     "provider": "deepseek", 

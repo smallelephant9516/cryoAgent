@@ -1,0 +1,189 @@
+"""ReAct-based RELION preprocessing workflow orchestrator."""
+
+from typing import Dict, Any, List, Optional
+from dataclasses import dataclass
+from enum import Enum
+
+from .preprocessing_agent import PreprocessingAgent
+from ...config.config_loader import CryoAgentConfig
+
+
+class PreprocessingStep(Enum):
+    """Enumeration of preprocessing workflow steps."""
+    IMPORT_MOVIES = "import_movies"
+    MOTION_CORRECTION = "motion_correction"
+    CTF_ESTIMATION = "ctf_estimation"
+    MICROGRAPH_SELECTION = "micrograph_selection"
+
+
+@dataclass
+class PreprocessingResult:
+    """Result of a preprocessing workflow execution."""
+    step: PreprocessingStep
+    success: bool
+    job_dir: Optional[str] = None
+    output_file: Optional[str] = None
+    message: str = ""
+    error: Optional[str] = None
+    reasoning: Optional[str] = None
+
+
+class PreprocessingWorkflow:
+    """ReAct-based orchestrator for RELION preprocessing workflows."""
+    
+    def __init__(self, agent: PreprocessingAgent, config: CryoAgentConfig):
+        """
+        Initialize the preprocessing workflow.
+        
+        Args:
+            agent: Preprocessing agent instance
+            config: Complete configuration object
+        """
+        self.agent = agent
+        self.config = config
+        self.results: List[PreprocessingResult] = []
+        self.current_job_dirs: Dict[PreprocessingStep, str] = {}
+        self.workflow_state: Dict[str, Any] = {}
+    
+    def run(self, conversation_id: Optional[str] = None) -> List[PreprocessingResult]:
+        """
+        Run the complete preprocessing workflow using ReAct approach.
+        
+        Args:
+            conversation_id: Optional conversation identifier for memory control
+            
+        Returns:
+            List of preprocessing results for each step
+        """
+        self.results = []
+        self.workflow_state = {
+            "current_step": None,
+            "completed_steps": [],
+            "failed_steps": [],
+            "active_jobs": {},
+            "workflow_status": "starting"
+        }
+        
+        workflow_input = self._create_workflow_input()
+        
+        try:
+            result = self.agent.run_react_workflow(workflow_input, conversation_id)
+            self._parse_workflow_result(result)
+            
+        except Exception as e:
+            error_result = PreprocessingResult(
+                step=PreprocessingStep.IMPORT_MOVIES,
+                success=False,
+                error=f"Preprocessing workflow execution failed: {str(e)}",
+                message="ReAct workflow failed to execute"
+            )
+            self.results.append(error_result)
+        
+        return self.results
+    
+    def _create_workflow_input(self) -> str:
+        """Create the workflow input for the ReAct agent."""
+        # Get microscope config from the agent
+        microscope_config = getattr(self.agent, 'microscope_config', {})
+        
+        return f"""
+Execute the complete RELION preprocessing workflow with these steps:
+
+1. **Import Movies**: Import movie files using relion_import
+   - Movies path: {microscope_config.get('movies_path', 'Micrographs/*.tif')}
+   - Pixel size: {microscope_config.get('pixel_size', 'N/A')} Å
+   - Voltage: {microscope_config.get('voltage', 'N/A')} kV
+   - CS: {microscope_config.get('cs_mm', 'N/A')} mm
+   - Q0: {microscope_config.get('q0', 'N/A')}
+   - Beam tilt X: {microscope_config.get('beamtilt_x', 'N/A')}
+   - Beam tilt Y: {microscope_config.get('beamtilt_y', 'N/A')}
+   - Optics group: {getattr(self.config.workflow, 'optics_group_name', 'opticsGroup1')}
+
+2. **Motion Correction**: Correct motion using relion_run_motioncorr with MotionCor2
+   - Use MotionCor2: {getattr(self.config.workflow, 'use_motioncor2', True)}
+   - MotionCor2 executable: {getattr(self.config.workflow, 'motioncor2_exe', '../../tools/MotionCor2_1.6.4_Cuda118_Mar312023')}
+   - GPU: {getattr(self.config.workflow, 'gpu', '0')}
+   - Bin factor: {getattr(self.config.workflow, 'bin_factor', 1)}
+   - B-factor: {getattr(self.config.workflow, 'bfactor', 150)}
+   - Dose per frame: {getattr(self.config.workflow, 'dose_per_frame', 1.39)}
+   - Dose weighting: {getattr(self.config.workflow, 'dose_weighting', True)}
+
+3. **CTF Estimation**: Estimate CTF parameters using relion_run_ctffind
+   - Box size: {getattr(self.config.workflow, 'box_size', 512)}
+   - Resolution range: {getattr(self.config.workflow, 'res_min', 30)} - {getattr(self.config.workflow, 'res_max', 5)} Å
+   - Defocus range: {getattr(self.config.workflow, 'df_min', 5000)} - {getattr(self.config.workflow, 'df_max', 50000)} Å
+   - CTFfind executable: {getattr(self.config.workflow, 'ctffind_exe', '/home/daoyi/tools/ctffind/ctffind_4_1_14/ctffind')}
+   - Fast search: {getattr(self.config.workflow, 'fast_search', True)}
+
+4. **Micrograph Selection**: Select high-quality micrographs
+   - Minimum resolution: {getattr(self.config.workflow, 'min_resolution', 5.0)} Å
+   - Quality threshold: {getattr(self.config.workflow, 'quality_threshold', 0.8)}
+
+## Workflow Requirements:
+- Execute steps in order: Import → Motion Correction → CTF Estimation → Selection
+- Wait for each job to complete before starting the next
+- Validate inputs before starting each step
+- Check job status and logs if any step fails
+- Use continue_job=true for import to handle interrupted jobs
+
+## Expected Outputs:
+- Import: Import/job001/movies.star
+- Motion Correction: MotionCorr/job022/corrected_micrographs.star
+- CTF Estimation: CtfFind/job010/micrographs_ctf.star
+- Selection: Select/job011/selected_micrographs.star
+
+Execute this workflow step by step, ensuring each job completes successfully before proceeding.
+"""
+    
+    def _parse_workflow_result(self, result: str) -> None:
+        """Parse the ReAct workflow result and create PreprocessingResult objects."""
+        # This is a simplified parser - in a real implementation, you'd parse the agent's output
+        # to extract specific results for each step
+        
+        # For now, create results based on the agent's workflow state
+        for step_name, step_state in self.agent.workflow_state.items():
+            step_enum = PreprocessingStep(step_name)
+            
+            result_obj = PreprocessingResult(
+                step=step_enum,
+                success=step_state["completed"],
+                job_dir=step_state.get("job_dir"),
+                output_file=step_state.get("output_file"),
+                message=f"{step_name} {'completed' if step_state['completed'] else 'pending'}"
+            )
+            
+            self.results.append(result_obj)
+    
+    def get_workflow_summary(self) -> str:
+        """Get a summary of the workflow execution."""
+        if not self.results:
+            return "No workflow results available."
+        
+        summary = "RELION Preprocessing Workflow Summary:\n\n"
+        
+        for result in self.results:
+            status = "✅ SUCCESS" if result.success else "❌ FAILED"
+            summary += f"{result.step.value.replace('_', ' ').title()}: {status}\n"
+            
+            if result.job_dir:
+                summary += f"  Job directory: {result.job_dir}\n"
+            if result.output_file:
+                summary += f"  Output file: {result.output_file}\n"
+            if result.message:
+                summary += f"  Message: {result.message}\n"
+            if result.error:
+                summary += f"  Error: {result.error}\n"
+            
+            summary += "\n"
+        
+        return summary
+    
+    def get_final_outputs(self) -> Dict[str, str]:
+        """Get the final output files from the workflow."""
+        outputs = {}
+        
+        for result in self.results:
+            if result.success and result.output_file:
+                outputs[result.step.value] = result.output_file
+        
+        return outputs

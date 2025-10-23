@@ -5,6 +5,8 @@
     "version": "1.0.0",
     "status": "active"
   },
+  "required_inputs": ["selected_micrographs", "ctf_parameters"],
+  "outputs": ["picked_particles", "particle_coordinates", "particle_job_uid"],
   "input": {
     "micrograph_location": null,
     "micrograph_location_description": "Location of the micrographs for particle picking. If null, will read from the output of the preprocessing agent. Can be a CryoSPARC job UID (e.g., 'J84') or a path to micrographs."

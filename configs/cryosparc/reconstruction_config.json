@@ -4,6 +4,8 @@
     "description": "Two-step 3D reconstruction workflow: Ab Initio Reconstruction → Homogeneous Refinement",
     "version": "1.0.0"
   },
+  "required_inputs": ["picked_particles", "particle_coordinates"],
+  "outputs": ["final_structure", "resolution", "reconstruction_job_uid"],
   
   "workflow": {
     "reconstruction_method": {

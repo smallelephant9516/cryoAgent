@@ -4,6 +4,8 @@
     "description": "Pre-processing stage: Import movies, motion correction, CTF estimation, and micrograph selection",
     "version": "1.0.0"
   },
+  "required_inputs": ["movies_path", "pixel_size", "voltage", "cs_mm", "dose"],
+  "outputs": ["selected_micrographs", "ctf_parameters", "micrograph_job_uid"],
   "workflow": {
     "import_movies": {
       "microscope_config_path": "configs/microscope_config.json"
