@@ -7,7 +7,7 @@
         "name": "preprocessing",
         "description": "Pre-processing stage: Import movies, motion correction, CTF estimation, and micrograph selection",
         "enabled": true,
-        "config_file": "configs/preprocessing_config.json",
+        "agent_group": "cryosparc",
         "agent_class": "PreprocessingAgent",
         "required_inputs": ["movies_path", "pixel_size", "voltage", "cs_mm", "dose"],
         "outputs": ["selected_micrographs", "ctf_parameters", "micrograph_job_uid"]
@@ -16,7 +16,7 @@
         "name": "particle_picking",
         "description": "Particle picking stage: Detect and extract particles from micrographs",
         "enabled": true,
-        "config_file": "configs/particle_picking_config.json",
+        "agent_group": "cryosparc",
         "agent_class": "ParticlePickingAgent",
         "required_inputs": ["selected_micrographs", "ctf_parameters"],
         "outputs": ["picked_particles", "particle_coordinates", "particle_job_uid"]
@@ -24,8 +24,8 @@
       {
         "name": "reconstruction",
         "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
-        "enabled": false,
-        "config_file": "configs/3d_reconstruction_config.json",
+        "enabled": true,
+        "agent_group": "cryosparc",
         "agent_class": "ReconstructionAgent",
         "required_inputs": ["picked_particles", "particle_coordinates"],
         "outputs": ["final_structure", "resolution", "reconstruction_job_uid"]

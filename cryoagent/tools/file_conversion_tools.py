@@ -43,15 +43,65 @@ class FileConversionTools:
         self,
         cs_path: Union[str, Path],
         star_path: Union[str, Path],
+        passthrough_path: Optional[Union[str, Path]] = None,
     ) -> Path:
         """Convert the CryoSPARC metadata file to a RELION STAR file."""
         df_raw = self.read_cs_file(cs_path)
+        
+        # Try to load passthrough file for location information
+        if passthrough_path is None:
+            # Try to find passthrough file in the same directory
+            cs_path = Path(cs_path)
+            passthrough_candidates = [
+                cs_path.parent / "J57_passthrough_particles.cs",
+                cs_path.parent / f"{cs_path.stem}_passthrough_particles.cs",
+                cs_path.parent / f"{cs_path.stem}_passthrough.cs",
+            ]
+            for candidate in passthrough_candidates:
+                if candidate.exists():
+                    passthrough_path = candidate
+                    break
+        
+        if passthrough_path and Path(passthrough_path).exists():
+            try:
+                df_passthrough = self.read_cs_file(passthrough_path)
+                print(f"Loading location information from: {passthrough_path}")
+                # Merge location information from passthrough file
+                df_raw = self._merge_location_data(df_raw, df_passthrough)
+            except Exception as e:
+                print(f"Warning: Could not load passthrough file {passthrough_path}: {e}")
+        
         particles, optics = self._build_relion_tables(df_raw)
         particles.attrs["optics"] = optics
         star_path = Path(star_path)
         star_path.parent.mkdir(parents=True, exist_ok=True)
         self._dataframe_to_star(particles, star_path, format="v3")
         return star_path
+
+    def _merge_location_data(self, df_main: pd.DataFrame, df_passthrough: pd.DataFrame) -> pd.DataFrame:
+        """Merge location data from passthrough file into main dataframe."""
+        # Create a copy to avoid modifying the original
+        df_merged = df_main.copy()
+        
+        # Location fields to merge from passthrough file
+        location_fields = [
+            "location/center_x_frac",
+            "location/center_y_frac", 
+            "location/micrograph_shape",
+            "location/micrograph_psize_A",
+            "location/micrograph_uid",
+            "location/exp_group_id",
+            "location/micrograph_path",
+            "location/min_dist_A"
+        ]
+        
+        # Add location fields from passthrough file
+        #for field in location_fields:
+        #    if field in df_passthrough.columns:
+        #        df_merged[field] = df_passthrough[field]
+        #        print(f"Added location field: {field}")
+        
+        return df_merged
 
     # ------------------------------------------------------------------
     # Conversion helpers (adapted from helicon)
@@ -76,14 +126,23 @@ class FileConversionTools:
 
         pixel_series = df_raw.get("blob/psize_A")
         pixel_size = pd.to_numeric(pixel_series, errors="coerce") if pixel_series is not None else pd.Series([np.nan] * n_particles)
+        # Handle autopick figure of merit - try multiple possible field names
+        autopick_fom = None
+        for field_name in ["pick_stats/ncc_score", "pick_stats/power", "alignments3D/cross_cor", "alignments2D/cross_cor"]:
+            if field_name in df_raw:
+                autopick_fom = pd.to_numeric(df_raw.get(field_name), errors="coerce")
+                break
+        
+        if autopick_fom is None:
+            # If no autopick data is available, use a default value
+            autopick_fom = pd.Series([1.0] * n_particles)
+
         particle_data: Dict[str, Any] = {
             "rlnImageName": image_names,
             "rlnMicrographName": micrograph_names,
             "rlnImagePixelSize": pixel_size,
             "rlnMicrographOriginalPixelSize": pixel_size,
-            "rlnAutopickFigureOfMerit": pd.to_numeric(
-                df_raw.get("pick_stats/ncc_score"), errors="coerce"
-            ),
+            "rlnAutopickFigureOfMerit": autopick_fom,
         }
 
         class_series = None
@@ -102,10 +161,40 @@ class FileConversionTools:
             class_values = pd.to_numeric(class_series, errors="coerce").fillna(0)
             particle_data["rlnClassNumber"] = class_values.round().astype(int) + 1
 
-        angle_series = df_raw.get("pick_stats/angle_rad")
-        if angle_series is not None:
-            angle_rad = pd.to_numeric(angle_series, errors="coerce")
-            particle_data["rlnAnglePsi"] = np.degrees(angle_rad)
+        # Handle 3D alignment pose data (preferred for 3D reconstructions)
+        # Try different possible field names for 3D pose data
+        pose_series = None
+        for field_name in ["alignments3D/pose", "alignments3D_multi/pose"]:
+            if field_name in df_raw:
+                pose_series = df_raw.get(field_name)
+                break
+        
+        if pose_series is not None:
+            # Handle nested pose data structure (e.g., [[rot, tilt, psi]] or [rot, tilt, psi])
+            def extract_pose_angles(x):
+                if isinstance(x, (list, tuple, np.ndarray)):
+                    # Handle nested structure: [[rot, tilt, psi]]
+                    if len(x) > 0 and isinstance(x[0], (list, tuple, np.ndarray)) and len(x[0]) >= 3:
+                        return x[0][:3]
+                    # Handle flat structure: [rot, tilt, psi]
+                    elif len(x) >= 3:
+                        return x[:3]
+                return [0, 0, 0]
+            
+            pose_data = pose_series.apply(extract_pose_angles)
+            particle_data["rlnAngleRot"] = pose_data.apply(lambda x: np.degrees(x[0]) if len(x) >= 1 else 0)
+            particle_data["rlnAngleTilt"] = pose_data.apply(lambda x: np.degrees(x[1]) if len(x) >= 2 else 0)
+            particle_data["rlnAnglePsi"] = pose_data.apply(lambda x: np.degrees(x[2]) if len(x) >= 3 else 0)
+        else:
+            # Fallback to 2D alignment data if 3D pose is not available
+            angle_series = df_raw.get("pick_stats/angle_rad")
+            if angle_series is not None:
+                angle_rad = pd.to_numeric(angle_series, errors="coerce")
+                particle_data["rlnAnglePsi"] = np.degrees(angle_rad)
+            else:
+                particle_data["rlnAnglePsi"] = 0.0
+            particle_data["rlnAngleRot"] = 0.0
+            particle_data["rlnAngleTilt"] = 0.0
 
         defocus_u = df_raw.get("ctf/df1_A")
         defocus_v = df_raw.get("ctf/df2_A")
@@ -129,6 +218,53 @@ class FileConversionTools:
         if ctf_scale is not None:
             particle_data["rlnCtfFigureOfMerit"] = pd.to_numeric(ctf_scale, errors="coerce")
 
+        # Handle location information from passthrough file
+        center_x_frac = df_raw.get("location/center_x_frac")
+        center_y_frac = df_raw.get("location/center_y_frac")
+        micrograph_shape = df_raw.get("location/micrograph_shape")
+        micrograph_psize = df_raw.get("location/micrograph_psize_A")
+        
+        if (center_x_frac is not None and center_y_frac is not None and 
+            micrograph_shape is not None and micrograph_psize is not None):
+            # Convert fractional coordinates to pixel coordinates
+            def convert_fractional_to_pixel(frac_coords, shape_coords, axis=0):
+                if isinstance(frac_coords, (list, tuple, np.ndarray)) and len(frac_coords) > 0:
+                    if isinstance(shape_coords, (list, tuple, np.ndarray)) and len(shape_coords) > 0:
+                        shape_dim = shape_coords[axis] if axis < len(shape_coords) else shape_coords[0]
+                        return frac_coords * shape_dim
+                return 0.0
+            
+            # Convert fractional coordinates to pixel coordinates
+            center_x_pix = center_x_frac * micrograph_shape.apply(lambda x: x[0] if len(x) > 0 else 0)
+            center_y_pix = center_y_frac * micrograph_shape.apply(lambda x: x[1] if len(x) > 0 else 0)
+            
+            # Convert pixel coordinates to Angstroms
+            center_x_angst = center_x_pix * micrograph_psize
+            center_y_angst = center_y_pix * micrograph_psize
+            
+            particle_data["rlnCoordinateX"] = center_x_pix
+            particle_data["rlnCoordinateY"] = center_y_pix
+            particle_data["rlnCoordinateXAngst"] = center_x_angst
+            particle_data["rlnCoordinateYAngst"] = center_y_angst
+        else:
+            # Fallback to CTF shift data if location data is not available
+            shift_series = df_raw.get("ctf/shift_A")
+            if shift_series is not None:
+                particle_data["rlnCoordinateX"] = shift_series.apply(
+                    lambda val: self._extract_shift_component(val, axis=0)
+                )
+                particle_data["rlnCoordinateY"] = shift_series.apply(
+                    lambda val: self._extract_shift_component(val, axis=1)
+                )
+                particle_data["rlnCoordinateXAngst"] = particle_data["rlnCoordinateX"]
+                particle_data["rlnCoordinateYAngst"] = particle_data["rlnCoordinateY"]
+            else:
+                particle_data["rlnCoordinateX"] = 0.0
+                particle_data["rlnCoordinateY"] = 0.0
+                particle_data["rlnCoordinateXAngst"] = 0.0
+                particle_data["rlnCoordinateYAngst"] = 0.0
+        
+        # Handle origin shifts (different from coordinates)
         shift_series = df_raw.get("ctf/shift_A")
         if shift_series is not None:
             particle_data["rlnOriginX"] = shift_series.apply(
@@ -155,6 +291,10 @@ class FileConversionTools:
         particle_data["rlnGroupNumber"] = optics_group_series
 
         particles = pd.DataFrame(particle_data)
+        
+        # Update n_particles to reflect the filtered count
+        n_particles = len(particles)
+        print(len(particles),"particles is being loaded")
 
         optics_records: List[Dict[str, Any]] = []
         for group in sorted(optics_group_series.unique()):

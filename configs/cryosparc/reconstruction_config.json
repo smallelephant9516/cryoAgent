@@ -1,0 +1,49 @@
+{
+  "stage_info": {
+    "name": "3d_reconstruction",
+    "description": "Two-step 3D reconstruction workflow: Ab Initio Reconstruction → Homogeneous Refinement",
+    "version": "1.0.0"
+  },
+  
+  "workflow": {
+    "reconstruction_method": {
+      "type": "ab_initio"
+    },
+    
+    "ab_initio": {
+      "num_classes": 1,
+      "initial_resolution": 20.0,
+      "final_resolution": 10.0,
+      "max_iterations": 50,
+      "symmetry": "C1"
+    },
+    
+    "refinement": {
+      "type": "homogeneous",
+      "resolution": null,
+      "symmetry": "C1"
+    }
+  },
+  
+  "react_workflow": {
+    "steps": [
+      {
+        "name": "ab_initio_reconstruction",
+        "description": "Generate initial 3D model using ab initio reconstruction without reference",
+        "required_params": ["particles_job_uid", "num_classes"],
+        "optional_params": ["initial_resolution", "final_resolution", "max_iterations", "symmetry"],
+        "depends_on": [],
+        "notes": "Uses 'homo_abinit' job type in CryoSPARC. Generates de novo 3D structures."
+      },
+      {
+        "name": "homogeneous_refinement",
+        "description": "Refine the single 3D structure to improve resolution and quality",
+        "required_params": ["particles_job_uid", "volume_job_uid"],
+        "optional_params": ["refinement_resolution", "symmetry", "refine_do_init_scale_est", "refine_highpass_res", "refine_num_final_iterations", "refine_res_init", "refine_symmetry_do_align"],
+        "depends_on": ["ab_initio_reconstruction"],
+        "notes": "Uses 'homo_refine_new' job type in CryoSPARC. Requires volume from ab initio step."
+      }
+    ]
+  }
+}
+

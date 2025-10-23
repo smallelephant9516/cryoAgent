@@ -1043,8 +1043,11 @@ class MasterOrchestrator:
             # Initialize stage agents
             for stage_info in self.master_config["master_workflow"]["stages"]:
                 stage_name = stage_info["name"]
-                config_path = stage_info["config_file"]
+                agent_group = stage_info["agent_group"]
                 agent_class = stage_info["agent_class"]
+                
+                # Dynamically construct config file path
+                config_path = f"configs/{agent_group}/{stage_name}_config.json"
                 
                 self.logger.info(f"Initializing stage agent: {stage_name}")
                 

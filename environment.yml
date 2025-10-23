@@ -5,6 +5,7 @@ channels:
 dependencies:
   - python=3.11
   - pip
+  - pandas
   - pip:
     - langchain>=0.1.0
     - langchain-community>=0.0.20

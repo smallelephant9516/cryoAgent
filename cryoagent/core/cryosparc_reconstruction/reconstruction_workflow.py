@@ -90,6 +90,7 @@ class ReconstructionWorkflow:
         refinement_config = workflow_config.get("refinement", {})
         refinement_type = refinement_config.get("type", "none")  # "none", "homogeneous", or "heterogeneous"
         refinement_resolution = refinement_config.get("resolution", None)
+        refinement_symmetry = refinement_config.get("symmetry", "C1")
         
         return {
             # Reconstruction method selection
@@ -109,7 +110,8 @@ class ReconstructionWorkflow:
             
             # Refinement parameters
             "refinement_type": refinement_type,
-            "refinement_resolution": refinement_resolution
+            "refinement_resolution": refinement_resolution,
+            "refinement_symmetry": refinement_symmetry
         }
     
     def run(
@@ -212,8 +214,8 @@ Execute the 3D reconstruction workflow starting with {method_name.lower()}:
         
         if run_refinement and p['refinement_type'] != 'none':
             if p['refinement_type'] == 'homogeneous':
-                # Use symmetry from the reconstruction method being used
-                symmetry = p['ab_symmetry'] if recon_method == 'ab_initio' else p['homo_symmetry']
+                # Use symmetry from the refinement configuration
+                symmetry = p['refinement_symmetry']
                 workflow_description += f"""
 ═══ PHASE 2: Homogeneous Refinement ═══
 

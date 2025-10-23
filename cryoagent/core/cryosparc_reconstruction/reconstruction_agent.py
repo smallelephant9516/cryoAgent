@@ -372,8 +372,13 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             # Extract optional parameters
             refinement_resolution = params.get("refinement_resolution", None)
             symmetry = params.get("symmetry", "C1")
-            refine_defocus_refine = params.get("refine_defocus_refine", "true").lower() == "true"
-            refine_ctf_global_refine = params.get("refine_ctf_global_refine", "true").lower() == "true"
+            
+            # Advanced refinement parameters
+            refine_do_init_scale_est = params.get("refine_do_init_scale_est", "true").lower() == "true"
+            refine_highpass_res = params.get("refine_highpass_res", None)
+            refine_num_final_iterations = params.get("refine_num_final_iterations", None)
+            refine_res_init = params.get("refine_res_init", None)
+            refine_symmetry_do_align = params.get("refine_symmetry_do_align", "true").lower() == "true"
             
             # Job control parameters
             wait_for_completion = params.get("wait_for_completion", "false").lower() == "true"
@@ -388,8 +393,11 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 volume_job_uid=volume_job_uid,
                 refinement_resolution=refinement_resolution,
                 symmetry=symmetry,
-                refine_defocus_refine=refine_defocus_refine,
-                refine_ctf_global_refine=refine_ctf_global_refine,
+                refine_do_init_scale_est=refine_do_init_scale_est,
+                refine_highpass_res=refine_highpass_res,
+                refine_num_final_iterations=refine_num_final_iterations,
+                refine_res_init=refine_res_init,
+                refine_symmetry_do_align=refine_symmetry_do_align,
                 wait_for_completion=wait_for_completion,
                 timeout=timeout,
                 check_interval=check_interval

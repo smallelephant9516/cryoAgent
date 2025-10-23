@@ -44,8 +44,11 @@ class ReconstructionTools:
             description="Refine a single 3D structure with all particles. "
                        "Required parameters: particles_job_uid, volume_job_uid (from ab initio). "
                        "Optional parameters: refinement_resolution (target resolution in Å), symmetry, "
-                       "refine_defocus_refine (enable defocus refinement, default: true), "
-                       "refine_ctf_global_refine (enable global CTF refinement, default: true), "
+                       "refine_do_init_scale_est (enable initial scale estimation), "
+                       "refine_highpass_res (high-pass filter resolution in Å), "
+                       "refine_num_final_iterations (number of final iterations), "
+                       "refine_res_init (initial resolution in Å), "
+                       "refine_symmetry_do_align (enable symmetry alignment), "
                        "project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
             func=agent._homogeneous_refinement_tool
         )

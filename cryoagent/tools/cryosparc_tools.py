@@ -1691,8 +1691,13 @@ class CryoSPARCTools:
         volume_job_uid: str,
         refinement_resolution: Optional[float] = None,
         symmetry: str = "C1",
-        refine_defocus_refine: bool = True,
-        refine_ctf_global_refine: bool = True,
+        # Advanced refinement parameters
+        refine_do_init_scale_est: bool = True,
+        refine_highpass_res: Optional[float] = None,
+        refine_num_final_iterations: Optional[int] = None,
+        refine_res_init: Optional[float] = None,
+        refine_symmetry_do_align: bool = True,
+        # Job control parameters
         lane: Optional[str] = None,
         hostname: Optional[str] = None,
         wait_for_completion: bool = False,
@@ -1715,8 +1720,13 @@ class CryoSPARCTools:
             volume_job_uid: UID of the ab initio job (used for both particles and volume)
             refinement_resolution: Target resolution in Angstroms (optional)
             symmetry: Symmetry group (e.g., C1, C2, D7) (default: C1)
-            refine_defocus_refine: Enable per-particle defocus refinement (default: True)
-            refine_ctf_global_refine: Enable global CTF refinement (default: True)
+            # Advanced refinement parameters
+            refine_do_init_scale_est: Enable initial scale estimation (default: True)
+            refine_highpass_res: High-pass filter resolution in Angstroms (optional)
+            refine_num_final_iterations: Number of final refinement iterations (optional)
+            refine_res_init: Initial resolution for refinement in Angstroms (optional)
+            refine_symmetry_do_align: Enable symmetry alignment (default: True)
+            # Job control parameters
             lane: Compute lane to use
             hostname: Specific hostname to run on
             wait_for_completion: Whether to wait for job completion
@@ -1758,19 +1768,31 @@ class CryoSPARCTools:
                 volume_slot = "volume_class_0"
                 print(f"⚠️  Could not detect job type, using default slots: {e}")
             
-            # Create homogeneous refinement job with configurable CTF refinement
+            # Create homogeneous refinement job with comprehensive parameters
             job_params: Dict[str, Any] = {
-                "refine_defocus_refine": refine_defocus_refine,  # Enable per-particle defocus refinement
-                "refine_ctf_global_refine": refine_ctf_global_refine  # Enable global CTF refinement
+                "refine_do_init_scale_est": refine_do_init_scale_est,
+                "refine_symmetry_do_align": refine_symmetry_do_align
             }
             
             # Add refinement resolution if specified
             if refinement_resolution is not None:
-                job_params["refine_res_max"] = refinement_resolution
+                job_params["refine_res"] = refinement_resolution
             
             # Add symmetry if specified and not C1
             if symmetry and symmetry != "C1":
                 job_params["refine_symmetry"] = symmetry
+            
+            # Add high-pass filter resolution if specified
+            if refine_highpass_res is not None:
+                job_params["refine_highpass_res"] = refine_highpass_res
+            
+            # Add number of final iterations if specified
+            if refine_num_final_iterations is not None:
+                job_params["refine_num_final_iterations"] = refine_num_final_iterations
+            
+            # Add initial resolution if specified
+            if refine_res_init is not None:
+                job_params["refine_res_init"] = refine_res_init
             
             # Create the job - matches user's example exactly
             job = workspace.create_job(

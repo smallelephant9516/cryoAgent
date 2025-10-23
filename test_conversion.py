@@ -86,6 +86,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description="CryoSPARC to RELION converter")
     parser.add_argument("cs_path", nargs="?", help="Input CryoSPARC .cs file")
     parser.add_argument("star_path", nargs="?", help="Output RELION .star file")
+    parser.add_argument("--passthrough", help="Path to passthrough file for location data")
     parser.add_argument("--self-test", action="store_true", help="Run internal conversion test")
     args = parser.parse_args()
 
@@ -98,7 +99,7 @@ def main() -> None:
         parser.error("Provide both <cs_path> and <star_path> or use --self-test")
 
     tool = FileConversionTools()
-    tool.convert_cs_to_star(args.cs_path, args.star_path)
+    tool.convert_cs_to_star(args.cs_path, args.star_path, args.passthrough)
     print(f"Wrote STAR file to {args.star_path}")
 
 
