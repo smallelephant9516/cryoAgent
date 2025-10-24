@@ -53,6 +53,13 @@ class CryoSPARCSettings(BaseModel):
             license_id=os.getenv("CRYOSPARC_LICENSE_ID"),
         )
 
+class RELIONSettings(BaseModel):
+    """Settings for RELION connection and processing."""
+    
+    relion_exe: str = Field(default="/usr/local/bin/relion", description="RELION executable path")
+    relion_dir: str = Field(default="/home/daoyi/relion/relion_test", description="RELION working directory")
+    continue_job: bool = Field(default=True, description="Continue existing jobs")
+
 
 class WorkflowSettings(BaseModel):
     """Settings for cryoEM workflow parameters."""
@@ -260,6 +267,7 @@ class PerformanceSettings(BaseModel):
 class CryoAgentConfig(BaseModel):
     """Complete CryoAgent configuration."""
     cryosparc: CryoSPARCSettings
+    relion: RELIONSettings
     agent: AgentSettings
     workflow: WorkflowSettings
     job_management: JobManagementSettings
@@ -346,6 +354,9 @@ class ConfigLoader:
         # Parse CryoSPARC settings
         cryosparc_settings = CryoSPARCSettings(**config_data.get("cryosparc", {}))
         
+        # Parse RELION settings
+        relion_settings = RELIONSettings(**config_data.get("relion", {}))
+        
         # Parse agent settings
         agent_data = config_data.get("agent", {})
         react_data = agent_data.pop("react", {})
@@ -390,6 +401,7 @@ class ConfigLoader:
         
         return CryoAgentConfig(
             cryosparc=cryosparc_settings,
+            relion=relion_settings,
             agent=agent_settings,
             workflow=workflow_settings,
             job_management=job_management,
@@ -404,6 +416,10 @@ class ConfigLoader:
     def get_cryosparc_settings(self) -> CryoSPARCSettings:
         """Get CryoSPARC settings."""
         return self.load_config().cryosparc
+    
+    def get_relion_settings(self) -> RELIONSettings:
+        """Get RELION settings."""
+        return self.load_config().relion
     
     def get_agent_settings(self) -> AgentSettings:
         """Get agent settings."""

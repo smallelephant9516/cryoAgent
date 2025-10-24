@@ -7,7 +7,7 @@
         "name": "preprocessing",
         "description": "Pre-processing stage: Import movies, motion correction, CTF estimation, and micrograph selection",
         "enabled": true,
-        "agent_group": "cryosparc",
+        "agent_group": "relion",
         "agent_class": "PreprocessingAgent"
       },
       {
