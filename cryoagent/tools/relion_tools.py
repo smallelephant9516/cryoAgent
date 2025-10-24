@@ -95,23 +95,33 @@ class RELIONTools:
         """
         import glob
         
-        # Expand the path to get all matching files
-        movie_files = glob.glob(movies_path)
-        
-        if not movie_files:
-            raise FileNotFoundError(f"No files found matching pattern: {movies_path}")
-        
-        # Get the directory of the first movie file
-        first_movie_dir = os.path.dirname(movie_files[0])
-        
-        # Convert the directory to relative path
-        relative_dir = self._convert_to_relative_path(first_movie_dir)
-        
-        # Get the filename pattern
-        filename_pattern = os.path.basename(movies_path)
-        
-        # Return the relative path pattern
-        return os.path.join(relative_dir, filename_pattern)
+        # If it's a glob pattern, handle it differently
+        if "*" in movies_path:
+            # Get the directory part of the path
+            dir_path = os.path.dirname(movies_path)
+            filename_pattern = os.path.basename(movies_path)
+            
+            # Convert the directory to relative path
+            relative_dir = self._convert_to_relative_path(dir_path)
+            
+            # Return the relative path pattern
+            return os.path.join(relative_dir, filename_pattern)
+        else:
+            # For non-glob paths, convert the entire path
+            return self._convert_to_relative_path(movies_path)
+    
+    def _cleanup_old_links(self):
+        """Clean up old symbolic links that might cause path conflicts."""
+        try:
+            # Remove old links that might conflict
+            old_links = ['10025_subset', 'agent_test']
+            for link_name in old_links:
+                link_path = os.path.join(self.relion_dir, link_name)
+                if os.path.exists(link_path) or os.path.islink(link_path):
+                    os.unlink(link_path)
+                    print(f"Removed old link: {link_path}")
+        except Exception as e:
+            print(f"Warning: Could not clean up old links: {e}")
     
     def _verify_relion_installation(self) -> None:
         """Verify RELION installation and accessibility."""
@@ -184,11 +194,15 @@ class RELIONTools:
             Dictionary containing job information
         """
         try:
+            # Clean up old links that might cause conflicts
+            self._cleanup_old_links()
+            
             # Create output directory
             full_output_dir = os.path.join(self.relion_dir, output_dir)
             os.makedirs(full_output_dir, exist_ok=True)
             
             # Convert absolute path to relative path if needed
+            #movies_path = os.path.dirname(movies_path)
             if os.path.isabs(movies_path):
                 print(f"Converting absolute path to relative: {movies_path}")
                 relative_movies_path = self._convert_movies_path_to_relative(movies_path)
@@ -891,3 +905,63 @@ class RELIONTools:
             analysis["summary"] = "No obvious errors detected in log"
         
         return analysis
+    
+    def validate_inputs(self, input_type: str, input_path: str) -> str:
+        """
+        Validate input files and parameters for RELION processing.
+        
+        Args:
+            input_type: Type of input ('movies', 'movie_files', 'star_file', 'files', etc.)
+            input_path: Path to the input file or directory
+            
+        Returns:
+            Validation result string
+        """
+        try:
+            # Handle various input type names for movies
+            if input_type in ["movies", "movie_files", "files"]:
+                # Check if it's a glob pattern first
+                if "*" in input_path:
+                    import glob
+                    files = glob.glob(input_path)
+                    if not files:
+                        # Try to find files in the directory part of the path
+                        dir_path = os.path.dirname(input_path)
+                        if os.path.exists(dir_path):
+                            # Look for movie files in the directory
+                            movie_files = [f for f in os.listdir(dir_path) if f.endswith(('.tif', '.mrc', '.mrcs'))]
+                            if movie_files:
+                                return f"✅ Found {len(movie_files)} movie files in directory: {dir_path} (pattern {input_path} didn't match, but files exist)"
+                            else:
+                                return f"❌ No movie files found in directory: {dir_path}"
+                        else:
+                            return f"❌ Directory does not exist: {dir_path}"
+                    return f"✅ Found {len(files)} movie files matching pattern: {input_path}"
+                
+                # Check if it's a directory
+                elif os.path.isdir(input_path):
+                    files = [f for f in os.listdir(input_path) if f.endswith(('.tif', '.mrc', '.mrcs'))]
+                    if not files:
+                        return f"❌ No movie files found in directory: {input_path}"
+                    return f"✅ Found {len(files)} movie files in directory: {input_path}"
+                
+                # Check if it's a single file
+                elif os.path.exists(input_path):
+                    if input_path.endswith(('.tif', '.mrc', '.mrcs')):
+                        return f"✅ Movie file exists: {input_path}"
+                    else:
+                        return f"❌ File exists but is not a movie file: {input_path}"
+                
+                else:
+                    return f"❌ Path does not exist: {input_path}"
+            
+            elif input_type in ["star_file", "star"]:
+                if not os.path.exists(input_path):
+                    return f"❌ Star file does not exist: {input_path}"
+                return f"✅ Star file exists: {input_path}"
+            
+            else:
+                return f"❌ Unknown input type: {input_type}. Supported types: movies, movie_files, files, star_file, star"
+                
+        except Exception as e:
+            return f"❌ Error validating inputs: {str(e)}"

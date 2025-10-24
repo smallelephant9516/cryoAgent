@@ -87,9 +87,11 @@ class PreprocessingWorkflow:
         microscope_config = getattr(self.agent, 'microscope_config', {})
         
         return f"""
-Execute the complete RELION preprocessing workflow with these steps:
+Execute the complete RELION preprocessing workflow using the ReAct framework. Follow the Thought → Action → Observation pattern for each step.
 
-1. **Import Movies**: Import movie files using relion_import
+## Workflow Steps (in order):
+
+1. **Import Movies**: Import movie files using RELION tools
    - Movies path: {microscope_config.get('movies_path', 'Micrographs/*.tif')}
    - Pixel size: {microscope_config.get('pixel_size', 'N/A')} Å
    - Voltage: {microscope_config.get('voltage', 'N/A')} kV
@@ -99,7 +101,7 @@ Execute the complete RELION preprocessing workflow with these steps:
    - Beam tilt Y: {microscope_config.get('beamtilt_y', 'N/A')}
    - Optics group: {getattr(self.config.workflow, 'optics_group_name', 'opticsGroup1')}
 
-2. **Motion Correction**: Correct motion using relion_run_motioncorr with MotionCor2
+2. **Motion Correction**: Correct motion using RELION tools with MotionCor2
    - Use MotionCor2: {getattr(self.config.workflow, 'use_motioncor2', True)}
    - MotionCor2 executable: {getattr(self.config.workflow, 'motioncor2_exe', '../../tools/MotionCor2_1.6.4_Cuda118_Mar312023')}
    - GPU: {getattr(self.config.workflow, 'gpu', '0')}
@@ -108,23 +110,29 @@ Execute the complete RELION preprocessing workflow with these steps:
    - Dose per frame: {getattr(self.config.workflow, 'dose_per_frame', 1.39)}
    - Dose weighting: {getattr(self.config.workflow, 'dose_weighting', True)}
 
-3. **CTF Estimation**: Estimate CTF parameters using relion_run_ctffind
+3. **CTF Estimation**: Estimate CTF parameters using RELION tools
    - Box size: {getattr(self.config.workflow, 'box_size', 512)}
    - Resolution range: {getattr(self.config.workflow, 'res_min', 30)} - {getattr(self.config.workflow, 'res_max', 5)} Å
    - Defocus range: {getattr(self.config.workflow, 'df_min', 5000)} - {getattr(self.config.workflow, 'df_max', 50000)} Å
    - CTFfind executable: {getattr(self.config.workflow, 'ctffind_exe', '/home/daoyi/tools/ctffind/ctffind_4_1_14/ctffind')}
    - Fast search: {getattr(self.config.workflow, 'fast_search', True)}
 
-4. **Micrograph Selection**: Select high-quality micrographs
+4. **Micrograph Selection**: Select high-quality micrographs using RELION tools
    - Minimum resolution: {getattr(self.config.workflow, 'min_resolution', 5.0)} Å
    - Quality threshold: {getattr(self.config.workflow, 'quality_threshold', 0.8)}
 
-## Workflow Requirements:
+## ReAct Process Requirements:
+- **Thought**: Analyze what needs to be done and why
+- **Action**: Execute the appropriate tool with correct parameters
+- **Observation**: Analyze results and determine next steps
+
+## Critical Workflow Rules:
 - Execute steps in order: Import → Motion Correction → CTF Estimation → Selection
 - Wait for each job to complete before starting the next
-- Validate inputs before starting each step
+- Validate inputs before starting each step using validate_inputs
 - Check job status and logs if any step fails
-- Use continue_job=true for import to handle interrupted jobs
+- Use wait_for_job to monitor job completion
+- Use reason_about_workflow to analyze current state
 
 ## Expected Outputs:
 - Import: Import/job001/movies.star
@@ -132,7 +140,16 @@ Execute the complete RELION preprocessing workflow with these steps:
 - CTF Estimation: CtfFind/job010/micrographs_ctf.star
 - Selection: Select/job011/selected_micrographs.star
 
-Execute this workflow step by step, ensuring each job completes successfully before proceeding.
+## Tool Usage:
+- Use validate_inputs to check movie files before import
+- Use import_movies to start the import process
+- Use wait_for_job to monitor job completion
+- Use motion_correction with input from import_movies
+- Use ctf_estimation with input from motion_correction
+- Use micrograph_selection with input from ctf_estimation
+- Use reason_about_workflow to analyze current state
+
+Execute this workflow step by step using the ReAct framework, ensuring each job completes successfully before proceeding.
 """
     
     def _parse_workflow_result(self, result: str) -> None:
