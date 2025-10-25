@@ -28,7 +28,7 @@
       "continue_job": true
     },
     "motion_correction": {
-      "use_motioncor2": true,
+      "use_motioncor2": false,
       "motioncor2_exe": "/home/daoyi/tools/motioncor/MotionCor2_1.6.4_Cuda118_Mar312023",
       "gpu": "0",
       "bin_factor": 1,

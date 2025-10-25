@@ -40,7 +40,14 @@
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
     "continue_job": true,
-    "relion_dir": "/home/daoyi/relion/relion_test"
+    "relion_dir": "/home/daoyi/relion/relion_test",
+    "backend_execution": {
+      "enabled": true,
+      "default_timeout": 3600,
+      "check_interval": 30,
+      "max_concurrent_jobs": 3,
+      "auto_cleanup": true
+    }
   },
   "agent": {
     "provider": "deepseek", 

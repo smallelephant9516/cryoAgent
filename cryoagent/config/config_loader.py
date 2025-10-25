@@ -53,12 +53,23 @@ class CryoSPARCSettings(BaseModel):
             license_id=os.getenv("CRYOSPARC_LICENSE_ID"),
         )
 
+class BackendExecutionSettings(BaseModel):
+    """Settings for RELION backend execution."""
+    
+    enabled: bool = Field(default=False, description="Enable backend execution")
+    default_timeout: int = Field(default=3600, description="Default timeout in seconds")
+    check_interval: int = Field(default=30, description="Status check interval in seconds")
+    max_concurrent_jobs: int = Field(default=3, description="Maximum concurrent backend jobs")
+    auto_cleanup: bool = Field(default=True, description="Automatically cleanup completed jobs")
+
+
 class RELIONSettings(BaseModel):
     """Settings for RELION connection and processing."""
     
     relion_exe: str = Field(default="/usr/local/bin/relion", description="RELION executable path")
     relion_dir: str = Field(default="/home/daoyi/relion/relion_test", description="RELION working directory")
     continue_job: bool = Field(default=True, description="Continue existing jobs")
+    backend_execution: Optional[BackendExecutionSettings] = Field(default=None, description="Backend execution settings")
 
 
 class WorkflowSettings(BaseModel):

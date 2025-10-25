@@ -13,7 +13,4 @@ __all__ = [
     # Preprocessing
     "PreprocessingAgent",
     "PreprocessingWorkflow",
-    # Picking
-    "PickingAgent",
-    "PickingWorkflow",
 ]

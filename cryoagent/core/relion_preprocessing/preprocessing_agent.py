@@ -129,7 +129,7 @@ You specialize in the initial stages of cryoEM data processing using RELION: mov
    
 2. **Motion Correction**: Correct beam-induced motion using relion_run_motioncorr with MotionCor2
    - Required: movies_star_file (from import_movies)
-   - Optional: use_motioncor2, motioncor2_exe, gpu, bin_factor, bfactor, dose_per_frame, preexposure, patch_x, patch_y, eer_grouping, gain_rot, gain_flip, dose_weighting, first_frame_sum, last_frame_sum
+   - Optional: use_motioncor2, motioncor2_exe, gain_ref_path, first_frame_sum, last_frame_sum, use_own, num_threads, bin_factor, bfactor, dose_per_frame, preexposure, patch_x, patch_y, eer_grouping, gain_rot, gain_flip, dose_weighting, grouping_for_ps, wait_for_completion, timeout
    
 3. **CTF Estimation**: Estimate Contrast Transfer Function parameters using relion_run_ctffind
    - Required: corrected_micrographs_star (from motion_correction)
@@ -152,6 +152,7 @@ For each step, you MUST follow this pattern:
 - If a job fails, report the error and stop the workflow
 
 ## Tool Usage Guidelines:
+- validate_inputs: Use JSON format {{"input_type": "movie_files", "input_path": "/path/to/files"}}
 - import_movies: Start the import, then wait for completion
 - motion_correction: Requires movies_star_file from completed import_movies job
 - ctf_estimation: Requires corrected_micrographs_star from completed motion_correction job
@@ -160,10 +161,10 @@ For each step, you MUST follow this pattern:
 - wait_for_job: Wait for job completion
 - reason_about_workflow: Analyze current preprocessing state and dependencies
 
-## Job Directory Format:
-- Job directories are paths like "Import/job001/", "MotionCorr/job022/", etc.
-- When calling check_job_status or wait_for_job, pass the job directory path
-- Do NOT use JSON format or complex parameters for these tools
+## Job Directory Format (Alphabetical Order):
+- Job directories follow alphabetical order: "Import/job001/", "MotionCorr/job002/", "CtfFind/job003/", "Select/job004/"
+- For job-related tools (check_job_status, wait_for_job, get_job_log), you can pass the job directory directly (e.g., "Import/job001")
+- For validate_inputs, use JSON format: {{"input_type": "movie_files", "input_path": "/path/to/files"}}
 
 ## Workflow Dependencies:
 1. Import movies → Motion correction → CTF estimation → Micrograph selection
@@ -209,7 +210,7 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
             
             used_params = {
                 "movies_path": movies_path,
-                "output_dir": "Import",
+                "output_dir": "Import/job001",
                 "optics_group_name": params.get("optics_group_name", "opticsGroup1"),
                 "angpix": pixel_size,
                 "voltage": voltage,
@@ -249,15 +250,29 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
             if not input_star:
                 return "❌ Error: No movies.star file from import step. Run import_movies first."
             
-            # Get gain reference
-            gain_ref_path = params.get("gain_ref_path", self.microscope_config.get("gain_ref_path"))
+            # Get gain reference - check both gain_ref_path and gain_ref parameter names
+            gain_ref_path = params.get("gain_ref_path", 
+                params.get("gain_ref", 
+                    getattr(self.config.workflow, 'gain_ref', 
+                        self.microscope_config.get("gain_ref_path"))))
+            
+            # Get motion correction method from config or parameters
+            use_motioncor2 = self._parse_boolean_param(params.get("use_motioncor2", 
+                getattr(self.config.workflow, 'use_motioncor2', False)))
+            use_own = not use_motioncor2  # If not using MotionCor2, use RELION's own implementation
+            
+            # Get MotionCor2 executable path from config if not provided
+            motioncor2_exe = params.get("motioncor2_exe", 
+                getattr(self.config.workflow, 'motioncor2_exe', None))
             
             used_params = {
                 "input_star": input_star,
-                "output_dir": "MotionCorr",
+                "output_dir": "MotionCorr/job002",
                 "first_frame_sum": int(params.get("first_frame_sum", 1)),
                 "last_frame_sum": int(params.get("last_frame_sum", -1)),
-                "use_own": self._parse_boolean_param(params.get("use_own", "true")),
+                "use_own": use_own,
+                "use_motioncor2": use_motioncor2,
+                "motioncor2_exe": motioncor2_exe,
                 "num_threads": int(params.get("num_threads", 4)),
                 "bin_factor": int(params.get("bin_factor", 1)),
                 "bfactor": float(params.get("bfactor", 150.0)),
@@ -304,19 +319,19 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
             
             used_params = {
                 "input_star": input_star,
-                "output_dir": "CtfFind",
-                "box_size": int(params.get("box_size", 512)),
-                "res_min": float(params.get("res_min", 30.0)),
-                "res_max": float(params.get("res_max", 5.0)),
-                "df_min": float(params.get("df_min", 5000.0)),
-                "df_max": float(params.get("df_max", 50000.0)),
-                "fstep": float(params.get("fstep", 500.0)),
-                "dast": float(params.get("dast", 100.0)),
-                "ctffind_exe": params.get("ctffind_exe", "/home/daoyi/tools/ctffind/ctffind_4_1_14/ctffind"),
-                "ctf_win": int(params.get("ctf_win", -1)),
-                "is_ctffind4": self._parse_boolean_param(params.get("is_ctffind4", "true")),
-                "fast_search": self._parse_boolean_param(params.get("fast_search", "true")),
-                "only_do_unfinished": self._parse_boolean_param(params.get("only_do_unfinished", "true")),
+                "output_dir": "CtfFind/job003",
+                "box_size": int(params.get("box_size", getattr(self.config.workflow, 'box_size', 512))),
+                "res_min": float(params.get("res_min", getattr(self.config.workflow, 'ctf_min_res', 30.0))),
+                "res_max": float(params.get("res_max", getattr(self.config.workflow, 'ctf_max_res', 5.0))),
+                "df_min": float(params.get("df_min", getattr(self.config.workflow, 'df_min', 5000.0))),
+                "df_max": float(params.get("df_max", getattr(self.config.workflow, 'df_max', 50000.0))),
+                "fstep": float(params.get("fstep", getattr(self.config.workflow, 'fstep', 500.0))),
+                "dast": float(params.get("dast", getattr(self.config.workflow, 'dast', 100.0))),
+                "ctffind_exe": params.get("ctffind_exe", getattr(self.config.workflow, 'ctffind_exe', "/home/daoyi/tools/ctffind/ctffind_4_1_14/ctffind")),
+                "ctf_win": int(params.get("ctf_win", getattr(self.config.workflow, 'ctf_win', -1))),
+                "is_ctffind4": self._parse_boolean_param(params.get("is_ctffind4", str(getattr(self.config.workflow, 'is_ctffind4', True)))),
+                "fast_search": self._parse_boolean_param(params.get("fast_search", str(getattr(self.config.workflow, 'fast_search', True)))),
+                "only_do_unfinished": self._parse_boolean_param(params.get("only_do_unfinished", str(getattr(self.config.workflow, 'only_do_unfinished', True)))),
                 "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion", "true")),
                 "timeout": int(params.get("timeout", 1800))
             }
@@ -351,8 +366,8 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
             used_params = {
                 "input_star": input_star,
                 "output_dir": "Select",
-                "min_resolution": float(params.get("min_resolution", 5.0)),
-                "quality_threshold": float(params.get("quality_threshold", 0.8)),
+                "min_resolution": float(params.get("min_resolution", getattr(self.config.workflow, 'min_resolution', 5.0))),
+                "quality_threshold": float(params.get("quality_threshold", getattr(self.config.workflow, 'quality_threshold', 0.8))),
                 "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion", "true")),
                 "timeout": int(params.get("timeout", 600))
             }
@@ -378,10 +393,14 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
             params = self._parse_tool_input(input_str)
             job_dir = params.get("job_dir")
             
+            # Handle case where job directory is passed directly as input
+            if not job_dir and "input" in params:
+                job_dir = params["input"]
+            
             if not job_dir:
                 return "❌ Error: job_dir parameter is required"
             
-            result = self.relion_tools.check_job_status(job_dir)
+            result = self.relion_tools.get_job_status(job_dir)
             self._record_tool_execution("check_job_status", {"job_dir": job_dir}, result=result)
             return result
             
@@ -394,13 +413,18 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
         try:
             params = self._parse_tool_input(input_str)
             job_dir = params.get("job_dir")
+            
+            # Handle case where job directory is passed directly as input
+            if not job_dir and "input" in params:
+                job_dir = params["input"]
+            
             timeout = int(params.get("timeout", 3600))
             check_interval = int(params.get("check_interval", 30))
             
             if not job_dir:
                 return "❌ Error: job_dir parameter is required"
             
-            result = self.relion_tools.wait_for_job(job_dir, timeout, check_interval)
+            result = self.relion_tools.wait_for_job_completion(job_dir, timeout, check_interval)
             self._record_tool_execution("wait_for_job", {"job_dir": job_dir, "timeout": timeout, "check_interval": check_interval}, result=result)
             return result
             
@@ -413,6 +437,10 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
         try:
             params = self._parse_tool_input(input_str)
             job_dir = params.get("job_dir")
+            
+            # Handle case where job directory is passed directly as input
+            if not job_dir and "input" in params:
+                job_dir = params["input"]
             
             if not job_dir:
                 return "❌ Error: job_dir parameter is required"

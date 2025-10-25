@@ -102,17 +102,17 @@ Execute the complete RELION preprocessing workflow using the ReAct framework. Fo
    - Optics group: {getattr(self.config.workflow, 'optics_group_name', 'opticsGroup1')}
 
 2. **Motion Correction**: Correct motion using RELION tools with MotionCor2
-   - Use MotionCor2: {getattr(self.config.workflow, 'use_motioncor2', True)}
+   - Use MotionCor2: {getattr(self.config.workflow, 'use_motioncor2', False)}
    - MotionCor2 executable: {getattr(self.config.workflow, 'motioncor2_exe', '../../tools/MotionCor2_1.6.4_Cuda118_Mar312023')}
    - GPU: {getattr(self.config.workflow, 'gpu', '0')}
-   - Bin factor: {getattr(self.config.workflow, 'bin_factor', 1)}
+   - Bin factor: {getattr(self.config.workflow, 'motion_correction_binning', 1)}
    - B-factor: {getattr(self.config.workflow, 'bfactor', 150)}
    - Dose per frame: {getattr(self.config.workflow, 'dose_per_frame', 1.39)}
    - Dose weighting: {getattr(self.config.workflow, 'dose_weighting', True)}
 
 3. **CTF Estimation**: Estimate CTF parameters using RELION tools
    - Box size: {getattr(self.config.workflow, 'box_size', 512)}
-   - Resolution range: {getattr(self.config.workflow, 'res_min', 30)} - {getattr(self.config.workflow, 'res_max', 5)} Å
+   - Resolution range: {getattr(self.config.workflow, 'ctf_min_res', 30)} - {getattr(self.config.workflow, 'ctf_max_res', 5)} Å
    - Defocus range: {getattr(self.config.workflow, 'df_min', 5000)} - {getattr(self.config.workflow, 'df_max', 50000)} Å
    - CTFfind executable: {getattr(self.config.workflow, 'ctffind_exe', '/home/daoyi/tools/ctffind/ctffind_4_1_14/ctffind')}
    - Fast search: {getattr(self.config.workflow, 'fast_search', True)}

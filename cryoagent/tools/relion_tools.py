@@ -4,6 +4,8 @@ import os
 import time
 import subprocess
 import shutil
+import threading
+import signal
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 from ..config.config_loader import RELIONSettings
@@ -25,6 +27,24 @@ class RELIONTools:
         
         # Cache job metadata for monitoring
         self._job_cache: Dict[str, Dict[str, Any]] = {}
+        
+        # Backend execution settings
+        self._backend_processes: Dict[str, subprocess.Popen] = {}
+        self._backend_threads: Dict[str, threading.Thread] = {}
+        self._backend_enabled = False
+        
+        # Initialize backend execution from settings
+        if hasattr(settings, 'backend_execution') and settings.backend_execution:
+            self._backend_enabled = settings.backend_execution.enabled
+            self._backend_timeout = settings.backend_execution.default_timeout
+            self._backend_check_interval = settings.backend_execution.check_interval
+            self._max_concurrent_jobs = settings.backend_execution.max_concurrent_jobs
+            self._auto_cleanup = settings.backend_execution.auto_cleanup
+        else:
+            self._backend_timeout = 3600
+            self._backend_check_interval = 30
+            self._max_concurrent_jobs = 3
+            self._auto_cleanup = True
         
         # Verify RELION installation
         self._verify_relion_installation()
@@ -169,6 +189,7 @@ class RELIONTools:
         wait_for_completion: bool = False,
         timeout: int = 3600,
         check_interval: int = 30,
+        use_backend: bool = False,
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -188,6 +209,7 @@ class RELIONTools:
             wait_for_completion: Whether to wait for job completion
             timeout: Maximum time to wait for completion in seconds
             check_interval: Time between status checks in seconds
+            use_backend: Whether to run in backend mode
             **kwargs: Additional parameters
             
         Returns:
@@ -200,6 +222,30 @@ class RELIONTools:
             # Create output directory
             full_output_dir = os.path.join(self.relion_dir, output_dir)
             os.makedirs(full_output_dir, exist_ok=True)
+            
+            # If backend execution is requested, use the backend method
+            if use_backend:
+                if not self._backend_enabled:
+                    raise RuntimeError("Backend execution is not enabled. Call enable_backend_execution(True) first.")
+                
+                # Prepare command for backend execution
+                cmd = self._prepare_import_movies_command(
+                    movies_path, output_dir, optics_group_name, angpix, voltage, cs, q0,
+                    beamtilt_x, beamtilt_y, output_file, **kwargs
+                )
+                
+                # Generate job ID
+                job_id = f"import_{output_dir}_{int(time.time())}"
+                
+                # Run in backend
+                return self.run_relion_backend(
+                    command=cmd,
+                    job_id=job_id,
+                    output_dir=output_dir,
+                    timeout=timeout,
+                    check_interval=check_interval,
+                    **kwargs
+                )
             
             # Convert absolute path to relative path if needed
             #movies_path = os.path.dirname(movies_path)
@@ -283,6 +329,8 @@ class RELIONTools:
         first_frame_sum: int = 1,
         last_frame_sum: int = -1,
         use_own: bool = True,
+        use_motioncor2: bool = False,
+        motioncor2_exe: Optional[str] = None,
         num_threads: int = 14,
         bin_factor: int = 1,
         bfactor: float = 150.0,
@@ -309,7 +357,8 @@ class RELIONTools:
             output_dir: Output directory for the job
             first_frame_sum: First frame to sum (default: 1)
             last_frame_sum: Last frame to sum (default: -1 for all)
-            use_own: Use own motion correction (default: True)
+            use_motioncor2: Use MotionCor2 instead of RELION's own implementation (default: False)
+            motioncor2_exe: Path to MotionCor2 executable (default: None, uses environment variable)
             num_threads: Number of threads to use
             bin_factor: Binning factor
             bfactor: B-factor for dose weighting
@@ -371,7 +420,11 @@ class RELIONTools:
                 f"--pipeline_control", output_dir_with_slash
             ]
             
-            if use_own:
+            if use_motioncor2:
+                cmd.append("--use_motioncor2")
+                if motioncor2_exe:
+                    cmd.extend(["--motioncor2_exe", motioncor2_exe])
+            else:
                 cmd.append("--use_own")
             
             if gainref:
@@ -586,23 +639,39 @@ class RELIONTools:
         try:
             cached = self._job_cache.get(job_id, {})
             
+            # If not in cache, try to find the job directory
             if not cached:
-                return {
-                    "job_id": job_id,
-                    "status": "unknown",
-                    "message": "Job not found in cache"
-                }
-            
-            # Check if output files exist
-            output_dir = cached.get("output_dir")
-            if output_dir and os.path.exists(output_dir):
-                # Check for completion indicators
-                if os.path.exists(os.path.join(output_dir, "RELION_JOB_EXIT_SUCCESS")):
-                    cached["status"] = "completed"
-                elif os.path.exists(os.path.join(output_dir, "RELION_JOB_EXIT_FAILURE")):
-                    cached["status"] = "failed"
+                # Try to construct the output directory path
+                # Job IDs are typically in format "Import/job001", "MotionCorr/job002", etc.
+                if "/" in job_id:
+                    output_dir = os.path.join(self.relion_dir, job_id)
                 else:
-                    cached["status"] = "running"
+                    output_dir = os.path.join(self.relion_dir, job_id)
+                
+                if os.path.exists(output_dir):
+                    cached = {
+                        "output_dir": output_dir,
+                        "status": "unknown",
+                        "job_type": "unknown"
+                    }
+                else:
+                    return {
+                        "job_id": job_id,
+                        "status": "unknown",
+                        "message": "Job not found in cache and output directory not found"
+                    }
+            
+            # Check if output files exist and get current status
+            output_dir = cached.get("output_dir")
+            if output_dir:
+                # Check for completion indicators using helper method
+                current_status = self._check_job_completion_files(output_dir)
+                cached["status"] = current_status
+                
+                # Update cache with current status
+                self._job_cache[job_id] = cached
+            else:
+                cached["status"] = "unknown"
             
             return {
                 "job_id": job_id,
@@ -615,6 +684,45 @@ class RELIONTools:
             
         except Exception as e:
             raise RuntimeError(f"Failed to get job status for {job_id}: {e}")
+    
+    def _check_job_completion_files(self, output_dir: str) -> str:
+        """
+        Check for RELION job completion files in the output directory.
+        
+        Args:
+            output_dir: Path to the job output directory
+            
+        Returns:
+            Status string: 'completed', 'failed', or 'running'
+        """
+        if not os.path.exists(output_dir):
+            return "unknown"
+        
+        success_file = os.path.join(output_dir, "RELION_JOB_EXIT_SUCCESS")
+        failure_file = os.path.join(output_dir, "RELION_JOB_EXIT_FAILURE")
+        
+        if os.path.exists(success_file):
+            return "completed"
+        elif os.path.exists(failure_file):
+            return "failed"
+        else:
+            return "running"
+    
+    def is_job_completed(self, job_id: str) -> bool:
+        """
+        Check if a RELION job has completed successfully by looking for RELION_JOB_EXIT_SUCCESS.
+        
+        Args:
+            job_id: ID of the job to check
+            
+        Returns:
+            True if job completed successfully, False otherwise
+        """
+        try:
+            status = self.get_job_status(job_id)
+            return status.get("status") == "completed"
+        except Exception:
+            return False
     
     def wait_for_job_completion(
         self,
@@ -965,3 +1073,381 @@ class RELIONTools:
                 
         except Exception as e:
             return f"❌ Error validating inputs: {str(e)}"
+    
+    def enable_backend_execution(self, enabled: bool = True) -> None:
+        """
+        Enable or disable backend execution for RELION commands.
+        
+        Args:
+            enabled: Whether to enable backend execution
+        """
+        self._backend_enabled = enabled
+        if enabled:
+            print("✅ Backend execution enabled for RELION commands")
+        else:
+            print("❌ Backend execution disabled for RELION commands")
+    
+    def run_relion_backend(
+        self,
+        command: List[str],
+        job_id: str,
+        output_dir: str,
+        timeout: Optional[int] = None,
+        check_interval: Optional[int] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Run a RELION command in the background.
+        
+        Args:
+            command: RELION command to execute
+            job_id: Unique identifier for the job
+            output_dir: Output directory for the job
+            timeout: Maximum time to wait for completion in seconds (uses config default if None)
+            check_interval: Time between status checks in seconds (uses config default if None)
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information
+        """
+        if not self._backend_enabled:
+            raise RuntimeError("Backend execution is not enabled. Call enable_backend_execution(True) first.")
+        
+        # Use configuration defaults if not provided
+        if timeout is None:
+            timeout = self._backend_timeout
+        if check_interval is None:
+            check_interval = self._backend_check_interval
+        
+        # Check concurrent job limit
+        if len(self._backend_processes) >= self._max_concurrent_jobs:
+            raise RuntimeError(f"Maximum concurrent backend jobs ({self._max_concurrent_jobs}) reached. Please wait for some jobs to complete.")
+        
+        try:
+            # Create output directory
+            full_output_dir = os.path.join(self.relion_dir, output_dir)
+            os.makedirs(full_output_dir, exist_ok=True)
+            
+            # Set environment variables to avoid display issues
+            env = os.environ.copy()
+            env['DISPLAY'] = ''
+            env['QT_QPA_PLATFORM'] = 'offscreen'
+            env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+            env['QT_SCALE_FACTOR'] = '1'
+            
+            # Start the process in the background
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                text=True,
+                env=env,
+                cwd=self.relion_dir,
+                preexec_fn=os.setsid if os.name != 'nt' else None
+            )
+            
+            # Store process and create monitoring thread
+            self._backend_processes[job_id] = process
+            
+            # Create monitoring thread
+            monitor_thread = threading.Thread(
+                target=self._monitor_backend_process,
+                args=(job_id, process, full_output_dir, timeout, check_interval),
+                daemon=True
+            )
+            self._backend_threads[job_id] = monitor_thread
+            monitor_thread.start()
+            
+            job_info = {
+                "job_id": job_id,
+                "job_type": "relion_backend",
+                "status": "running",
+                "output_dir": full_output_dir,
+                "command": " ".join(command),
+                "process_id": process.pid,
+                "started_at": time.time()
+            }
+            
+            self._job_cache[job_id] = job_info
+            
+            print(f"🚀 Started RELION backend job: {job_id}")
+            print(f"   Process ID: {process.pid}")
+            print(f"   Output directory: {full_output_dir}")
+            print(f"   Command: {' '.join(command)}")
+            
+            return job_info
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to start RELION backend job: {e}")
+    
+    def _monitor_backend_process(
+        self,
+        job_id: str,
+        process: subprocess.Popen,
+        output_dir: str,
+        timeout: int,
+        check_interval: int
+    ) -> None:
+        """
+        Monitor a background RELION process.
+        
+        Args:
+            job_id: Job identifier
+            process: The subprocess to monitor
+            output_dir: Output directory for the job
+            timeout: Maximum time to wait for completion
+            check_interval: Time between status checks
+        """
+        start_time = time.time()
+        
+        try:
+            while time.time() - start_time < timeout:
+                # Check if process is still running
+                if process.poll() is not None:
+                    # Process has finished
+                    stdout, stderr = process.communicate()
+                    
+                    # Update job status
+                    if process.returncode == 0:
+                        status = "completed"
+                        print(f"✅ Backend job {job_id} completed successfully")
+                    else:
+                        status = "failed"
+                        print(f"❌ Backend job {job_id} failed with return code {process.returncode}")
+                        print(f"   Error: {stderr}")
+                    
+                    # Update job cache
+                    if job_id in self._job_cache:
+                        self._job_cache[job_id].update({
+                            "status": status,
+                            "return_code": process.returncode,
+                            "stdout": stdout,
+                            "stderr": stderr,
+                            "completed_at": time.time()
+                        })
+                    
+                    break
+                
+                # Check for completion files
+                completion_status = self._check_job_completion_files(output_dir)
+                if completion_status in ["completed", "failed"]:
+                    if job_id in self._job_cache:
+                        self._job_cache[job_id]["status"] = completion_status
+                    break
+                
+                time.sleep(check_interval)
+            
+            else:
+                # Timeout reached
+                print(f"⏰ Backend job {job_id} timed out after {timeout} seconds")
+                if job_id in self._job_cache:
+                    self._job_cache[job_id]["status"] = "timeout"
+                
+                # Terminate the process
+                self._terminate_backend_process(job_id)
+        
+        except Exception as e:
+            print(f"❌ Error monitoring backend job {job_id}: {e}")
+            if job_id in self._job_cache:
+                self._job_cache[job_id]["status"] = "error"
+                self._job_cache[job_id]["error"] = str(e)
+        
+        finally:
+            # Clean up
+            if job_id in self._backend_processes:
+                del self._backend_processes[job_id]
+            if job_id in self._backend_threads:
+                del self._backend_threads[job_id]
+    
+    def _terminate_backend_process(self, job_id: str) -> None:
+        """
+        Terminate a background RELION process.
+        
+        Args:
+            job_id: Job identifier to terminate
+        """
+        if job_id in self._backend_processes:
+            process = self._backend_processes[job_id]
+            try:
+                if os.name != 'nt':
+                    # On Unix-like systems, terminate the process group
+                    os.killpg(os.getpgid(process.pid), signal.SIGTERM)
+                else:
+                    # On Windows, terminate the process
+                    process.terminate()
+                
+                # Wait a bit for graceful termination
+                try:
+                    process.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    # Force kill if it doesn't terminate gracefully
+                    if os.name != 'nt':
+                        os.killpg(os.getpgid(process.pid), signal.SIGKILL)
+                    else:
+                        process.kill()
+                
+                print(f"🛑 Terminated backend job {job_id}")
+                
+            except Exception as e:
+                print(f"❌ Error terminating backend job {job_id}: {e}")
+    
+    def get_backend_job_status(self, job_id: str) -> Dict[str, Any]:
+        """
+        Get the status of a backend RELION job.
+        
+        Args:
+            job_id: Job identifier
+            
+        Returns:
+            Dictionary containing job status information
+        """
+        if job_id not in self._job_cache:
+            return {
+                "job_id": job_id,
+                "status": "not_found",
+                "message": "Job not found"
+            }
+        
+        job_info = self._job_cache[job_id].copy()
+        
+        # Check if process is still running
+        if job_id in self._backend_processes:
+            process = self._backend_processes[job_id]
+            if process.poll() is None:
+                job_info["status"] = "running"
+                job_info["process_id"] = process.pid
+            else:
+                # Process has finished, get final status
+                stdout, stderr = process.communicate()
+                job_info.update({
+                    "status": "completed" if process.returncode == 0 else "failed",
+                    "return_code": process.returncode,
+                    "stdout": stdout,
+                    "stderr": stderr
+                })
+        
+        return job_info
+    
+    def list_backend_jobs(self) -> List[Dict[str, Any]]:
+        """
+        List all backend jobs.
+        
+        Returns:
+            List of job information dictionaries
+        """
+        jobs = []
+        for job_id, job_info in self._job_cache.items():
+            if job_info.get("job_type") == "relion_backend":
+                jobs.append({
+                    "job_id": job_id,
+                    "status": job_info.get("status", "unknown"),
+                    "output_dir": job_info.get("output_dir"),
+                    "process_id": job_info.get("process_id"),
+                    "started_at": job_info.get("started_at"),
+                    "completed_at": job_info.get("completed_at")
+                })
+        return jobs
+    
+    def stop_backend_job(self, job_id: str) -> bool:
+        """
+        Stop a running backend job.
+        
+        Args:
+            job_id: Job identifier to stop
+            
+        Returns:
+            True if job was stopped successfully, False otherwise
+        """
+        if job_id not in self._backend_processes:
+            print(f"❌ Backend job {job_id} not found or not running")
+            return False
+        
+        try:
+            self._terminate_backend_process(job_id)
+            if job_id in self._job_cache:
+                self._job_cache[job_id]["status"] = "stopped"
+            return True
+        except Exception as e:
+            print(f"❌ Error stopping backend job {job_id}: {e}")
+            return False
+    
+    def stop_all_backend_jobs(self) -> int:
+        """
+        Stop all running backend jobs.
+        
+        Returns:
+            Number of jobs stopped
+        """
+        stopped_count = 0
+        for job_id in list(self._backend_processes.keys()):
+            if self.stop_backend_job(job_id):
+                stopped_count += 1
+        return stopped_count
+    
+    def _prepare_import_movies_command(
+        self,
+        movies_path: str,
+        output_dir: str,
+        optics_group_name: str,
+        angpix: float,
+        voltage: float,
+        cs: float,
+        q0: float,
+        beamtilt_x: float,
+        beamtilt_y: float,
+        output_file: str,
+        **kwargs
+    ) -> List[str]:
+        """
+        Prepare the RELION import movies command.
+        
+        Args:
+            movies_path: Path to movie files
+            output_dir: Output directory
+            optics_group_name: Optics group name
+            angpix: Pixel size
+            voltage: Acceleration voltage
+            cs: Spherical aberration
+            q0: Amplitude contrast
+            beamtilt_x: Beam tilt X
+            beamtilt_y: Beam tilt Y
+            output_file: Output file name
+            **kwargs: Additional parameters
+            
+        Returns:
+            Command as list of strings
+        """
+        # Convert absolute path to relative path if needed
+        if os.path.isabs(movies_path):
+            print(f"Converting absolute path to relative: {movies_path}")
+            relative_movies_path = self._convert_movies_path_to_relative(movies_path)
+            print(f"Using relative path: {relative_movies_path}")
+        else:
+            relative_movies_path = movies_path
+        
+        output_dir_with_slash = output_dir + '/'
+        
+        # Prepare command
+        cmd = [
+            "relion_import",
+            "--do_movies",
+            f"--optics_group_name", optics_group_name,
+            f"--angpix", str(angpix),
+            f"--kV", str(voltage),
+            f"--Cs", str(cs),
+            f"--Q0", str(q0),
+            f"--beamtilt_x", str(beamtilt_x),
+            f"--beamtilt_y", str(beamtilt_y),
+            f"--i", relative_movies_path,
+            f"--odir", output_dir_with_slash,
+            f"--ofile", output_file,
+            "--continue",
+            f"--pipeline_control", output_dir_with_slash
+        ]
+        
+        # Add additional parameters from kwargs
+        for key, value in kwargs.items():
+            if value is not None:
+                cmd.extend([f"--{key}", str(value)])
+        
+        return cmd
