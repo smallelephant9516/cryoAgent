@@ -26,7 +26,7 @@ class PreprocessingTools:
             name="motion_correction",
             description="Perform motion correction using relion_run_motioncorr with MotionCor2. "
                        "Required parameters: input_star (from import_movies). "
-                       "Optional parameters: gain_ref_path, first_frame_sum, last_frame_sum, use_own, use_motioncor2, motioncor2_exe, num_threads, bin_factor, bfactor, dose_per_frame, preexposure, patch_x, patch_y, eer_grouping, gain_rot, gain_flip, dose_weighting, grouping_for_ps, wait_for_completion, timeout.",
+                       "Optional parameters: gain_ref_path, first_frame_sum, last_frame_sum, use_own or use_motioncor2, motioncor2_exe, num_threads, bin_factor, bfactor, dose_per_frame, preexposure, patch_x, patch_y, eer_grouping, gain_rot, gain_flip, dose_weighting, grouping_for_ps, wait_for_completion, timeout.",
             func=agent._motion_correction_tool
         )
     

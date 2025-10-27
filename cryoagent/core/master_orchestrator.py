@@ -16,10 +16,7 @@ from typing import Dict, Any, List, Optional, Union
 from dataclasses import dataclass
 from enum import Enum
 
-# Import modular agents
-from .cryosparc_preprocessing import PreprocessingAgent as ModularPreprocessingAgent, PreprocessingWorkflow
-from .cryosparc_picking import PickingAgent as ModularPickingAgent, PickingWorkflow
-# RELION preprocessing will be handled within the standard PreprocessingAgent
+# Import modular agents (imported dynamically to support both RELION and CryoSPARC)
 from ..config.config_loader import ConfigLoader, CryoAgentConfig
 from ..tools.cryosparc_tools import CryoSPARCTools
 from ..utils.general_llm_logger import GeneralLLMLogger
@@ -176,6 +173,7 @@ class PreprocessingAgent(StageAgent):
     
     def __init__(self, config_path: str):
         super().__init__("preprocessing", config_path)
+        self.backend_type = None  # Will be set during initialization
     
     def initialize(self) -> bool:
         """Initialize the preprocessing agent with modular architecture."""
@@ -185,64 +183,63 @@ class PreprocessingAgent(StageAgent):
             config_loader = ConfigLoader(self.config_path, master_config_path)
             self.config = config_loader.load_config()
             
-            # Determine backend from config path (cryosparc or relion)
-            if "relion" in self.config_path:
-                # Use RELION preprocessing - create a simple RELION backend
-                try:
-                    # For RELION, we'll use a simplified approach without CryoSPARC tools
-                    # The actual RELION commands will be executed directly
-                    self.cryosparc_tools = None  # No CryoSPARC tools needed for RELION
-                    
-                    # Create a simple RELION preprocessing agent
-                    # This will use the existing modular architecture but with RELION-specific logic
-                    self.modular_agent = ModularPreprocessingAgent(
-                        cryosparc_tools=None,  # No CryoSPARC tools
-                        config=self.config
-                    )
-                    
-                    # Set stage name and workflow type for conversation logging
-                    self.modular_agent.stage_name = "preprocessing"
-                    self.modular_agent.workflow_type = "cryoem"
-                    
-                    # Initialize preprocessing workflow
-                    self.modular_workflow = PreprocessingWorkflow(
-                        agent=self.modular_agent,
-                        config=self.config
-                    )
-                    
-                    self.logger.info(f"Stage agent {self.stage_name} initialized successfully with RELION backend")
-                    return True
-                    
-                except Exception as relion_error:
-                    self.logger.error(f"Failed to initialize RELION backend: {relion_error}")
-                    return False
-            else:
-                # Use CryoSPARC preprocessing (default)
-                # Initialize CryoSPARC tools
-                self.cryosparc_tools = CryoSPARCTools(self.config.cryosparc)
-                
-                # Initialize modular preprocessing agent
-                self.modular_agent = ModularPreprocessingAgent(
-                    cryosparc_tools=self.cryosparc_tools,
-                    config=self.config
-                )
-                
-                # Set stage name and workflow type for conversation logging
-                self.modular_agent.stage_name = "preprocessing"
-                self.modular_agent.workflow_type = "cryoem"
-                
-                # Initialize preprocessing workflow
-                self.modular_workflow = PreprocessingWorkflow(
-                    agent=self.modular_agent,
-                    config=self.config
-                )
-                
-                self.logger.info(f"Stage agent {self.stage_name} initialized successfully with CryoSPARC backend")
-                return True
+            # Initialize the modular agent based on config (determines backend automatically)
+            self._initialize_modular_agent(config_loader)
+            
+            # Initialize preprocessing workflow based on backend type
+            self._initialize_preprocessing_workflow()
+            
+            self.logger.info(f"Stage agent {self.stage_name} initialized successfully with {self.backend_type} backend")
+            return True
             
         except Exception as e:
             self.logger.error(f"Failed to initialize stage agent {self.stage_name}: {e}")
             return False
+    
+    def _initialize_modular_agent(self, config_loader):
+        """Initialize the appropriate modular agent based on configuration."""
+        # The ConfigLoader determines the backend type from the config path
+        # RELION configs are in configs/relion/, CryoSPARC in configs/cryosparc/
+        
+        if "relion" in self.config_path.lower():
+            # Import and create RELION-specific agent
+            from .relion_preprocessing.preprocessing_agent import PreprocessingAgent as RelionPreprocessingAgent
+            
+            self.cryosparc_tools = None  # No CryoSPARC tools for RELION
+            self.modular_agent = RelionPreprocessingAgent(
+                config=self.config
+            )
+            self.backend_type = "RELION"
+            
+        else:
+            # Default to CryoSPARC preprocessing
+            from .cryosparc_preprocessing.preprocessing_agent import PreprocessingAgent as CryoSPARCPreprocessingAgent
+            
+            self.cryosparc_tools = CryoSPARCTools(self.config.cryosparc)
+            self.modular_agent = CryoSPARCPreprocessingAgent(
+                cryosparc_tools=self.cryosparc_tools,
+                config=self.config
+            )
+            self.backend_type = "CryoSPARC"
+        
+        # Set stage name and workflow type for conversation logging
+        self.modular_agent.stage_name = "preprocessing"
+        self.modular_agent.workflow_type = "cryoem"
+    
+    def _initialize_preprocessing_workflow(self):
+        """Initialize the appropriate preprocessing workflow based on backend type."""
+        if self.backend_type == "RELION":
+            from .relion_preprocessing.preprocessing_workflow import PreprocessingWorkflow as RelionPreprocessingWorkflow
+            self.modular_workflow = RelionPreprocessingWorkflow(
+                agent=self.modular_agent,
+                config=self.config
+            )
+        else:
+            from .cryosparc_preprocessing.preprocessing_workflow import PreprocessingWorkflow as CryoSPARCPreprocessingWorkflow
+            self.modular_workflow = CryoSPARCPreprocessingWorkflow(
+                agent=self.modular_agent,
+                config=self.config
+            )
     
     def execute_stage(self, context: WorkflowContext, conversation_id: Optional[str] = None) -> StageResult:
         """Execute the pre-processing stage using modular workflow."""
@@ -254,14 +251,23 @@ class PreprocessingAgent(StageAgent):
             # Execute the preprocessing workflow using modular architecture
             results = self.modular_workflow.run(conversation_id=conversation_id)
             
-            # Parse results and extract stage outputs
-            stage_outputs = self._parse_modular_preprocessing_results(results)
+            # Delegate result handling to the modular agent (backend-specific logic)
+            # This keeps the master orchestrator backend-agnostic
+            stage_outputs = self.modular_agent.process_workflow_results(
+                results=results,
+                context=context
+            )
             
-            # Validate that jobs were actually executed
-            validation_result = self._validate_preprocessing_results(stage_outputs)
+            # Validate that jobs were actually executed (backend-specific)
+            validation_result = self.modular_agent.validate_results(stage_outputs)
             
-            # Save preprocessing results to JSON file
-            result_file_path = self._save_preprocessing_results(stage_outputs, context, validation_result["success"])
+            # Save results (backend-specific)
+            result_file_path = self.modular_agent.save_results(
+                stage_outputs=stage_outputs,
+                context=context,
+                success=validation_result["success"]
+            )
+            
             self.logger.info(f"Preprocessing results saved to: {result_file_path}")
             print(f"📄 Preprocessing results saved to: {result_file_path}")
             
@@ -321,6 +327,7 @@ class RelionPreprocessingAgent(StageAgent):
             self.config = config_loader.load_config()
             
             # Initialize RELION preprocessing agent (no CryoSPARC tools needed)
+            from .relion_preprocessing.preprocessing_agent import PreprocessingAgent as RelionPreprocessingAgent
             self.modular_agent = RelionPreprocessingAgent(
                 config=self.config
             )
@@ -352,14 +359,22 @@ class RelionPreprocessingAgent(StageAgent):
             # Execute the preprocessing workflow using modular architecture
             results = self.modular_workflow.run(conversation_id=conversation_id)
             
-            # Parse results and extract stage outputs
-            stage_outputs = self._parse_relion_preprocessing_results(results)
+            # Delegate result handling to the modular agent (backend-specific logic)
+            stage_outputs = self.modular_agent.process_workflow_results(
+                results=results,
+                context=context
+            )
             
-            # Validate that jobs were actually executed
-            validation_result = self._validate_relion_preprocessing_results(stage_outputs)
+            # Validate that jobs were actually executed (backend-specific)
+            validation_result = self.modular_agent.validate_results(stage_outputs)
             
-            # Save preprocessing results to JSON file
-            result_file_path = self._save_relion_preprocessing_results(stage_outputs, context, validation_result["success"])
+            # Save results (backend-specific)
+            result_file_path = self.modular_agent.save_results(
+                stage_outputs=stage_outputs,
+                context=context,
+                success=validation_result["success"]
+            )
+            
             self.logger.info(f"RELION preprocessing results saved to: {result_file_path}")
             print(f"📄 RELION preprocessing results saved to: {result_file_path}")
             
@@ -402,244 +417,6 @@ class RelionPreprocessingAgent(StageAgent):
     
     def get_required_inputs(self) -> List[str]:
         return ["movies_path", "pixel_size", "voltage", "cs_mm", "q0", "beamtilt_x", "beamtilt_y"]
-    
-    def _parse_relion_preprocessing_results(self, results: List) -> Dict[str, Any]:
-        """Parse RELION preprocessing results to extract stage outputs."""
-        stage_outputs = {
-            "import_job_dir": None,
-            "motion_correction_job_dir": None,
-            "ctf_job_dir": None,
-            "selection_job_dir": None,
-            "movies_star_file": None,
-            "corrected_micrographs_star": None,
-            "ctf_star_file": None,
-            "selected_micrographs_star": None
-        }
-        
-        # Extract job directories and output files from workflow results
-        for result in results:
-            step_name = result.step.value
-            if result.success:
-                if step_name == "import_movies":
-                    stage_outputs["import_job_dir"] = result.job_dir
-                    stage_outputs["movies_star_file"] = result.output_file
-                elif step_name == "motion_correction":
-                    stage_outputs["motion_correction_job_dir"] = result.job_dir
-                    stage_outputs["corrected_micrographs_star"] = result.output_file
-                elif step_name == "ctf_estimation":
-                    stage_outputs["ctf_job_dir"] = result.job_dir
-                    stage_outputs["ctf_star_file"] = result.output_file
-                elif step_name == "micrograph_selection":
-                    stage_outputs["selection_job_dir"] = result.job_dir
-                    stage_outputs["selected_micrographs_star"] = result.output_file
-        
-        return stage_outputs
-    
-    def _validate_relion_preprocessing_results(self, stage_outputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate that RELION preprocessing jobs were executed successfully."""
-        try:
-            # Check that all required output files exist
-            required_files = [
-                stage_outputs.get("movies_star_file"),
-                stage_outputs.get("corrected_micrographs_star"),
-                stage_outputs.get("ctf_star_file"),
-                stage_outputs.get("selected_micrographs_star")
-            ]
-            
-            missing_files = [f for f in required_files if not f or not Path(f).exists()]
-            
-            if missing_files:
-                return {
-                    "success": False,
-                    "error": f"Missing output files: {missing_files}"
-                }
-            
-            return {"success": True, "error": None}
-            
-        except Exception as e:
-            return {
-                "success": False,
-                "error": f"Validation error: {str(e)}"
-            }
-    
-    def _save_relion_preprocessing_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool) -> str:
-        """Save RELION preprocessing results to JSON file."""
-        try:
-            # Create outputs directory
-            outputs_dir = Path("outputs")
-            outputs_dir.mkdir(exist_ok=True)
-            
-            # Generate timestamp for unique filename
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            result_file = outputs_dir / f"relion_preprocessing_results_{timestamp}.json"
-            
-            # Prepare results data
-            results_data = {
-                "timestamp": timestamp,
-                "status": "completed" if success else "failed",
-                "stage": "preprocessing",
-                "agent_type": "relion",
-                "project_uid": context.project_uid,
-                "workspace_uid": context.workspace_uid,
-                "stage_outputs": stage_outputs,
-                "metadata": context.metadata
-            }
-            
-            # Save to JSON file
-            with open(result_file, 'w') as f:
-                json.dump(results_data, f, indent=2)
-            
-            return str(result_file)
-            
-        except Exception as e:
-            self.logger.error(f"Failed to save RELION preprocessing results: {e}")
-            return ""
-    
-    def _parse_modular_preprocessing_results(self, results: List) -> Dict[str, Any]:
-        """Parse modular preprocessing results to extract stage outputs."""
-        stage_outputs = {
-            "movies_job_uid": None,
-            "motion_correction_job_uid": None,
-            "ctf_job_uid": None,
-            "micrograph_selection_job_uid": None,
-            "selected_micrographs": None,
-            "ctf_parameters": None
-        }
-        
-        # Extract job UIDs from modular workflow results
-        for result in results:
-            step_name = result.step.value
-            if result.success and result.job_uid:
-                if step_name == "import_movies":
-                    stage_outputs["movies_job_uid"] = result.job_uid
-                elif step_name == "motion_correction":
-                    stage_outputs["motion_correction_job_uid"] = result.job_uid
-                elif step_name == "ctf_estimation":
-                    stage_outputs["ctf_job_uid"] = result.job_uid
-                elif step_name == "micrograph_selection":
-                    stage_outputs["micrograph_selection_job_uid"] = result.job_uid
-        
-        return stage_outputs
-    
-    def _validate_preprocessing_results(self, stage_outputs: Dict[str, Any]) -> Dict[str, Any]:
-        """
-        Validate that the preprocessing workflow actually completed successfully.
-        
-        Args:
-            stage_outputs: Dictionary of stage outputs to validate
-            
-        Returns:
-            Dictionary with 'success' boolean and 'error' message if failed
-        """
-        # Check if any jobs were executed
-        required_jobs = [
-            ("import_movies", stage_outputs.get("movies_job_uid")),
-            ("motion_correction", stage_outputs.get("motion_correction_job_uid")),
-            ("ctf_estimation", stage_outputs.get("ctf_job_uid")),
-            ("micrograph_selection", stage_outputs.get("micrograph_selection_job_uid"))
-        ]
-        
-        missing_jobs = []
-        for job_name, job_uid in required_jobs:
-            if job_uid is None:
-                missing_jobs.append(job_name)
-        
-        if missing_jobs:
-            error_msg = f"Preprocessing workflow failed - the following jobs were not executed: {', '.join(missing_jobs)}. " \
-                       f"The agent may have completed without actually running the CryoSPARC jobs. " \
-                       f"Check the agent's reasoning and ensure all tools are being called correctly."
-            return {
-                "success": False,
-                "error": error_msg
-            }
-        
-        # All required jobs have UIDs, validation passed
-        return {
-            "success": True,
-            "error": None
-        }
-    
-    def _save_preprocessing_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True) -> str:
-        """
-        Save preprocessing results to a JSON file.
-        
-        Args:
-            stage_outputs: Dictionary of stage outputs
-            context: Workflow context
-            success: Whether the preprocessing was successful
-            
-        Returns:
-            Path to the saved JSON file
-        """
-        import datetime
-        from pathlib import Path
-        
-        # Create output directory if it doesn't exist
-        output_dir = Path("outputs")
-        output_dir.mkdir(exist_ok=True)
-        
-        # Get the final selection job output directory
-        final_job_uid = stage_outputs.get("micrograph_selection_job_uid")
-        micrograph_output_directory = None
-        output_summary = None
-        
-        if final_job_uid:
-            try:
-                job_dir_info = self.cryosparc_tools.get_job_output_directory(
-                    context.project_uid,
-                    final_job_uid
-                )
-                micrograph_output_directory = job_dir_info.get("job_directory")
-                output_summary = job_dir_info.get("outputs", [])
-                self.logger.info(f"Retrieved job directory for {final_job_uid}: {micrograph_output_directory}")
-            except Exception as e:
-                self.logger.warning(f"Could not retrieve job output directory: {e}")
-                micrograph_output_directory = None
-        
-        # Create preprocessing results dictionary
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        status = "completed" if success else "failed"
-        
-        preprocessing_results = {
-            "stage": "preprocessing",
-            "status": status,
-            "timestamp": timestamp,
-            "project_uid": context.project_uid,
-            "workspace_uid": context.workspace_uid,
-            "micrograph_location": {
-                "description": "Location of processed micrographs in CryoSPARC",
-                "project_uid": context.project_uid,
-                "workspace_uid": context.workspace_uid,
-                "final_selection_job_uid": final_job_uid,
-                "output_directory": micrograph_output_directory,
-                "path_pattern": f"Project {context.project_uid}, Workspace {context.workspace_uid}, Job {final_job_uid}",
-                "output_summary": output_summary
-            },
-            "job_uids": {
-                "import_movies": stage_outputs.get("movies_job_uid"),
-                "motion_correction": stage_outputs.get("motion_correction_job_uid"),
-                "ctf_estimation": stage_outputs.get("ctf_job_uid"),
-                "micrograph_selection": stage_outputs.get("micrograph_selection_job_uid")
-            },
-            "outputs": {
-                "selected_micrographs": stage_outputs.get("selected_micrographs"),
-                "ctf_parameters": stage_outputs.get("ctf_parameters")
-            },
-            "usage_notes": {
-                "next_stage": "particle_picking",
-                "final_selection_job_uid_usage": "Use the final_selection_job_uid as input for particle picking stage",
-                "micrograph_location_usage": "This job UID contains the selected micrographs for further processing",
-                "output_directory_usage": "The output_directory contains the filesystem path to the micrograph files"
-            }
-        }
-        
-        # Save to JSON file
-        output_file = output_dir / f"preprocessing_results_{timestamp}.json"
-        with open(output_file, 'w') as f:
-            json.dump(preprocessing_results, f, indent=2)
-        
-        self.logger.info(f"Preprocessing results saved to {output_file}")
-        return str(output_file)
 
 
 class ParticlePickingAgent(StageAgent):
@@ -659,7 +436,10 @@ class ParticlePickingAgent(StageAgent):
             # Initialize CryoSPARC tools
             self.cryosparc_tools = CryoSPARCTools(self.config.cryosparc)
             
-            # Initialize modular picking agent
+            # Import and initialize modular picking agent dynamically
+            from .cryosparc_picking.picking_agent import PickingAgent as ModularPickingAgent
+            from .cryosparc_picking.picking_workflow import PickingWorkflow
+            
             self.modular_agent = ModularPickingAgent(
                 cryosparc_tools=self.cryosparc_tools,
                 config=self.config
@@ -713,15 +493,22 @@ class ParticlePickingAgent(StageAgent):
                 conversation_id=conversation_id
             )
             
-            # Parse results and extract stage outputs
-            stage_outputs = self._parse_modular_picking_results(results)
+            # Delegate result handling to the modular agent (backend-specific logic)
+            stage_outputs = self.modular_agent.process_workflow_results(
+                results=results,
+                context=context
+            )
             stage_outputs["micrographs_job_uid"] = micrographs_job_uid
             
-            # Validate that jobs were actually executed
-            validation_result = self._validate_picking_results(stage_outputs)
+            # Validate that jobs were actually executed (backend-specific)
+            validation_result = self.modular_agent.validate_results(stage_outputs)
             
-            # Save picking results to JSON file
-            result_file_path = self._save_picking_results(stage_outputs, context, validation_result["success"])
+            # Save results (backend-specific)
+            result_file_path = self.modular_agent.save_results(
+                stage_outputs=stage_outputs,
+                context=context,
+                success=validation_result["success"]
+            )
             self.logger.info(f"Particle picking results saved to: {result_file_path}")
             print(f"📄 Particle picking results saved to: {result_file_path}")
             
@@ -764,172 +551,6 @@ class ParticlePickingAgent(StageAgent):
     
     def get_required_inputs(self) -> List[str]:
         return ["micrograph_selection_job_uid"]
-    
-    def _parse_modular_picking_results(self, results: List) -> Dict[str, Any]:
-        """Parse modular picking results to extract stage outputs."""
-        stage_outputs = {
-            "blob_picker_job_uid": None,
-            "extraction_job_uid": None,
-            "classification_2d_job_uid": None,
-            "template_picker_job_uid": None,
-            "extraction_job_uid_round2": None,
-            "classification_2d_job_uid_round2": None,
-            "initial_selection_job_uid": None,
-            "final_selection_job_uid": None,
-            "picked_particles": None,
-            "extracted_particles": None,
-            "classified_particles": None,
-            "selected_particles_location": None,
-            "selected_particles_job_metadata": None
-        }
-
-        # Extract job UIDs from modular workflow results
-        for result in results:
-            step_name = result.step.value
-            if result.success and result.job_uid:
-                if step_name == "blob_picker":
-                    stage_outputs["blob_picker_job_uid"] = result.job_uid
-                    stage_outputs["picked_particles"] = result.job_uid
-                elif step_name == "extract_particles" or step_name == "extract_particles_2":
-                    if stage_outputs["extraction_job_uid"] is None:
-                        stage_outputs["extraction_job_uid"] = result.job_uid
-                    else:
-                        stage_outputs["extraction_job_uid_round2"] = result.job_uid
-                    stage_outputs["extracted_particles"] = result.job_uid
-                elif step_name == "class_2d" or step_name == "class_2d_2":
-                    if stage_outputs["classification_2d_job_uid"] is None:
-                        stage_outputs["classification_2d_job_uid"] = result.job_uid
-                    else:
-                        stage_outputs["classification_2d_job_uid_round2"] = result.job_uid
-                    stage_outputs["classified_particles"] = result.job_uid
-                elif step_name == "select_2d_classes" or step_name == "select_final_classes":
-                    # First selection goes to initial_selection, second goes to final_selection
-                    if stage_outputs["initial_selection_job_uid"] is None:
-                        stage_outputs["initial_selection_job_uid"] = result.job_uid
-                    else:
-                        stage_outputs["final_selection_job_uid"] = result.job_uid
-                elif step_name == "template_picker":
-                    stage_outputs["template_picker_job_uid"] = result.job_uid
-                elif step_name == "final_extraction" and stage_outputs.get("final_selection_job_uid") is None:
-                    # Fallback mode returns final particles as last entry
-                    stage_outputs["final_selection_job_uid"] = result.job_uid
-
-        final_job_uid = stage_outputs.get("final_selection_job_uid")
-        project_uid = getattr(self.config.workflow, "project_uid", None)
-
-        if final_job_uid and project_uid:
-            try:
-                job_info = self.cryosparc_tools.get_job_output_directory(project_uid, final_job_uid)
-                job_directory = job_info.get("job_directory")
-                stage_outputs["selected_particles_location"] = job_directory
-                stage_outputs["selected_particles_job_metadata"] = job_info
-                
-                # Add absolute paths for final particle outputs
-                if job_directory:
-                    from pathlib import Path
-                    job_path = Path(job_directory)
-                    stage_outputs["final_particles_absolute_path"] = str(job_path.absolute())
-                    
-                    # Common output file patterns in CryoSPARC selection jobs
-                    particles_cs_file = job_path / "particles_selected.cs"
-                    if particles_cs_file.exists():
-                        stage_outputs["final_particles_cs_file"] = str(particles_cs_file.absolute())
-                    
-                    # Also check for passthrough files
-                    passthrough_file = job_path / "particles_selected_passthrough.cs"
-                    if passthrough_file.exists():
-                        stage_outputs["final_particles_passthrough_file"] = str(passthrough_file.absolute())
-                        
-            except Exception as exc:
-                self.logger.warning(
-                    "Failed to resolve selected particle job directory for %s: %s",
-                    final_job_uid,
-                    exc
-                )
-
-        return stage_outputs
-    
-    def _validate_picking_results(self, stage_outputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate that the complete particle picking workflow completed successfully."""
-        required_jobs = [
-            ("blob_picker", stage_outputs.get("blob_picker_job_uid")),
-            ("particle_extraction", stage_outputs.get("extraction_job_uid")),
-            ("2d_classification", stage_outputs.get("classification_2d_job_uid"))
-        ]
-        
-        missing_jobs = []
-        for job_name, job_uid in required_jobs:
-            if job_uid is None:
-                missing_jobs.append(job_name)
-        
-        if missing_jobs:
-            error_msg = f"Particle picking workflow failed - the following jobs were not executed: {', '.join(missing_jobs)}"
-            return {
-                "success": False,
-                "error": error_msg
-            }
-        
-        return {
-            "success": True,
-            "error": None
-        }
-    
-    def _save_picking_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True) -> str:
-        """Save particle picking results to a JSON file."""
-        import datetime
-        from pathlib import Path
-        
-        # Create output directory if it doesn't exist
-        output_dir = Path("outputs")
-        output_dir.mkdir(exist_ok=True)
-        
-        # Create picking results dictionary
-        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-        status = "completed" if success else "failed"
-        
-        picking_results = {
-            "stage": "particle_picking",
-            "status": status,
-            "timestamp": timestamp,
-            "project_uid": context.project_uid,
-            "workspace_uid": context.workspace_uid,
-            "input_micrographs_job_uid": stage_outputs.get("micrographs_job_uid"),
-            "particle_diameter": stage_outputs.get("particle_diameter"),
-            "job_uids": {
-                "blob_picker": stage_outputs.get("blob_picker_job_uid"),
-                "particle_extraction": stage_outputs.get("extraction_job_uid"),
-                "2d_classification": stage_outputs.get("classification_2d_job_uid"),
-                "template_picker": stage_outputs.get("template_picker_job_uid"),
-                "particle_extraction_round2": stage_outputs.get("extraction_job_uid_round2"),
-                "2d_classification_round2": stage_outputs.get("classification_2d_job_uid_round2"),
-                "final_selection": stage_outputs.get("final_selection_job_uid")
-            },
-            "outputs": {
-                "picked_particles": stage_outputs.get("picked_particles"),
-                "extracted_particles": stage_outputs.get("extracted_particles"),
-                "classified_particles": stage_outputs.get("classified_particles"),
-                "selected_particles_job_uid": stage_outputs.get("final_selection_job_uid"),
-                "selected_particles_location": stage_outputs.get("selected_particles_location"),
-                "final_particles_absolute_path": stage_outputs.get("final_particles_absolute_path"),
-                "final_particles_cs_file": stage_outputs.get("final_particles_cs_file"),
-                "final_particles_passthrough_file": stage_outputs.get("final_particles_passthrough_file")
-            },
-            "usage_notes": {
-                "next_stage": "3d_reconstruction",
-                "classification_2d_job_uid_usage": "Use the 2d_classification job UID for 3D reconstruction or further refinement",
-                "particle_classes": "2D classes are stored in the classification job output and can be used for particle selection",
-                "final_particles_path": "The final_particles_absolute_path field contains the absolute path to the job directory with final selected particles",
-                "final_particles_files": "The final_particles_cs_file and final_particles_passthrough_file fields contain absolute paths to specific particle data files if they exist"
-            }
-        }
-        
-        # Save to JSON file
-        output_file = output_dir / f"particle_picking_results_{timestamp}.json"
-        with open(output_file, 'w') as f:
-            json.dump(picking_results, f, indent=2)
-        
-        self.logger.info(f"Particle picking results saved to {output_file}")
-        return str(output_file)
 
 
 class ReconstructionAgent(StageAgent):
@@ -1047,65 +668,11 @@ class ReconstructionAgent(StageAgent):
                 execution_time=time.time() - start_time
             )
     
-    def _extract_reconstruction_outputs(self, results: List) -> Dict[str, Any]:
-        """Extract job UIDs and metadata from reconstruction workflow results."""
-        stage_outputs = {
-            "ab_initio_job_uid": None,
-            "homogeneous_reconstruction_job_uid": None,
-            "homogeneous_refinement_job_uid": None,
-            "heterogeneous_refinement_job_uid": None,
-            "final_volume_job_uid": None,
-            "reconstruction_type": "unknown"
-        }
-        
-        # Extract job UIDs from results
-        for result in results:
-            step_name = result.step.value
-            if result.success and result.job_uid:
-                if step_name == "ab_initio_reconstruction":
-                    stage_outputs["ab_initio_job_uid"] = result.job_uid
-                    stage_outputs["final_volume_job_uid"] = result.job_uid
-                    stage_outputs["reconstruction_type"] = "ab_initio"
-                elif step_name == "homogeneous_reconstruction":
-                    stage_outputs["homogeneous_reconstruction_job_uid"] = result.job_uid
-                    stage_outputs["final_volume_job_uid"] = result.job_uid
-                    stage_outputs["reconstruction_type"] = "homogeneous_reconstruction"
-                elif step_name == "homogeneous_refinement":
-                    stage_outputs["homogeneous_refinement_job_uid"] = result.job_uid
-                    stage_outputs["final_volume_job_uid"] = result.job_uid
-                    # Only update type if it's still initial reconstruction
-                    if stage_outputs["reconstruction_type"] in ["ab_initio", "homogeneous_reconstruction"]:
-                        stage_outputs["reconstruction_type"] = "refined_" + stage_outputs["reconstruction_type"]
-                elif step_name == "heterogeneous_refinement":
-                    stage_outputs["heterogeneous_refinement_job_uid"] = result.job_uid
-                    stage_outputs["final_volume_job_uid"] = result.job_uid
-                    stage_outputs["reconstruction_type"] = "heterogeneous_refined"
-        
-        # Get volume output directory if available
-        final_volume_job_uid = stage_outputs.get("final_volume_job_uid")
-        project_uid = getattr(self.config.workflow, "project_uid", None)
-        
-        if final_volume_job_uid and project_uid:
-            try:
-                job_info = self.cryosparc_tools.get_job_output_directory(project_uid, final_volume_job_uid)
-                job_directory = job_info.get("job_directory")
-                stage_outputs["volume_location"] = job_directory
-                stage_outputs["volume_job_metadata"] = job_info
-                
-                # Add absolute paths for final volume
-                if job_directory:
-                    from pathlib import Path
-                    job_path = Path(job_directory)
-                    stage_outputs["final_volume_absolute_path"] = str(job_path.absolute())
-                    
-            except Exception as exc:
-                self.logger.warning(
-                    "Failed to resolve volume job directory for %s: %s",
-                    final_volume_job_uid,
-                    exc
-                )
-        
-        return stage_outputs
+    def get_stage_description(self) -> str:
+        return "3D Reconstruction: Generate initial models using ab initio or homogeneous reconstruction"
+    
+    def get_required_inputs(self) -> List[str]:
+        return ["picked_particles", "selected_particles"]
     
     def _get_particles_from_output_file(self) -> Optional[str]:
         """
@@ -1198,7 +765,7 @@ class ReconstructionAgent(StageAgent):
             "timestamp": timestamp,
             "project_uid": context.project_uid,
             "workspace_uid": context.workspace_uid,
-            "input_particles_job_uid": context.stage_outputs.get("picked_particles"),
+            "input_particles_job_uid": context.metadata.get("input_particles_job_uid"),
             "reconstruction_type": stage_outputs.get("reconstruction_type"),
             "job_uids": {
                 "ab_initio": stage_outputs.get("ab_initio_job_uid"),
@@ -1227,11 +794,65 @@ class ReconstructionAgent(StageAgent):
         self.logger.info(f"3D reconstruction results saved to {output_file}")
         return str(output_file)
     
-    def get_stage_description(self) -> str:
-        return "3D Reconstruction: Generate initial models using ab initio or homogeneous reconstruction"
-    
-    def get_required_inputs(self) -> List[str]:
-        return ["picked_particles", "selected_particles"]
+    def _extract_reconstruction_outputs(self, results: List) -> Dict[str, Any]:
+        """Extract job UIDs and metadata from reconstruction workflow results."""
+        stage_outputs = {
+            "ab_initio_job_uid": None,
+            "homogeneous_reconstruction_job_uid": None,
+            "homogeneous_refinement_job_uid": None,
+            "heterogeneous_refinement_job_uid": None,
+            "final_volume_job_uid": None,
+            "reconstruction_type": "unknown"
+        }
+        
+        # Extract job UIDs from results
+        for result in results:
+            step_name = result.step.value
+            if result.success and result.job_uid:
+                if step_name == "ab_initio_reconstruction":
+                    stage_outputs["ab_initio_job_uid"] = result.job_uid
+                    stage_outputs["final_volume_job_uid"] = result.job_uid
+                    stage_outputs["reconstruction_type"] = "ab_initio"
+                elif step_name == "homogeneous_reconstruction":
+                    stage_outputs["homogeneous_reconstruction_job_uid"] = result.job_uid
+                    stage_outputs["final_volume_job_uid"] = result.job_uid
+                    stage_outputs["reconstruction_type"] = "homogeneous_reconstruction"
+                elif step_name == "homogeneous_refinement":
+                    stage_outputs["homogeneous_refinement_job_uid"] = result.job_uid
+                    stage_outputs["final_volume_job_uid"] = result.job_uid
+                    # Only update type if it's still initial reconstruction
+                    if stage_outputs["reconstruction_type"] in ["ab_initio", "homogeneous_reconstruction"]:
+                        stage_outputs["reconstruction_type"] = "refined_" + stage_outputs["reconstruction_type"]
+                elif step_name == "heterogeneous_refinement":
+                    stage_outputs["heterogeneous_refinement_job_uid"] = result.job_uid
+                    stage_outputs["final_volume_job_uid"] = result.job_uid
+                    stage_outputs["reconstruction_type"] = "heterogeneous_refined"
+        
+        # Get volume output directory if available
+        final_volume_job_uid = stage_outputs.get("final_volume_job_uid")
+        project_uid = getattr(self.config.workflow, "project_uid", None)
+        
+        if final_volume_job_uid and project_uid:
+            try:
+                job_info = self.cryosparc_tools.get_job_output_directory(project_uid, final_volume_job_uid)
+                job_directory = job_info.get("job_directory")
+                stage_outputs["volume_location"] = job_directory
+                stage_outputs["volume_job_metadata"] = job_info
+                
+                # Add absolute paths for final volume
+                if job_directory:
+                    from pathlib import Path
+                    job_path = Path(job_directory)
+                    stage_outputs["final_volume_absolute_path"] = str(job_path.absolute())
+                    
+            except Exception as exc:
+                self.logger.warning(
+                    "Failed to resolve volume job directory for %s: %s",
+                    final_volume_job_uid,
+                    exc
+                )
+        
+        return stage_outputs
 
 
 class MasterOrchestrator:
@@ -1264,11 +885,17 @@ class MasterOrchestrator:
             with open(self.master_config_path, 'r') as f:
                 self.master_config = json.load(f)
             
-            # Initialize stage agents
+            # Initialize stage agents (only for enabled stages)
             for stage_info in self.master_config["master_workflow"]["stages"]:
                 stage_name = stage_info["name"]
                 agent_group = stage_info["agent_group"]
                 agent_class = stage_info["agent_class"]
+                enabled = stage_info.get("enabled", False)
+                
+                # Skip disabled stages
+                if not enabled:
+                    self.logger.info(f"Skipping disabled stage: {stage_name}")
+                    continue
                 
                 # Dynamically construct config file path
                 config_path = f"configs/{agent_group}/{stage_name}_config.json"

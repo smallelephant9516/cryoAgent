@@ -82,6 +82,21 @@ class WorkflowSettings(BaseModel):
     # Motion correction parameters
     motion_correction_binning: int = Field(default=1, description="Binning for motion correction")
     motion_correction_patch_size: int = Field(default=5, description="Patch size for motion correction")
+    use_motioncor2: bool = Field(default=False, description="Use MotionCor2 for motion correction")
+    motioncor2_exe: Optional[str] = Field(default=None, description="Path to MotionCor2 executable")
+    bin_factor: int = Field(default=1, description="Binning factor for motion correction")
+    bfactor: float = Field(default=150.0, description="B-factor for motion correction")
+    dose_per_frame: float = Field(default=1.39, description="Dose per frame in e-/Å²")
+    preexposure: float = Field(default=0.0, description="Preexposure dose")
+    patch_x: int = Field(default=1, description="Patch size in X direction")
+    patch_y: int = Field(default=1, description="Patch size in Y direction")
+    eer_grouping: int = Field(default=32, description="EER grouping")
+    gain_rot: int = Field(default=0, description="Gain rotation")
+    gain_flip: int = Field(default=0, description="Gain flip")
+    dose_weighting: bool = Field(default=True, description="Enable dose weighting")
+    first_frame_sum: int = Field(default=1, description="First frame to sum")
+    last_frame_sum: int = Field(default=-1, description="Last frame to sum")
+    gain_ref: Optional[str] = Field(default=None, description="Gain reference file path")
     
     # CTF estimation parameters
     ctf_min_res: float = Field(default=30.0, description="Minimum resolution for CTF estimation")
@@ -388,6 +403,23 @@ class ConfigLoader:
             **import_movies,  # This now only contains microscope_config_path
             "motion_correction_binning": motion_correction.get("binning", 1),
             "motion_correction_patch_size": motion_correction.get("patch_size", 5),
+            # Motion correction parameters
+            "use_motioncor2": motion_correction.get("use_motioncor2", False),
+            "motioncor2_exe": motion_correction.get("motioncor2_exe", None),
+            "bin_factor": motion_correction.get("bin_factor", 1),
+            "bfactor": motion_correction.get("bfactor", 150.0),
+            "dose_per_frame": motion_correction.get("dose_per_frame", 1.39),
+            "preexposure": motion_correction.get("preexposure", 0.0),
+            "patch_x": motion_correction.get("patch_x", 1),
+            "patch_y": motion_correction.get("patch_y", 1),
+            "eer_grouping": motion_correction.get("eer_grouping", 32),
+            "gain_rot": motion_correction.get("gain_rot", 0),
+            "gain_flip": motion_correction.get("gain_flip", 0),
+            "dose_weighting": motion_correction.get("dose_weighting", True),
+            "first_frame_sum": motion_correction.get("first_frame_sum", 1),
+            "last_frame_sum": motion_correction.get("last_frame_sum", -1),
+            "gain_ref": motion_correction.get("gain_ref", None),
+            # CTF estimation parameters
             "ctf_min_res": ctf_estimation.get("min_res", 30.0),
             "ctf_max_res": ctf_estimation.get("max_res", 4.0),
         }

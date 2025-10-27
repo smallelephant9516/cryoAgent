@@ -416,9 +416,13 @@ class RELIONTools:
                 f"--eer_grouping", str(eer_grouping),
                 f"--gain_rot", str(gain_rot),
                 f"--gain_flip", str(gain_flip),
-                f"--grouping_for_ps", str(grouping_for_ps),
                 f"--pipeline_control", output_dir_with_slash
             ]
+            
+            # MotionCor2 doesn't support this option
+            if not use_motioncor2:
+                cmd.append(f"--grouping_for_ps")
+                cmd.append(str(grouping_for_ps))
             
             if use_motioncor2:
                 cmd.append("--use_motioncor2")
@@ -426,7 +430,7 @@ class RELIONTools:
                     cmd.extend(["--motioncor2_exe", motioncor2_exe])
             else:
                 cmd.append("--use_own")
-            
+
             if gainref:
                 # Convert absolute path to relative path if needed
                 if os.path.isabs(gainref):

@@ -1,5 +1,6 @@
 """ReAct-based particle picking agent for CryoEM data processing."""
 
+import logging
 from typing import Dict, Any, List, Optional
 from langchain.tools import Tool
 from langchain_core.language_models import BaseLanguageModel
@@ -7,6 +8,7 @@ from langchain_core.language_models import BaseLanguageModel
 from ..base_react_agent import BaseReActAgent
 from .picking_tools import PickingTools
 from ...tools.cryosparc_tools import CryoSPARCTools
+from ...tools.cryosparc_parser_tools import CryoSPARCPickingParser, WorkflowContext
 from ...config.config_loader import CryoAgentConfig
 
 
@@ -28,6 +30,8 @@ class PickingAgent(BaseReActAgent):
             llm: Language model for the agent
         """
         super().__init__(cryosparc_tools, config, llm)
+        # Initialize logger for this agent
+        self.logger = logging.getLogger("PickingAgent")
     
     def _create_tools(self) -> List[Tool]:
         """Create particle picking-specific tools."""
@@ -423,3 +427,45 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
         except Exception as e:
             self._record_tool_execution("reason_about_workflow", {"input": input_str}, error=str(e))
             return f"❌ Error in workflow reasoning: {str(e)}"
+    
+    def process_workflow_results(self, results: List, context: WorkflowContext) -> Dict[str, Any]:
+        """
+        Process workflow results and extract stage outputs.
+        
+        Args:
+            results: List of picking workflow results
+            context: Workflow context with project/workspace info
+            
+        Returns:
+            Dictionary of stage outputs
+        """
+        parser = CryoSPARCPickingParser(self.cryosparc_tools, self.logger)
+        return parser.process_workflow_results(results, context)
+    
+    def validate_results(self, stage_outputs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validate that the picking workflow completed successfully.
+        
+        Args:
+            stage_outputs: Dictionary of stage outputs to validate
+            
+        Returns:
+            Dictionary with 'success' boolean and 'error' message if failed
+        """
+        parser = CryoSPARCPickingParser(self.cryosparc_tools, self.logger)
+        return parser.validate_results(stage_outputs)
+    
+    def save_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True) -> str:
+        """
+        Save picking results to a JSON file.
+        
+        Args:
+            stage_outputs: Dictionary of stage outputs
+            context: Workflow context
+            success: Whether picking was successful
+            
+        Returns:
+            Path to the saved JSON file
+        """
+        parser = CryoSPARCPickingParser(self.cryosparc_tools, self.logger)
+        return parser.save_results(stage_outputs, context, success)

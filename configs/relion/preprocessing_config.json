@@ -42,8 +42,7 @@
       "gain_flip": 0,
       "dose_weighting": true,
       "first_frame_sum": 1,
-      "last_frame_sum": -1,
-      "gain_ref": "/home/daoyi/relion/relion_test/norm-amibox05-0.mrc"
+      "last_frame_sum": -1
     },
     "ctf_estimation": {
       "box_size": 512,

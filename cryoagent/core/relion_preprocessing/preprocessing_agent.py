@@ -4,6 +4,7 @@ import json
 import subprocess
 import os
 import time
+import logging
 from typing import Dict, Any, List
 from langchain.tools import Tool
 from langchain_core.language_models import BaseLanguageModel
@@ -14,6 +15,7 @@ from ..base_react_agent import BaseReActAgent
 from .preprocessing_tools import PreprocessingTools
 from ...config.config_loader import CryoAgentConfig, ConfigLoader
 from ...tools.relion_tools import RELIONTools
+from ...tools.relion_parser_tools import RelionPreprocessingParser, WorkflowContext
 
 
 class PreprocessingAgent(BaseReActAgent):
@@ -42,6 +44,8 @@ class PreprocessingAgent(BaseReActAgent):
         )
         
         super().__init__(None, config, llm)  # No CryoSPARC tools needed for RELION
+        # Initialize logger for this agent
+        self.logger = logging.getLogger("RelionPreprocessingAgent")
         # Load microscope configuration
         self.microscope_config = self._load_microscope_config()
         self.workflow_state = {
@@ -251,14 +255,16 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
                 return "❌ Error: No movies.star file from import step. Run import_movies first."
             
             # Get gain reference - check both gain_ref_path and gain_ref parameter names
+            # First check parameters, then workflow config, then microscope config
             gain_ref_path = params.get("gain_ref_path", 
                 params.get("gain_ref", 
-                    getattr(self.config.workflow, 'gain_ref', 
-                        self.microscope_config.get("gain_ref_path"))))
+                    self.config.workflow.gain_ref or 
+                        self.microscope_config.get("gain_ref_path")))
             
             # Get motion correction method from config or parameters
-            use_motioncor2 = self._parse_boolean_param(params.get("use_motioncor2", 
-                getattr(self.config.workflow, 'use_motioncor2', False)))
+            # Check config first, then params
+            config_use_motioncor2 = getattr(self.config.workflow, 'use_motioncor2', False)
+            use_motioncor2 = self._parse_boolean_param(params.get("use_motioncor2", config_use_motioncor2))
             use_own = not use_motioncor2  # If not using MotionCor2, use RELION's own implementation
             
             # Get MotionCor2 executable path from config if not provided
@@ -512,3 +518,45 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
         except Exception as e:
             self._record_tool_execution("reason_about_workflow", {"input": input_str}, error=str(e))
             return f"❌ Error analyzing workflow: {str(e)}"
+    
+    def process_workflow_results(self, results: List, context: WorkflowContext) -> Dict[str, Any]:
+        """
+        Process workflow results and extract stage outputs.
+        
+        Args:
+            results: List of preprocessing workflow results
+            context: Workflow context with project/workspace info
+            
+        Returns:
+            Dictionary of stage outputs
+        """
+        parser = RelionPreprocessingParser(self.logger)
+        return parser.process_workflow_results(results, context)
+    
+    def validate_results(self, stage_outputs: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Validate that the preprocessing workflow completed successfully.
+        
+        Args:
+            stage_outputs: Dictionary of stage outputs to validate
+            
+        Returns:
+            Dictionary with 'success' boolean and 'error' message if failed
+        """
+        parser = RelionPreprocessingParser(self.logger)
+        return parser.validate_results(stage_outputs)
+    
+    def save_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True) -> str:
+        """
+        Save preprocessing results to a JSON file.
+        
+        Args:
+            stage_outputs: Dictionary of stage outputs
+            context: Workflow context
+            success: Whether preprocessing was successful
+            
+        Returns:
+            Path to the saved JSON file
+        """
+        parser = RelionPreprocessingParser(self.logger)
+        return parser.save_results(stage_outputs, context, success)
