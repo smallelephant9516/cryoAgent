@@ -1,5 +1,6 @@
 """ReAct-based RELION preprocessing workflow orchestrator."""
 
+import os
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from enum import Enum
@@ -157,19 +158,42 @@ Execute this workflow step by step using the ReAct framework, ensuring each job 
         # This is a simplified parser - in a real implementation, you'd parse the agent's output
         # to extract specific results for each step
         
-        # For now, create results based on the agent's workflow state
+        # Get the RELION directory from the agent
+        relion_dir = self.agent.relion_tools.relion_dir
+        
+        # Create results based on the agent's workflow state
         for step_name, step_state in self.agent.workflow_state.items():
-            step_enum = PreprocessingStep(step_name)
-            
-            result_obj = PreprocessingResult(
-                step=step_enum,
-                success=step_state["completed"],
-                job_dir=step_state.get("job_dir"),
-                output_file=step_state.get("output_file"),
-                message=f"{step_name} {'completed' if step_state['completed'] else 'pending'}"
-            )
-            
-            self.results.append(result_obj)
+            try:
+                # Try to convert step_name to PreprocessingStep enum
+                try:
+                    step_enum = PreprocessingStep(step_name)
+                except ValueError:
+                    # If step_name doesn't match any enum value, skip it
+                    continue
+                
+                # Convert relative job_dir to full path if it's a relative path
+                job_dir = step_state.get("job_dir")
+                if job_dir and not os.path.isabs(job_dir):
+                    try:
+                        job_dir = os.path.join(relion_dir, job_dir)
+                    except Exception as e:
+                        print(f"Warning: Could not convert job_dir to absolute path: {e}")
+                
+                output_file = step_state.get("output_file")
+                
+                result_obj = PreprocessingResult(
+                    step=step_enum,
+                    success=step_state.get("completed", False),
+                    job_dir=job_dir,
+                    output_file=output_file,
+                    message=f"{step_name} {'completed' if step_state.get('completed', False) else 'pending'}"
+                )
+                
+                self.results.append(result_obj)
+                
+            except Exception as e:
+                print(f"Warning: Failed to parse workflow result for step {step_name}: {e}")
+                continue
     
     def get_workflow_summary(self) -> str:
         """Get a summary of the workflow execution."""

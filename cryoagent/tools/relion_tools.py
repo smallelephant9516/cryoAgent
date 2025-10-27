@@ -143,6 +143,57 @@ class RELIONTools:
         except Exception as e:
             print(f"Warning: Could not clean up old links: {e}")
     
+    def _get_next_job_directory(self, base_dir: str) -> str:
+        """
+        Get the next available job directory for a given base directory.
+        
+        Looks for existing job directories in the format "base_dir/jobXXX" and returns
+        the next available one. For example, if "Select/job001" and "Select/job002" exist,
+        this will return "Select/job003".
+        
+        Args:
+            base_dir: Base directory name (e.g., "Import", "MotionCorr", "CtfFind", "Select")
+            
+        Returns:
+            Full path to the next available job directory
+        """
+        try:
+            # Construct the base path
+            base_path = os.path.join(self.relion_dir, base_dir)
+            
+            # Find all existing job directories
+            existing_dirs = []
+            if os.path.exists(base_path):
+                for item in os.listdir(base_path):
+                    if item.startswith('job'):
+                        try:
+                            # Extract job number from "jobXXX"
+                            job_num = int(item[3:])  # Skip "job" prefix
+                            existing_dirs.append(job_num)
+                        except ValueError:
+                            # Skip items that don't match the jobXXX pattern
+                            continue
+            
+            # Find the next available job number
+            if existing_dirs:
+                next_job_num = max(existing_dirs) + 1
+            else:
+                next_job_num = 1
+            
+            # Format job number with zero-padding (e.g., job001)
+            job_dir_name = f"job{next_job_num:03d}"
+            
+            # Construct the full path
+            full_job_dir = os.path.join(base_path, job_dir_name)
+            
+            # Create the directory
+            os.makedirs(full_job_dir, exist_ok=True)
+            
+            return full_job_dir
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to get next job directory for {base_dir}: {e}")
+    
     def _verify_relion_installation(self) -> None:
         """Verify RELION installation and accessibility."""
         try:
@@ -471,10 +522,14 @@ class RELIONTools:
             if result.returncode != 0:
                 raise RuntimeError(f"RELION motion correction failed: {result.stderr}")
             
+            # Determine output file based on standard RELION naming
+            output_file = os.path.join(full_output_dir, "corrected_micrographs.star")
+            
             job_info = {
                 "job_type": "relion_motion_correction",
                 "status": "completed",
                 "output_dir": full_output_dir,
+                "output_file": output_file,
                 "input_star": input_star,
                 "command": " ".join(cmd),
                 "stdout": result.stdout,
@@ -485,6 +540,7 @@ class RELIONTools:
             
             print(f"✅ RELION motion correction completed successfully!")
             print(f"Output directory: {full_output_dir}")
+            print(f"Output file: {output_file}")
             
             return job_info
             
@@ -610,10 +666,14 @@ class RELIONTools:
             if result.returncode != 0:
                 raise RuntimeError(f"RELION CTF estimation failed: {result.stderr}")
             
+            # Determine output file based on standard RELION naming
+            output_file = os.path.join(full_output_dir, "micrographs_ctf.star")
+            
             job_info = {
                 "job_type": "relion_ctf_estimation",
                 "status": "completed",
                 "output_dir": full_output_dir,
+                "output_file": output_file,
                 "input_star": input_star,
                 "command": " ".join(cmd),
                 "stdout": result.stdout,
@@ -624,11 +684,129 @@ class RELIONTools:
             
             print(f"✅ RELION CTF estimation completed successfully!")
             print(f"Output directory: {full_output_dir}")
+            print(f"Output file: {output_file}")
             
             return job_info
             
         except Exception as e:
             raise RuntimeError(f"Failed to run CTF estimation: {e}")
+    
+    def micrograph_selection(
+        self,
+        input_star: str,
+        output_dir: str = "Select",
+        select_field: str = "rlnCtfMaxResolution",
+        minval: float = 2.0,
+        maxval: float = 5.0,
+        wait_for_completion: bool = True,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Select micrographs using relion_star_handler with filter criteria.
+        
+        Example command:
+        relion_star_handler --i CtfFind/job003/micrographs_ctf.star --o Select/job004/micrographs.star
+        --select rlnCtfMaxResolution --minval 2 --maxval 5 --pipeline_control Select/job004/
+        
+        Args:
+            input_star: Path to input star file from CTF estimation
+            output_dir: Output directory (default: "Select")
+            select_field: Field to filter on (default: "rlnCtfMaxResolution")
+            minval: Minimum value for filtering (default: 2.0)
+            maxval: Maximum value for filtering (default: 5.0)
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait in seconds
+            check_interval: Time between status checks in seconds
+            **kwargs: Additional parameters to pass to relion_star_handler
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            # Find the next job number for the output directory
+            full_output_dir = self._get_next_job_directory(output_dir)
+            
+            # Extract the relative job directory (e.g., "Select/job002") for caching
+            job_dir_relative = os.path.relpath(full_output_dir, self.relion_dir)
+            
+            # Determine output star file name (typically "micrographs.star")
+            output_file = os.path.join(full_output_dir, "micrographs.star")
+            
+            # Find relion_star_handler in PATH
+            cmd = ["which", "relion_star_handler"]
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=10
+            )
+            
+            if result.returncode != 0 or not result.stdout.strip():
+                raise RuntimeError("relion_star_handler not found in PATH")
+            
+            star_handler_path = result.stdout.strip()
+            
+            output_dir_with_slash = output_dir + '/'
+            
+            # Build the command
+            cmd = [
+                star_handler_path,
+                "--i", input_star,
+                "--o", output_file,
+                "--select", select_field,
+                "--minval", str(minval),
+                "--maxval", str(maxval),
+                "--pipeline_control", output_dir_with_slash
+            ]
+            
+            # Add additional parameters from kwargs
+            for key, value in kwargs.items():
+                if value is not None:
+                    cmd.extend([f"--{key}", str(value)])
+            
+            print(f"Running micrograph selection command: {' '.join(cmd)}")
+            
+            # Set environment variables to avoid display issues
+            env = os.environ.copy()
+            env['DISPLAY'] = ''
+            env['QT_QPA_PLATFORM'] = 'offscreen'
+            env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+            env['QT_SCALE_FACTOR'] = '1'
+            
+            # Run the command from the RELION directory
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+                cwd=self.relion_dir
+            )
+            
+            if result.returncode != 0:
+                raise RuntimeError(f"RELION micrograph selection failed: {result.stderr}")
+            
+            job_info = {
+                "job_type": "relion_micrograph_selection",
+                "status": "completed",
+                "output_dir": full_output_dir,
+                "output_file": output_file,
+                "input_star": input_star,
+                "command": " ".join(cmd),
+                "stdout": result.stdout,
+                "stderr": result.stderr
+            }
+            
+            # Cache the job info using the relative job directory (e.g., "Select/job002")
+            self._job_cache[job_dir_relative] = job_info
+            
+            print(f"✅ RELION micrograph selection completed successfully!")
+            print(f"Output directory: {full_output_dir}")
+            print(f"Output file: {output_file}")
+            
+            return job_info
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to run micrograph selection: {e}")
     
     def get_job_status(self, job_id: str) -> Dict[str, Any]:
         """

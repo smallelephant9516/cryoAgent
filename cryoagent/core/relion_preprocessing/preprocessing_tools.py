@@ -43,12 +43,14 @@ class PreprocessingTools:
     
     @staticmethod
     def create_micrograph_selection_tool(agent) -> Tool:
-        """Create tool for micrograph selection using RELION tools."""
+        """Create tool for micrograph selection using relion_star_handler."""
         return Tool(
             name="micrograph_selection",
-            description="Select micrographs with resolution better than specified threshold. "
+            description="Select micrographs using relion_star_handler with filter criteria. "
                        "Required parameters: input_star (from ctf_estimation). "
-                       "Optional parameters: min_resolution, quality_threshold, wait_for_completion, timeout.",
+                       "Optional parameters: select_field (default: rlnCtfMaxResolution), minval (default: 2.0), "
+                       "maxval (default: 5.0), min_resolution, wait_for_completion, timeout, check_interval. "
+                       "Example: Uses relion_star_handler --select rlnCtfMaxResolution --minval 2 --maxval 5 to filter micrographs.",
             func=agent._micrograph_selection_tool
         )
     

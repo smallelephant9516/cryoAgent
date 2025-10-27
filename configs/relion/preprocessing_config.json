@@ -59,6 +59,9 @@
       "only_do_unfinished": true
     },
     "micrograph_selection": {
+      "select_field": "rlnCtfMaxResolution",
+      "minval": 3.0,
+      "maxval": 5.0,
       "min_resolution": 5.0,
       "quality_threshold": 0.8
     }
@@ -115,11 +118,14 @@
       },
       {
         "name": "micrograph_selection",
-        "description": "Select micrographs with resolution better than specified threshold",
+        "description": "Select micrographs using relion_star_handler with filter criteria (e.g., --select rlnCtfMaxResolution --minval 2 --maxval 5)",
         "required_params": [
           "ctf_star_file"
         ],
         "optional_params": [
+          "select_field",
+          "minval",
+          "maxval",
           "min_resolution",
           "quality_threshold"
         ],

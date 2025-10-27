@@ -139,9 +139,10 @@ You specialize in the initial stages of cryoEM data processing using RELION: mov
    - Required: corrected_micrographs_star (from motion_correction)
    - Optional: box_size, res_min, res_max, df_min, df_max, fstep, dast, ctffind_exe, ctf_win, is_ctffind4, fast_search, only_do_unfinished
    
-4. **Micrograph Selection**: Filter micrographs based on quality metrics
+4. **Micrograph Selection**: Select micrographs using relion_star_handler with filter criteria
    - Required: ctf_star_file (from ctf_estimation)
-   - Optional: min_resolution, quality_threshold
+   - Optional: select_field (default: rlnCtfMaxResolution), minval (default: 2.0), maxval (default: 5.0)
+   - Example: relion_star_handler --i CtfFind/job003/micrographs_ctf.star --o Select/job004/micrographs.star --select rlnCtfMaxResolution --minval 2 --maxval 5
 
 ## ReAct Process:
 For each step, you MUST follow this pattern:
@@ -299,9 +300,17 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
             result = self.relion_tools.motion_correction(**used_params)
             self._record_tool_execution("motion_correction", used_params, result=result)
             
+            # Extract relative job directory for tracking
+            output_dir_full = result.get("output_dir")
+            if output_dir_full:
+                relion_dir = self.relion_tools.relion_dir
+                job_dir_relative = os.path.relpath(output_dir_full, relion_dir)
+            else:
+                job_dir_relative = None
+            
             # Update workflow state
             self.workflow_state["motion_correction"]["completed"] = True
-            self.workflow_state["motion_correction"]["job_dir"] = result.get("output_dir")
+            self.workflow_state["motion_correction"]["job_dir"] = job_dir_relative  # Use relative path
             self.workflow_state["motion_correction"]["output_file"] = result.get("output_file")
             
             return f"✅ Successfully performed motion correction: {result.get('output_file')}"
@@ -345,9 +354,17 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
             result = self.relion_tools.ctf_estimation(**used_params)
             self._record_tool_execution("ctf_estimation", used_params, result=result)
             
+            # Extract relative job directory for tracking
+            output_dir_full = result.get("output_dir")
+            if output_dir_full:
+                relion_dir = self.relion_tools.relion_dir
+                job_dir_relative = os.path.relpath(output_dir_full, relion_dir)
+            else:
+                job_dir_relative = None
+            
             # Update workflow state
             self.workflow_state["ctf_estimation"]["completed"] = True
-            self.workflow_state["ctf_estimation"]["job_dir"] = result.get("output_dir")
+            self.workflow_state["ctf_estimation"]["job_dir"] = job_dir_relative  # Use relative path
             self.workflow_state["ctf_estimation"]["output_file"] = result.get("output_file")
             
             return f"✅ Successfully estimated CTF parameters: {result.get('output_file')}"
@@ -358,7 +375,7 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
             return f"❌ Error during CTF estimation: {str(e)}"
     
     def _micrograph_selection_tool(self, input_str: str) -> str:
-        """Tool wrapper for micrograph selection."""
+        """Tool wrapper for micrograph selection using relion_star_handler."""
         params: Dict[str, Any] = {}
         used_params: Dict[str, Any] = {}
         try:
@@ -369,21 +386,37 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
             if not input_star:
                 return "❌ Error: No CTF star file from CTF estimation step. Run ctf_estimation first."
             
+            # Map min_resolution to minval and maxval (resolution is better when lower)
+            min_resolution = float(params.get("min_resolution", getattr(self.config.workflow, 'min_resolution', 5.0)))
+            
             used_params = {
                 "input_star": input_star,
                 "output_dir": "Select",
-                "min_resolution": float(params.get("min_resolution", getattr(self.config.workflow, 'min_resolution', 5.0))),
-                "quality_threshold": float(params.get("quality_threshold", getattr(self.config.workflow, 'quality_threshold', 0.8))),
+                "select_field": params.get("select_field", "rlnCtfMaxResolution"),
+                "minval": float(params.get("minval", 2.0)),
+                "maxval": float(params.get("maxval", min_resolution)),  # Use config min_resolution as maxval
                 "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion", "true")),
-                "timeout": int(params.get("timeout", 600))
+                "timeout": int(params.get("timeout", 600)),
+                "check_interval": int(params.get("check_interval", 30))
             }
 
             result = self.relion_tools.micrograph_selection(**used_params)
             self._record_tool_execution("micrograph_selection", used_params, result=result)
             
+            # Extract relative job directory from the full output_dir path
+            output_dir_full = result.get("output_dir")
+            if output_dir_full:
+                # Get the RELION directory from the tools
+                relion_dir = self.relion_tools.relion_dir
+                # Convert full path to relative job directory (e.g., "Select/job002")
+                import os
+                job_dir_relative = os.path.relpath(output_dir_full, relion_dir)
+            else:
+                job_dir_relative = None
+            
             # Update workflow state
             self.workflow_state["micrograph_selection"]["completed"] = True
-            self.workflow_state["micrograph_selection"]["job_dir"] = result.get("output_dir")
+            self.workflow_state["micrograph_selection"]["job_dir"] = job_dir_relative  # Store relative path
             self.workflow_state["micrograph_selection"]["output_file"] = result.get("output_file")
             
             return f"✅ Successfully selected micrographs: {result.get('output_file')}"
