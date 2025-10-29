@@ -75,39 +75,10 @@ class RELIONSettings(BaseModel):
 class WorkflowSettings(BaseModel):
     """Settings for cryoEM workflow parameters."""
     
-    # Import movies parameters (now loaded from microscope_config.json)
-    # movies_path and gain_ref_path are loaded from microscope_config.json
-    # pixel_size, voltage, cs_mm, dose are loaded from microscope_config.json
-    
-    # Motion correction parameters
-    motion_correction_binning: int = Field(default=1, description="Binning for motion correction")
-    motion_correction_patch_size: int = Field(default=5, description="Patch size for motion correction")
-    use_motioncor2: bool = Field(default=False, description="Use MotionCor2 for motion correction")
-    motioncor2_exe: Optional[str] = Field(default=None, description="Path to MotionCor2 executable")
-    bin_factor: int = Field(default=1, description="Binning factor for motion correction")
-    bfactor: float = Field(default=150.0, description="B-factor for motion correction")
-    dose_per_frame: float = Field(default=1.39, description="Dose per frame in e-/Å²")
-    preexposure: float = Field(default=0.0, description="Preexposure dose")
-    patch_x: int = Field(default=1, description="Patch size in X direction")
-    patch_y: int = Field(default=1, description="Patch size in Y direction")
-    eer_grouping: int = Field(default=32, description="EER grouping")
-    gain_rot: int = Field(default=0, description="Gain rotation")
-    gain_flip: int = Field(default=0, description="Gain flip")
-    dose_weighting: bool = Field(default=True, description="Enable dose weighting")
-    first_frame_sum: int = Field(default=1, description="First frame to sum")
-    last_frame_sum: int = Field(default=-1, description="Last frame to sum")
-    gain_ref: Optional[str] = Field(default=None, description="Gain reference file path")
-    
-    # CTF estimation parameters
-    ctf_min_res: float = Field(default=30.0, description="Minimum resolution for CTF estimation")
-    ctf_max_res: float = Field(default=4.0, description="Maximum resolution for CTF estimation")
-    
-    # Project and workspace settings
+    # Essential parameters only
+    microscope_config_path: str = Field(default="configs/microscope_config.json", description="Path to microscope configuration file")
     project_uid: str = Field(default="P1", description="CryoSPARC project UID")
     workspace_uid: str = Field(default="W1", description="CryoSPARC workspace UID")
-    
-    # Microscope configuration path
-    microscope_config_path: Optional[str] = Field(default="configs/microscope_config.json", description="Path to microscope configuration file")
     
     class Config:
         """Pydantic configuration."""
@@ -389,39 +360,14 @@ class ConfigLoader:
         memory_control_data = agent_data.pop("memory_control", {})
         agent_settings = AgentSettings(**agent_data)
         
-        # Parse workflow settings
+        # Parse workflow settings - keep it simple, just pass the raw data
         workflow_data = config_data.get("workflow", {})
         
-        # Extract workflow parameters (import_movies parameters now loaded from microscope_config.json)
-        import_movies = workflow_data.pop("import_movies", {})
-        motion_correction = workflow_data.pop("motion_correction", {})
-        ctf_estimation = workflow_data.pop("ctf_estimation", {})
-        
-        # Merge all workflow parameters
+        # Only extract the essential parameters that are actually used
         workflow_params = {
-            **workflow_data,
-            **import_movies,  # This now only contains microscope_config_path
-            "motion_correction_binning": motion_correction.get("binning", 1),
-            "motion_correction_patch_size": motion_correction.get("patch_size", 5),
-            # Motion correction parameters
-            "use_motioncor2": motion_correction.get("use_motioncor2", False),
-            "motioncor2_exe": motion_correction.get("motioncor2_exe", None),
-            "bin_factor": motion_correction.get("bin_factor", 1),
-            "bfactor": motion_correction.get("bfactor", 150.0),
-            "dose_per_frame": motion_correction.get("dose_per_frame", 1.39),
-            "preexposure": motion_correction.get("preexposure", 0.0),
-            "patch_x": motion_correction.get("patch_x", 1),
-            "patch_y": motion_correction.get("patch_y", 1),
-            "eer_grouping": motion_correction.get("eer_grouping", 32),
-            "gain_rot": motion_correction.get("gain_rot", 0),
-            "gain_flip": motion_correction.get("gain_flip", 0),
-            "dose_weighting": motion_correction.get("dose_weighting", True),
-            "first_frame_sum": motion_correction.get("first_frame_sum", 1),
-            "last_frame_sum": motion_correction.get("last_frame_sum", -1),
-            "gain_ref": motion_correction.get("gain_ref", None),
-            # CTF estimation parameters
-            "ctf_min_res": ctf_estimation.get("min_res", 30.0),
-            "ctf_max_res": ctf_estimation.get("max_res", 4.0),
+            "microscope_config_path": workflow_data.get("import_movies", {}).get("microscope_config_path", "configs/microscope_config.json"),
+            "project_uid": workflow_data.get("project_uid", "P1"),
+            "workspace_uid": workflow_data.get("workspace_uid", "W1"),
         }
         
         workflow_settings = WorkflowSettings(**workflow_params)

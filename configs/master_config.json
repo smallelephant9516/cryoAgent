@@ -46,7 +46,8 @@
       "default_timeout": 3600,
       "check_interval": 30,
       "max_concurrent_jobs": 3,
-      "auto_cleanup": true
+      "auto_cleanup": true,
+      "conda_env": "relion-5.0"
     }
   },
   "agent": {

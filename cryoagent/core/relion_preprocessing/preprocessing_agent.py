@@ -43,6 +43,9 @@ class PreprocessingAgent(BaseReActAgent):
             self.config_loader
         )
         
+        # Enable backend execution for RELION tools
+        self.relion_tools.enable_backend_execution(True)
+        
         super().__init__(None, config, llm)  # No CryoSPARC tools needed for RELION
         # Initialize logger for this agent
         self.logger = logging.getLogger("RelionPreprocessingAgent")
@@ -63,6 +66,20 @@ class PreprocessingAgent(BaseReActAgent):
             return value.lower() in ['true', '1', 'yes', 'on']
         else:
             return bool(value)
+    
+    def _get_workflow_config(self) -> Dict[str, Any]:
+        """Get workflow configuration from JSON file."""
+        import json
+        from pathlib import Path
+        
+        config_path = Path(self.config_loader.config_path)
+        if not config_path.exists():
+            return {}
+        
+        with open(config_path, 'r') as f:
+            config_data = json.load(f)
+        
+        return config_data.get("workflow", {})
     
     def _load_microscope_config(self) -> Dict[str, Any]:
         """Load microscope configuration from separate config file."""
@@ -128,16 +145,19 @@ You specialize in the initial stages of cryoEM data processing using RELION: mov
 ## Preprocessing Workflow Steps (in order):
 1. **Import Movies**: Import raw movie files into RELION using relion_import
    - Required: None (all parameters loaded from microscope_config.json)
-   - Optional: optics_group_name, continue_job
+   - Optional: optics_group_name, continue_job, use_backend, conda_env
    - Note: All microscope parameters (movies_path, pixel_size, voltage, cs_mm, q0, beamtilt_x, beamtilt_y) are automatically loaded from microscope_config.json
+   - Backend execution: Uses conda environment (default: relion-5.0) for running RELION commands
    
 2. **Motion Correction**: Correct beam-induced motion using relion_run_motioncorr with MotionCor2
    - Required: movies_star_file (from import_movies)
-   - Optional: use_motioncor2, motioncor2_exe, gain_ref_path, first_frame_sum, last_frame_sum, use_own, num_threads, bin_factor, bfactor, dose_per_frame, preexposure, patch_x, patch_y, eer_grouping, gain_rot, gain_flip, dose_weighting, grouping_for_ps, wait_for_completion, timeout
+   - Optional: use_motioncor2, motioncor2_exe, gain_ref_path, first_frame_sum, last_frame_sum, use_own, num_threads, bin_factor, bfactor, dose_per_frame, preexposure, patch_x, patch_y, eer_grouping, gain_rot, gain_flip, dose_weighting, grouping_for_ps, wait_for_completion, timeout, use_backend, conda_env
+   - Backend execution: Uses conda environment (default: relion-5.0) for running RELION commands
    
 3. **CTF Estimation**: Estimate Contrast Transfer Function parameters using relion_run_ctffind
    - Required: corrected_micrographs_star (from motion_correction)
-   - Optional: box_size, res_min, res_max, df_min, df_max, fstep, dast, ctffind_exe, ctf_win, is_ctffind4, fast_search, only_do_unfinished
+   - Optional: box_size, res_min, res_max, df_min, df_max, fstep, dast, ctffind_exe, ctf_win, is_ctffind4, fast_search, only_do_unfinished, use_backend, conda_env
+   - Backend execution: Uses conda environment (default: relion-5.0) for running RELION commands
    
 4. **Micrograph Selection**: Select micrographs using relion_star_handler with filter criteria
    - Required: ctf_star_file (from ctf_estimation)
@@ -152,16 +172,17 @@ For each step, you MUST follow this pattern:
 **Observation**: [What happened as a result of the action]
 
 ## CRITICAL: Job Monitoring and Waiting
-- After starting any job, you MUST wait for it to complete using wait_for_job
+- After starting backend jobs (import_movies, motion_correction, ctf_estimation), you MUST wait for completion using wait_for_job
+- micrograph_selection runs synchronously and completes immediately - NO waiting needed
 - Do NOT proceed to the next step until the current job is completed
 - If a job fails, report the error and stop the workflow
 
 ## Tool Usage Guidelines:
 - validate_inputs: Use JSON format {{"input_type": "movie_files", "input_path": "/path/to/files"}}
-- import_movies: Start the import, then wait for completion
-- motion_correction: Requires movies_star_file from completed import_movies job
-- ctf_estimation: Requires corrected_micrographs_star from completed motion_correction job
-- micrograph_selection: Requires ctf_star_file from completed ctf_estimation job
+- import_movies: Start the import, then wait for completion (backend job)
+- motion_correction: Requires movies_star_file from completed import_movies job, then wait for completion (backend job)
+- ctf_estimation: Requires corrected_micrographs_star from completed motion_correction job, then wait for completion (backend job)
+- micrograph_selection: Requires ctf_star_file from completed ctf_estimation job, completes immediately (no waiting needed)
 - check_job_status: Check status of a specific job directory
 - wait_for_job: Wait for job completion
 - reason_about_workflow: Analyze current preprocessing state and dependencies
@@ -225,7 +246,9 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
                 "beamtilt_y": beamtilt_y,
                 "output_file": "movies.star",
                 "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion", "true")),
-                "timeout": int(params.get("timeout", 600))
+                "timeout": int(params.get("timeout", 600)),
+                "use_backend": self._parse_boolean_param(params.get("use_backend", "true")),
+                "conda_env": params.get("conda_env", "relion-5.0")
             }
 
             result = self.relion_tools.import_movies(**used_params)
@@ -256,21 +279,20 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
                 return "❌ Error: No movies.star file from import step. Run import_movies first."
             
             # Get gain reference - check both gain_ref_path and gain_ref parameter names
-            # First check parameters, then workflow config, then microscope config
+            # First check parameters, then microscope config
             gain_ref_path = params.get("gain_ref_path", 
                 params.get("gain_ref", 
-                    self.config.workflow.gain_ref or 
-                        self.microscope_config.get("gain_ref_path")))
+                    self.microscope_config.get("gain_ref_path")))
+            
+            # Get motion correction parameters from config JSON
+            motion_config = self._get_workflow_config().get("motion_correction", {})
             
             # Get motion correction method from config or parameters
-            # Check config first, then params
-            config_use_motioncor2 = getattr(self.config.workflow, 'use_motioncor2', False)
-            use_motioncor2 = self._parse_boolean_param(params.get("use_motioncor2", config_use_motioncor2))
+            use_motioncor2 = self._parse_boolean_param(params.get("use_motioncor2", motion_config.get("use_motioncor2", False)))
             use_own = not use_motioncor2  # If not using MotionCor2, use RELION's own implementation
             
             # Get MotionCor2 executable path from config if not provided
-            motioncor2_exe = params.get("motioncor2_exe", 
-                getattr(self.config.workflow, 'motioncor2_exe', None))
+            motioncor2_exe = params.get("motioncor2_exe", motion_config.get("motioncor2_exe", None))
             
             used_params = {
                 "input_star": input_star,
@@ -294,7 +316,9 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
                 "dose_weighting": self._parse_boolean_param(params.get("dose_weighting", "true")),
                 "grouping_for_ps": int(params.get("grouping_for_ps", 3)),
                 "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion", "true")),
-                "timeout": int(params.get("timeout", 1800))
+                "timeout": int(params.get("timeout", 1800)),
+                "use_backend": self._parse_boolean_param(params.get("use_backend", "true")),
+                "conda_env": params.get("conda_env", "relion-5.0")
             }
 
             result = self.relion_tools.motion_correction(**used_params)
@@ -332,23 +356,28 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
             if not input_star:
                 return "❌ Error: No corrected_micrographs.star file from motion correction step. Run motion_correction first."
             
+            # Get CTF parameters from config JSON
+            ctf_config = self._get_workflow_config().get("ctf_estimation", {})
+            
             used_params = {
                 "input_star": input_star,
                 "output_dir": "CtfFind/job003",
-                "box_size": int(params.get("box_size", getattr(self.config.workflow, 'box_size', 512))),
-                "res_min": float(params.get("res_min", getattr(self.config.workflow, 'ctf_min_res', 30.0))),
-                "res_max": float(params.get("res_max", getattr(self.config.workflow, 'ctf_max_res', 5.0))),
-                "df_min": float(params.get("df_min", getattr(self.config.workflow, 'df_min', 5000.0))),
-                "df_max": float(params.get("df_max", getattr(self.config.workflow, 'df_max', 50000.0))),
-                "fstep": float(params.get("fstep", getattr(self.config.workflow, 'fstep', 500.0))),
-                "dast": float(params.get("dast", getattr(self.config.workflow, 'dast', 100.0))),
-                "ctffind_exe": params.get("ctffind_exe", getattr(self.config.workflow, 'ctffind_exe', "/home/daoyi/tools/ctffind/ctffind_4_1_14/ctffind")),
-                "ctf_win": int(params.get("ctf_win", getattr(self.config.workflow, 'ctf_win', -1))),
-                "is_ctffind4": self._parse_boolean_param(params.get("is_ctffind4", str(getattr(self.config.workflow, 'is_ctffind4', True)))),
-                "fast_search": self._parse_boolean_param(params.get("fast_search", str(getattr(self.config.workflow, 'fast_search', True)))),
-                "only_do_unfinished": self._parse_boolean_param(params.get("only_do_unfinished", str(getattr(self.config.workflow, 'only_do_unfinished', True)))),
+                "box_size": int(params.get("box_size", ctf_config.get("box_size", 512))),
+                "res_min": float(params.get("res_min", ctf_config.get("res_min", 30.0))),
+                "res_max": float(params.get("res_max", ctf_config.get("res_max", 5.0))),
+                "df_min": float(params.get("df_min", ctf_config.get("df_min", 5000.0))),
+                "df_max": float(params.get("df_max", ctf_config.get("df_max", 50000.0))),
+                "fstep": float(params.get("fstep", ctf_config.get("fstep", 500.0))),
+                "dast": float(params.get("dast", ctf_config.get("dast", 100.0))),
+                "ctffind_exe": params.get("ctffind_exe", ctf_config.get("ctffind_exe", "/home/daoyi/tools/ctffind/ctffind_4_1_14/ctffind")),
+                "ctf_win": int(params.get("ctf_win", ctf_config.get("ctf_win", -1))),
+                "is_ctffind4": self._parse_boolean_param(params.get("is_ctffind4", str(ctf_config.get("is_ctffind4", True)))),
+                "fast_search": self._parse_boolean_param(params.get("fast_search", str(ctf_config.get("fast_search", True)))),
+                "only_do_unfinished": self._parse_boolean_param(params.get("only_do_unfinished", str(ctf_config.get("only_do_unfinished", True)))),
                 "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion", "true")),
-                "timeout": int(params.get("timeout", 1800))
+                "timeout": int(params.get("timeout", 1800)),
+                "use_backend": self._parse_boolean_param(params.get("use_backend", "true")),
+                "conda_env": params.get("conda_env", "relion-5.0")
             }
 
             result = self.relion_tools.ctf_estimation(**used_params)
@@ -386,15 +415,18 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
             if not input_star:
                 return "❌ Error: No CTF star file from CTF estimation step. Run ctf_estimation first."
             
+            # Get micrograph selection parameters from config JSON
+            selection_config = self._get_workflow_config().get("micrograph_selection", {})
+            
             # Map min_resolution to minval and maxval (resolution is better when lower)
-            min_resolution = float(params.get("min_resolution", getattr(self.config.workflow, 'min_resolution', 5.0)))
+            min_resolution = float(params.get("min_resolution", selection_config.get("min_resolution", 5.0)))
             
             used_params = {
                 "input_star": input_star,
                 "output_dir": "Select",
-                "select_field": params.get("select_field", "rlnCtfMaxResolution"),
-                "minval": float(params.get("minval", 2.0)),
-                "maxval": float(params.get("maxval", min_resolution)),  # Use config min_resolution as maxval
+                "select_field": params.get("select_field", selection_config.get("select_field", "rlnCtfMaxResolution")),
+                "minval": float(params.get("minval", selection_config.get("minval", 2.0))),
+                "maxval": float(params.get("maxval", selection_config.get("maxval", min_resolution))),  # Use config min_resolution as maxval
                 "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion", "true")),
                 "timeout": int(params.get("timeout", 600)),
                 "check_interval": int(params.get("check_interval", 30))
@@ -541,6 +573,7 @@ Remember: You are working with RELION, not CryoSPARC. Use the appropriate RELION
                 analysis += "**Next Step**: Run micrograph_selection to filter micrographs\n"
                 analysis += f"- Input: {self.workflow_state['ctf_estimation']['output_file']}\n"
                 analysis += "- Filters based on CTF quality metrics\n"
+                analysis += "- Completes immediately (no waiting needed)\n"
             else:
                 analysis += "**All preprocessing steps completed!** ✅\n"
                 analysis += "Ready for particle picking and 2D classification\n"

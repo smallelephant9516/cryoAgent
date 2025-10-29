@@ -241,6 +241,7 @@ class RELIONTools:
         timeout: int = 3600,
         check_interval: int = 30,
         use_backend: bool = False,
+        conda_env: str = "relion-5.0",
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -274,32 +275,7 @@ class RELIONTools:
             full_output_dir = os.path.join(self.relion_dir, output_dir)
             os.makedirs(full_output_dir, exist_ok=True)
             
-            # If backend execution is requested, use the backend method
-            if use_backend:
-                if not self._backend_enabled:
-                    raise RuntimeError("Backend execution is not enabled. Call enable_backend_execution(True) first.")
-                
-                # Prepare command for backend execution
-                cmd = self._prepare_import_movies_command(
-                    movies_path, output_dir, optics_group_name, angpix, voltage, cs, q0,
-                    beamtilt_x, beamtilt_y, output_file, **kwargs
-                )
-                
-                # Generate job ID
-                job_id = f"import_{output_dir}_{int(time.time())}"
-                
-                # Run in backend
-                return self.run_relion_backend(
-                    command=cmd,
-                    job_id=job_id,
-                    output_dir=output_dir,
-                    timeout=timeout,
-                    check_interval=check_interval,
-                    **kwargs
-                )
-            
-            # Convert absolute path to relative path if needed
-            #movies_path = os.path.dirname(movies_path)
+            # Convert absolute path to relative path if needed (build once; used by both modes)
             if os.path.isabs(movies_path):
                 print(f"Converting absolute path to relative: {movies_path}")
                 relative_movies_path = self._convert_movies_path_to_relative(movies_path)
@@ -332,6 +308,46 @@ class RELIONTools:
                     cmd.extend([f"--{key}", str(value)])
             
             print(f"Running RELION import movies command: {' '.join(cmd)}")
+
+            # If backend execution is requested, wrap with conda and launch without waiting
+            if use_backend:
+                if not self._backend_enabled:
+                    raise RuntimeError("Backend execution is not enabled. Call enable_backend_execution(True) first.")
+
+                env = os.environ.copy()
+                env['DISPLAY'] = ''
+                env['QT_QPA_PLATFORM'] = 'offscreen'
+                env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+                env['QT_SCALE_FACTOR'] = '1'
+
+                conda_cmd = [
+                    "conda", "run", "-n", conda_env,
+                    "bash", "-c",
+                    f"cd {self.relion_dir} && {' '.join(cmd)}"
+                ]
+
+                process = subprocess.Popen(
+                    conda_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    cwd=self.relion_dir,
+                    preexec_fn=os.setsid if os.name != 'nt' else None
+                )
+
+                job_info = {
+                    "job_type": "relion_import_movies",
+                    "status": "running",
+                    "output_dir": full_output_dir,
+                    "output_file": os.path.join(full_output_dir, output_file),
+                    "command": " ".join(cmd),
+                    "process_id": process.pid,
+                    "started_at": time.time()
+                }
+                self._job_cache[f"import_{output_dir}"] = job_info
+                print(f"🚀 Started backend import job (PID {process.pid}) in conda env '{conda_env}'")
+                return job_info
             
             # Set environment variables to avoid display issues
             env = os.environ.copy()
@@ -398,6 +414,8 @@ class RELIONTools:
         wait_for_completion: bool = False,
         timeout: int = 3600,
         check_interval: int = 30,
+        use_backend: bool = False,
+        conda_env: str = "relion-5.0",
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -436,21 +454,16 @@ class RELIONTools:
             full_output_dir = os.path.join(self.relion_dir, output_dir)
             os.makedirs(full_output_dir, exist_ok=True)
             
-            # Prepare command
+            # Build command (shared for both modes)
             cmd = [
                 "which", "relion_run_motioncorr"
             ]
-            
-            # Get the full path to relion_run_motioncorr
             motioncorr_path = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=10
             ).stdout.strip()
-            
             if not motioncorr_path:
                 raise RuntimeError("relion_run_motioncorr not found in PATH")
-            
             output_dir_with_slash = output_dir+'/'
-            
             cmd = [
                 motioncorr_path,
                 f"--i", input_star,
@@ -469,21 +482,16 @@ class RELIONTools:
                 f"--gain_flip", str(gain_flip),
                 f"--pipeline_control", output_dir_with_slash
             ]
-            
-            # MotionCor2 doesn't support this option
             if not use_motioncor2:
                 cmd.append(f"--grouping_for_ps")
                 cmd.append(str(grouping_for_ps))
-            
             if use_motioncor2:
                 cmd.append("--use_motioncor2")
                 if motioncor2_exe:
                     cmd.extend(["--motioncor2_exe", motioncor2_exe])
             else:
                 cmd.append("--use_own")
-
             if gainref:
-                # Convert absolute path to relative path if needed
                 if os.path.isabs(gainref):
                     print(f"Converting gain reference absolute path to relative: {gainref}")
                     relative_gainref = self._convert_to_relative_path(gainref)
@@ -491,16 +499,52 @@ class RELIONTools:
                 else:
                     relative_gainref = gainref
                 cmd.extend(["--gainref", relative_gainref])
-            
             if dose_weighting:
                 cmd.append("--dose_weighting")
-            
-            # Add additional parameters from kwargs
             for key, value in kwargs.items():
                 if value is not None:
                     cmd.extend([f"--{key}", str(value)])
-            
             print(f"Running RELION motion correction command: {' '.join(cmd)}")
+
+            if use_backend:
+                if not self._backend_enabled:
+                    raise RuntimeError("Backend execution is not enabled. Call enable_backend_execution(True) first.")
+
+                env = os.environ.copy()
+                env['DISPLAY'] = ''
+                env['QT_QPA_PLATFORM'] = 'offscreen'
+                env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+                env['QT_SCALE_FACTOR'] = '1'
+
+                conda_cmd = [
+                    "conda", "run", "-n", conda_env,
+                    "bash", "-c",
+                    f"cd {self.relion_dir} && {' '.join(cmd)}"
+                ]
+                process = subprocess.Popen(
+                    conda_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    cwd=self.relion_dir,
+                    preexec_fn=os.setsid if os.name != 'nt' else None
+                )
+                job_info = {
+                    "job_type": "relion_motion_correction",
+                    "status": "running",
+                    "output_dir": full_output_dir,
+                    "output_file": os.path.join(full_output_dir, "corrected_micrographs.star"),
+                    "input_star": input_star,
+                    "command": " ".join(cmd),
+                    "process_id": process.pid,
+                    "started_at": time.time()
+                }
+                self._job_cache[f"motioncorr_{output_dir}"] = job_info
+                print(f"🚀 Started backend motion correction job (PID {process.pid}) in conda env '{conda_env}'")
+                return job_info
+            
+            # Non-backend: run and wait
             
             # Set environment variables to avoid display issues
             env = os.environ.copy()
@@ -566,6 +610,8 @@ class RELIONTools:
         wait_for_completion: bool = False,
         timeout: int = 3600,
         check_interval: int = 30,
+        use_backend: bool = False,
+        conda_env: str = "relion-5.0",
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -599,21 +645,16 @@ class RELIONTools:
             full_output_dir = os.path.join(self.relion_dir, output_dir)
             os.makedirs(full_output_dir, exist_ok=True)
             
-            # Prepare command
+            # Build command (shared for both modes)
             cmd = [
                 "which", "relion_run_ctffind"
             ]
-            
-            # Get the full path to relion_run_ctffind
             ctffind_path = subprocess.run(
                 cmd, capture_output=True, text=True, timeout=10
             ).stdout.strip()
-            
             if not ctffind_path:
                 raise RuntimeError("relion_run_ctffind not found in PATH")
-
             output_dir_with_slash = output_dir+'/'
-            
             cmd = [
                 ctffind_path,
                 f"--i", input_star,
@@ -629,22 +670,56 @@ class RELIONTools:
                 f"--ctfWin", str(ctf_win),
                 f"--pipeline_control", output_dir_with_slash
             ]
-            
             if is_ctffind4:
                 cmd.append("--is_ctffind4")
-            
             if fast_search:
                 cmd.append("--fast_search")
-            
             if only_do_unfinished:
                 cmd.append("--only_do_unfinished")
-            
-            # Add additional parameters from kwargs
             for key, value in kwargs.items():
                 if value is not None:
                     cmd.extend([f"--{key}", str(value)])
-            
             print(f"Running RELION CTF estimation command: {' '.join(cmd)}")
+
+            if use_backend:
+                if not self._backend_enabled:
+                    raise RuntimeError("Backend execution is not enabled. Call enable_backend_execution(True) first.")
+
+                env = os.environ.copy()
+                env['DISPLAY'] = ''
+                env['QT_QPA_PLATFORM'] = 'offscreen'
+                env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+                env['QT_SCALE_FACTOR'] = '1'
+
+                conda_cmd = [
+                    "conda", "run", "-n", conda_env,
+                    "bash", "-c",
+                    f"cd {self.relion_dir} && {' '.join(cmd)}"
+                ]
+                process = subprocess.Popen(
+                    conda_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    cwd=self.relion_dir,
+                    preexec_fn=os.setsid if os.name != 'nt' else None
+                )
+                job_info = {
+                    "job_type": "relion_ctf_estimation",
+                    "status": "running",
+                    "output_dir": full_output_dir,
+                    "output_file": os.path.join(full_output_dir, "micrographs_ctf.star"),
+                    "input_star": input_star,
+                    "command": " ".join(cmd),
+                    "process_id": process.pid,
+                    "started_at": time.time()
+                }
+                self._job_cache[f"ctffind_{output_dir}"] = job_info
+                print(f"🚀 Started backend CTF estimation job (PID {process.pid}) in conda env '{conda_env}'")
+                return job_info
+            
+            # Non-backend: run and wait
             
             # Set environment variables to avoid display issues
             env = os.environ.copy()
@@ -1276,10 +1351,11 @@ class RELIONTools:
         output_dir: str,
         timeout: Optional[int] = None,
         check_interval: Optional[int] = None,
+        conda_env: str = "relion-5.0",
         **kwargs
     ) -> Dict[str, Any]:
         """
-        Run a RELION command in the background.
+        Run a RELION command in the background using conda environment.
         
         Args:
             command: RELION command to execute
@@ -1287,6 +1363,7 @@ class RELIONTools:
             output_dir: Output directory for the job
             timeout: Maximum time to wait for completion in seconds (uses config default if None)
             check_interval: Time between status checks in seconds (uses config default if None)
+            conda_env: Conda environment name to use (default: "relion-5.0")
             **kwargs: Additional parameters
             
         Returns:
@@ -1310,6 +1387,13 @@ class RELIONTools:
             full_output_dir = os.path.join(self.relion_dir, output_dir)
             os.makedirs(full_output_dir, exist_ok=True)
             
+            # Wrap command with conda environment
+            conda_cmd = [
+                "conda", "run", "-n", conda_env,
+                "bash", "-c",
+                f"cd {self.relion_dir} && {' '.join(command)}"
+            ]
+            
             # Set environment variables to avoid display issues
             env = os.environ.copy()
             env['DISPLAY'] = ''
@@ -1319,7 +1403,7 @@ class RELIONTools:
             
             # Start the process in the background
             process = subprocess.Popen(
-                command,
+                conda_cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.PIPE,
                 text=True,
@@ -1346,6 +1430,7 @@ class RELIONTools:
                 "status": "running",
                 "output_dir": full_output_dir,
                 "command": " ".join(command),
+                "conda_command": " ".join(conda_cmd),
                 "process_id": process.pid,
                 "started_at": time.time()
             }
@@ -1355,6 +1440,7 @@ class RELIONTools:
             print(f"🚀 Started RELION backend job: {job_id}")
             print(f"   Process ID: {process.pid}")
             print(f"   Output directory: {full_output_dir}")
+            print(f"   Conda environment: {conda_env}")
             print(f"   Command: {' '.join(command)}")
             
             return job_info
@@ -1472,6 +1558,69 @@ class RELIONTools:
                 
             except Exception as e:
                 print(f"❌ Error terminating backend job {job_id}: {e}")
+    
+    def monitor_process(self, process: subprocess.Popen, output_dir: str, check_interval: int = 30, timeout: int = 3600) -> bool:
+        """
+        Monitor both the process and the job completion files.
+        
+        Args:
+            process: The subprocess to monitor
+            output_dir: Path to the job output directory
+            check_interval: Time between checks in seconds
+            timeout: Maximum time to wait in seconds
+            
+        Returns:
+            True if job completed successfully, False otherwise
+        """
+        print(f"🛰️ Monitoring process (PID: {process.pid}) and job completion...")
+        print(f"   Check interval: {check_interval}s, Timeout: {timeout}s")
+        
+        start_time = time.time()
+        last_status = None
+        
+        while time.time() - start_time < timeout:
+            # Check if process is still running
+            if process.poll() is not None:
+                # Process has finished
+                stdout, stderr = process.communicate()
+                print(f"📊 Process finished with return code: {process.returncode}")
+                
+                if process.returncode == 0:
+                    print("✅ Process completed successfully!")
+                else:
+                    print(f"❌ Process failed with return code {process.returncode}")
+                    print(f"Error output: {stderr}")
+                
+                # Check job completion files as well
+                job_status = self._check_job_completion_files(output_dir)
+                print(f"📊 Job completion status: {job_status}")
+                
+                return process.returncode == 0
+            
+            # Check job completion files
+            job_status = self._check_job_completion_files(output_dir)
+            elapsed = int(time.time() - start_time)
+            
+            # Only print status if it changed
+            if job_status != last_status:
+                print(f"📊 Job status: {job_status} (elapsed: {elapsed}s)")
+                last_status = job_status
+            
+            if job_status == "completed":
+                print("✅ Job completed successfully!")
+                # Terminate the process since job is done
+                process.terminate()
+                return True
+            elif job_status == "failed":
+                print("❌ Job failed!")
+                process.terminate()
+                return False
+            
+            time.sleep(check_interval)
+        
+        print(f"⏰ Monitoring timed out after {timeout} seconds")
+        process.terminate()
+        return False
     
     def get_backend_job_status(self, job_id: str) -> Dict[str, Any]:
         """
@@ -1633,3 +1782,5 @@ class RELIONTools:
                 cmd.extend([f"--{key}", str(value)])
         
         return cmd
+    
+    

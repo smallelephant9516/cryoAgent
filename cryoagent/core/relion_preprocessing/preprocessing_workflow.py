@@ -137,9 +137,9 @@ Execute the complete RELION preprocessing workflow using the ReAct framework. Fo
 
 ## Expected Outputs:
 - Import: Import/job001/movies.star
-- Motion Correction: MotionCorr/job022/corrected_micrographs.star
-- CTF Estimation: CtfFind/job010/micrographs_ctf.star
-- Selection: Select/job011/selected_micrographs.star
+- Motion Correction: MotionCorr/job002/corrected_micrographs.star
+- CTF Estimation: CtfFind/job003/micrographs_ctf.star
+- Selection: Select/job004/selected_micrographs.star
 
 ## Tool Usage:
 - Use validate_inputs to check movie files before import

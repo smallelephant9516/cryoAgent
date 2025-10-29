@@ -328,6 +328,8 @@ class RelionPreprocessingAgent(StageAgent):
             
             # Initialize RELION preprocessing agent (no CryoSPARC tools needed)
             from .relion_preprocessing.preprocessing_agent import PreprocessingAgent as RelionPreprocessingAgent
+            from .relion_preprocessing.preprocessing_workflow import PreprocessingWorkflow as RelionPreprocessingWorkflow
+            
             self.modular_agent = RelionPreprocessingAgent(
                 config=self.config
             )
