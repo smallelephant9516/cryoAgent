@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-"""Test script for RELION tools with real dataset."""
+"""Test script for RELION tools with real dataset and conda environment isolation."""
 
 import os
 import sys
 import json
+import time
 from pathlib import Path
 
 # Add the project root to the Python path
@@ -36,6 +37,100 @@ def test_relion_setup():
     except Exception as e:
         print(f"❌ Failed to initialize RELION tools: {e}")
         return None
+
+def test_conda_environment_setup(relion_tools):
+    """Test conda environment configuration and setup."""
+    print("\n🐍 Testing conda environment setup...")
+    
+    try:
+        # Configure conda environment
+        relion_tools.configure_conda_environment(
+            env_name="relion-5.0",
+            conda_executable="conda",
+            use_conda=True
+        )
+        
+        # Check conda environment status
+        status = relion_tools.get_conda_environment_status()
+        print(f"   Conda enabled: {status['conda_enabled']}")
+        print(f"   Conda available: {status['conda_available']}")
+        print(f"   Environment exists: {status['environment_exists']}")
+        print(f"   Environment name: {status['environment_name']}")
+        
+        if status['conda_available']:
+            print(f"   Conda version: {status.get('conda_version', 'Unknown')}")
+        
+        if status['error']:
+            print(f"   ⚠️  Warning: {status['error']}")
+            return False
+        
+        # Enable backend execution
+        relion_tools.enable_backend_execution(True)
+        print("✅ Conda environment setup completed successfully!")
+        return True
+        
+    except Exception as e:
+        print(f"❌ Conda environment setup failed: {e}")
+        return False
+
+def test_conda_backend_execution(relion_tools):
+    """Test conda backend execution with a simple command."""
+    print("\n🚀 Testing conda backend execution...")
+    
+    try:
+        # Test with a simple command
+        test_command = ["python", "--version"]
+        job_id = f"conda_test_{int(time.time())}"
+        output_dir = "CondaTest"
+        
+        print(f"   Running test command: {' '.join(test_command)}")
+        print(f"   Job ID: {job_id}")
+        
+        # Run the command in backend mode
+        job_info = relion_tools.run_relion_backend(
+            command=test_command,
+            job_id=job_id,
+            output_dir=output_dir,
+            timeout=60,
+            check_interval=5
+        )
+        
+        print(f"   ✅ Backend job started successfully!")
+        print(f"   Process ID: {job_info['process_id']}")
+        print(f"   Conda environment: {job_info.get('conda_env', 'None')}")
+        print(f"   Full command: {job_info['command']}")
+        
+        # Monitor the job
+        print(f"   ⏳ Monitoring job completion...")
+        max_wait = 30  # 30 seconds max wait
+        start_time = time.time()
+        
+        while time.time() - start_time < max_wait:
+            status = relion_tools.get_backend_job_status(job_id)
+            
+            if status['status'] in ['completed', 'failed', 'timeout']:
+                break
+                
+            time.sleep(2)
+        
+        # Get final status
+        final_status = relion_tools.get_backend_job_status(job_id)
+        print(f"   Final status: {final_status['status']}")
+        
+        if final_status['status'] == 'completed':
+            print(f"   ✅ Conda backend execution test completed successfully!")
+            if 'stdout' in final_status and final_status['stdout']:
+                print(f"   Output: {final_status['stdout'].strip()}")
+            return True
+        else:
+            print(f"   ❌ Conda backend execution test failed")
+            if 'stderr' in final_status and final_status['stderr']:
+                print(f"   Error: {final_status['stderr'][:200]}...")
+            return False
+            
+    except Exception as e:
+        print(f"❌ Conda backend execution test failed: {e}")
+        return False
 
 def test_dataset_access():
     """Test access to the real dataset."""
@@ -74,9 +169,9 @@ def test_dataset_access():
     
     return True
 
-def test_import_movies(relion_tools):
+def test_import_movies(relion_tools, use_conda_backend=False):
     """Test movie import functionality."""
-    print("\n🎬 Testing movie import...")
+    print(f"\n🎬 Testing movie import{' (with conda backend)' if use_conda_backend else ''}...")
     
     # Load microscope config
     with open("configs/microscope_config.json", 'r') as f:
@@ -88,7 +183,7 @@ def test_import_movies(relion_tools):
         # Test import movies - use absolute path from config
         result = relion_tools.import_movies(
             movies_path=params["movies_path"],  # Use absolute path from config
-            output_dir="test_import",
+            output_dir="test_import_conda" if use_conda_backend else "test_import",
             optics_group_name="opticsGroup1",
             angpix=params["pixel_size"],
             voltage=params["voltage"],
@@ -98,7 +193,8 @@ def test_import_movies(relion_tools):
             beamtilt_y=0.0,
             output_file="movies.star",
             wait_for_completion=True,
-            timeout=600
+            timeout=600,
+            use_backend=use_conda_backend  # Enable conda backend if requested
         )
         
         print("✅ Movie import completed successfully!")
@@ -120,9 +216,9 @@ def test_import_movies(relion_tools):
         print(f"❌ Movie import failed: {e}")
         return None
 
-def test_motion_correction(relion_tools, import_result):
+def test_motion_correction(relion_tools, import_result, use_conda_backend=False):
     """Test motion correction functionality."""
-    print("\n🎯 Testing motion correction...")
+    print(f"\n🎯 Testing motion correction{' (with conda backend)' if use_conda_backend else ''}...")
     
     if not import_result:
         print("❌ No import result available for motion correction")
@@ -139,7 +235,7 @@ def test_motion_correction(relion_tools, import_result):
         # Test motion correction
         result = relion_tools.motion_correction(
             input_star=import_result["output_file"],
-            output_dir="test_motioncorr",
+            output_dir="test_motioncorr_conda" if use_conda_backend else "test_motioncorr",
             first_frame_sum=1,
             last_frame_sum=-1,
             use_own=True,
@@ -157,7 +253,8 @@ def test_motion_correction(relion_tools, import_result):
             dose_weighting=True,
             grouping_for_ps=3,
             wait_for_completion=True,
-            timeout=1800  # 30 minutes timeout
+            timeout=1800,  # 30 minutes timeout
+            use_backend=use_conda_backend  # Enable conda backend if requested
         )
         
         print("✅ Motion correction completed successfully!")
@@ -168,9 +265,9 @@ def test_motion_correction(relion_tools, import_result):
         print(f"❌ Motion correction failed: {e}")
         return None
 
-def test_ctf_estimation(relion_tools, motioncorr_result):
+def test_ctf_estimation(relion_tools, motioncorr_result, use_conda_backend=False):
     """Test CTF estimation functionality."""
-    print("\n🔬 Testing CTF estimation...")
+    print(f"\n🔬 Testing CTF estimation{' (with conda backend)' if use_conda_backend else ''}...")
     
     if not motioncorr_result:
         print("❌ No motion correction result available for CTF estimation")
@@ -180,7 +277,7 @@ def test_ctf_estimation(relion_tools, motioncorr_result):
         # Test CTF estimation
         result = relion_tools.ctf_estimation(
             input_star=os.path.join(motioncorr_result["output_dir"], "corrected_micrographs.star"),
-            output_dir="test_ctffind",
+            output_dir="test_ctffind_conda" if use_conda_backend else "test_ctffind",
             box_size=512,
             res_min=30.0,
             res_max=5.0,
@@ -194,7 +291,8 @@ def test_ctf_estimation(relion_tools, motioncorr_result):
             fast_search=True,
             only_do_unfinished=True,
             wait_for_completion=True,
-            timeout=1800  # 30 minutes timeout
+            timeout=1800,  # 30 minutes timeout
+            use_backend=use_conda_backend  # Enable conda backend if requested
         )
         
         print("✅ CTF estimation completed successfully!")
@@ -205,10 +303,87 @@ def test_ctf_estimation(relion_tools, motioncorr_result):
         print(f"❌ CTF estimation failed: {e}")
         return None
 
+def run_conda_backend_tests(relion_tools):
+    """Run tests with conda backend execution."""
+    print("\n" + "=" * 60)
+    print("🐍 TESTING WITH CONDA BACKEND EXECUTION")
+    print("=" * 60)
+    
+    # Test conda environment setup
+    if not test_conda_environment_setup(relion_tools):
+        print("❌ Conda environment setup failed. Skipping conda backend tests.")
+        return False
+    
+    # Test conda backend execution with simple command
+    if not test_conda_backend_execution(relion_tools):
+        print("❌ Conda backend execution test failed. Skipping RELION conda tests.")
+        return False
+    
+    # Test RELION operations with conda backend
+    print("\n🎬 Testing RELION operations with conda backend...")
+    
+    # Test import movies with conda backend
+    import_result = test_import_movies(relion_tools, use_conda_backend=True)
+    if not import_result:
+        print("❌ Movie import with conda backend failed.")
+        return False
+    
+    # Test motion correction with conda backend
+    motioncorr_result = test_motion_correction(relion_tools, import_result, use_conda_backend=True)
+    if not motioncorr_result:
+        print("❌ Motion correction with conda backend failed.")
+        return False
+    
+    # Test CTF estimation with conda backend
+    ctf_result = test_ctf_estimation(relion_tools, motioncorr_result, use_conda_backend=True)
+    if not ctf_result:
+        print("❌ CTF estimation with conda backend failed.")
+        return False
+    
+    print("\n✅ All conda backend tests completed successfully!")
+    print("Summary of conda backend results:")
+    print(f"✅ Movie import (conda): {import_result['output_dir']}")
+    print(f"✅ Motion correction (conda): {motioncorr_result['output_dir']}")
+    print(f"✅ CTF estimation (conda): {ctf_result['output_dir']}")
+    
+    return True
+
+def run_regular_tests(relion_tools):
+    """Run tests with regular execution."""
+    print("\n" + "=" * 60)
+    print("🔧 TESTING WITH REGULAR EXECUTION")
+    print("=" * 60)
+    
+    # Test import movies
+    import_result = test_import_movies(relion_tools, use_conda_backend=False)
+    if not import_result:
+        print("❌ Movie import failed.")
+        return False
+    
+    # Test motion correction
+    motioncorr_result = test_motion_correction(relion_tools, import_result, use_conda_backend=False)
+    if not motioncorr_result:
+        print("❌ Motion correction failed.")
+        return False
+    
+    # Test CTF estimation
+    ctf_result = test_ctf_estimation(relion_tools, motioncorr_result, use_conda_backend=False)
+    if not ctf_result:
+        print("❌ CTF estimation failed.")
+        return False
+    
+    print("\n✅ All regular tests completed successfully!")
+    print("Summary of regular results:")
+    print(f"✅ Movie import (regular): {import_result['output_dir']}")
+    print(f"✅ Motion correction (regular): {motioncorr_result['output_dir']}")
+    print(f"✅ CTF estimation (regular): {ctf_result['output_dir']}")
+    
+    return True
+
 def main():
     """Main test function."""
-    print("🧪 Testing RELION Tools with Real Dataset")
-    print("=" * 50)
+    print("🧪 Testing RELION Tools with Real Dataset and Conda Environment")
+    print("=" * 70)
     
     # Test 1: RELION setup
     relion_tools = test_relion_setup()
@@ -221,30 +396,37 @@ def main():
         print("❌ Dataset access failed. Exiting.")
         return
     
-    # Test 3: Import movies
-    import_result = test_import_movies(relion_tools)
-    if not import_result:
-        print("❌ Movie import failed. Exiting.")
-        return
+    # Test 3: Regular execution tests
+    regular_success = run_regular_tests(relion_tools)
     
-    # Test 4: Motion correction
-    motioncorr_result = test_motion_correction(relion_tools, import_result)
-    if not motioncorr_result:
-        print("❌ Motion correction failed. Exiting.")
-        return
+    # Test 4: Conda backend execution tests
+    conda_success = run_conda_backend_tests(relion_tools)
     
-    # Test 5: CTF estimation
-    ctf_result = test_ctf_estimation(relion_tools, motioncorr_result)
-    if not ctf_result:
-        print("❌ CTF estimation failed. Exiting.")
-        return
+    # Final summary
+    print("\n" + "=" * 70)
+    print("🎉 FINAL TEST SUMMARY")
+    print("=" * 70)
     
-    print("\n🎉 All tests completed successfully!")
-    print("=" * 50)
-    print("Summary:")
-    print(f"✅ Movie import: {import_result['output_dir']}")
-    print(f"✅ Motion correction: {motioncorr_result['output_dir']}")
-    print(f"✅ CTF estimation: {ctf_result['output_dir']}")
+    if regular_success:
+        print("✅ Regular execution tests: PASSED")
+    else:
+        print("❌ Regular execution tests: FAILED")
+    
+    if conda_success:
+        print("✅ Conda backend execution tests: PASSED")
+    else:
+        print("❌ Conda backend execution tests: FAILED")
+    
+    if regular_success and conda_success:
+        print("\n🎉 ALL TESTS COMPLETED SUCCESSFULLY!")
+        print("✅ RELION tools work correctly with both regular and conda backend execution")
+        print("✅ Conda environment isolation is working properly")
+    elif regular_success:
+        print("\n⚠️  Regular execution works, but conda backend has issues")
+    elif conda_success:
+        print("\n⚠️  Conda backend works, but regular execution has issues")
+    else:
+        print("\n❌ Both regular and conda backend execution have issues")
 
 if __name__ == "__main__":
     main()

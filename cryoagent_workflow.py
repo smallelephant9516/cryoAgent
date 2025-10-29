@@ -527,15 +527,6 @@ Examples:
             conversation_id = f"preprocessing_workflow_{int(time.time())}"
             success = master_workflow.run_preprocessing_workflow(args.dry_run, conversation_id)
             
-        elif args.workflow == "custom":
-            if not args.stages:
-                print("❌ --stages required for custom workflow")
-                print("   Valid stages: preprocessing, particle_picking, reconstruction")
-                sys.exit(1)
-            stages = [s.strip() for s in args.stages.split(",")]
-            # Use a unique conversation ID to ensure fresh start
-            conversation_id = f"custom_workflow_{int(time.time())}"
-            success = master_workflow.run_custom_workflow(stages, args.dry_run, conversation_id)
         
         # Exit with appropriate code
         if success:
