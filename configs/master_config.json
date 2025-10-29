@@ -13,8 +13,8 @@
       {
         "name": "particle_picking",
         "description": "Particle picking stage: Detect and extract particles from micrographs",
-        "enabled": false,
-        "agent_group": "cryosparc",
+        "enabled": true,
+        "agent_group": "relion",
         "agent_class": "ParticlePickingAgent"
       },
       {

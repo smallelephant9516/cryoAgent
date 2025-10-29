@@ -192,7 +192,7 @@ class CryoSPARCPreprocessingParser:
             }
             
             # Save to JSON file
-            output_file = output_dir / f"preprocessing_results_{timestamp}.json"
+            output_file = output_dir / f"preprocessing_results_cryosparc_{timestamp}.json"
             with open(output_file, 'w') as f:
                 json.dump(preprocessing_results, f, indent=2)
             
@@ -363,7 +363,7 @@ class CryoSPARCPickingParser:
             }
         }
         
-        output_file = output_dir / f"particle_picking_results_{timestamp}.json"
+        output_file = output_dir / f"particle_picking_results_cryosparc_{timestamp}.json"
         with open(output_file, 'w') as f:
             json.dump(picking_results, f, indent=2)
         
@@ -490,7 +490,7 @@ class CryoSPARCReconstructionParser:
             }
         }
         
-        output_file = output_dir / f"3d_reconstruction_results_{timestamp}.json"
+        output_file = output_dir / f"reconstruction_results_cryosparc_{timestamp}.json"
         with open(output_file, 'w') as f:
             json.dump(reconstruction_results, f, indent=2)
         

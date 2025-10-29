@@ -7,6 +7,7 @@ These tools are designed to be used by the modular agents to handle backend-spec
 
 import json
 import logging
+import os
 from typing import Dict, Any, List, Optional
 from pathlib import Path
 from dataclasses import dataclass
@@ -78,6 +79,10 @@ class RelionPreprocessingParser:
                 elif step_name == "micrograph_selection":
                     stage_outputs["selection_job_dir"] = result.job_dir
                     stage_outputs["selected_micrographs_star"] = result.output_file
+                    # Extract job ID from job directory path for compatibility with master orchestrator
+                    if result.job_dir:
+                        job_id = os.path.basename(result.job_dir)
+                        stage_outputs["micrograph_selection_job_uid"] = job_id
         
         return stage_outputs
     
@@ -137,7 +142,7 @@ class RelionPreprocessingParser:
             
             # Generate timestamp for unique filename
             timestamp = time.strftime("%Y%m%d_%H%M%S")
-            result_file = outputs_dir / f"relion_preprocessing_results_{timestamp}.json"
+            result_file = outputs_dir / f"preprocessing_results_relion_{timestamp}.json"
             
             # Prepare results data
             results_data = {
