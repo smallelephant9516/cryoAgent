@@ -1967,11 +1967,185 @@ class RELIONTools:
         except Exception as e:
             raise RuntimeError(f"Failed to run blob picker: {e}")
     
+    def template_picker(
+        self,
+        input_star: str,
+        ref_star: str,
+        output_dir: str = "AutoPick",
+        pickname: str = "autopick",
+        fn_topaz_exe: str = "relion_python_topaz",
+        ang: float = 5.0,
+        shrink: int = 0,
+        lowpass: float = 20.0,
+        threshold: float = 0.05,
+        min_distance: float = 100.0,
+        max_stddev_noise: float = 1.1,
+        invert: bool = True,
+        ctf: bool = True,
+        gpu: str = "",
+        only_do_unfinished: bool = False,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        use_backend: bool = False,
+        conda_env: str = "relion-5.0",
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Perform template-based picking using reference images (e.g., from 2D class averages).
+        
+        Args:
+            input_star: Path to input micrographs STAR file
+            ref_star: Path to reference STAR file (e.g., class averages from 2D classification)
+            output_dir: Output directory for the job
+            pickname: Name prefix for picked particles
+            fn_topaz_exe: Path to TOPAZ executable (default: "relion_python_topaz")
+            ang: Angular search range in degrees
+            shrink: Shrinking factor for correlations
+            lowpass: Lowpass filter in Angstroms
+            threshold: Threshold for picking
+            min_distance: Minimum distance between particles
+            max_stddev_noise: Maximum standard deviation of noise
+            invert: Invert contrast
+            ctf: Use CTF correction
+            gpu: GPU IDs to use (empty string for none)
+            only_do_unfinished: Only pick micrographs without existing coordinate files
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            check_interval: Time between status checks in seconds
+            use_backend: Whether to run in backend mode
+            conda_env: Conda environment name
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            # Find the next job number for the output directory
+            full_output_dir = self._get_next_job_directory(output_dir)
+            
+            # Extract the relative job directory for caching
+            job_dir_relative = os.path.relpath(full_output_dir, self.relion_dir)
+            
+            # Build command
+            cmd = [
+                "relion_autopick",
+                "--i", input_star,
+                "--odir", full_output_dir + "/",
+                "--pickname", pickname,
+                "--ref", ref_star,
+                "--ang", str(ang),
+                "--shrink", str(shrink),
+                "--lowpass", str(lowpass),
+                "--threshold", str(threshold),
+                "--min_distance", str(min_distance),
+                "--max_stddev_noise", str(max_stddev_noise),
+                "--fn_topaz_exe", fn_topaz_exe,
+                "--pipeline_control", full_output_dir + "/"
+            ]
+            
+            # Add optional parameters
+            if invert:
+                cmd.append("--invert")
+            if ctf:
+                cmd.append("--ctf")
+            if gpu:
+                cmd.extend(["--gpu", gpu])
+            if only_do_unfinished:
+                cmd.append("--only_do_unfinished")
+            
+            # Add additional parameters from kwargs
+            for key, value in kwargs.items():
+                if value is not None:
+                    cmd.extend([f"--{key}", str(value)])
+            
+            print(f"Running RELION template picker command: {' '.join(cmd)}")
+            
+            if use_backend:
+                if not self._backend_enabled:
+                    raise RuntimeError("Backend execution is not enabled. Call enable_backend_execution(True) first.")
+                
+                env = os.environ.copy()
+                env['DISPLAY'] = ''
+                env['QT_QPA_PLATFORM'] = 'offscreen'
+                env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+                env['QT_SCALE_FACTOR'] = '1'
+                
+                conda_cmd = [
+                    "conda", "run", "-n", conda_env,
+                    "bash", "-c",
+                    f"cd {self.relion_dir} && {' '.join(cmd)}"
+                ]
+                
+                process = subprocess.Popen(
+                    conda_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    cwd=self.relion_dir,
+                    preexec_fn=os.setsid if os.name != 'nt' else None
+                )
+                
+                job_info = {
+                    "job_type": "relion_template_picker",
+                    "status": "running",
+                    "output_dir": full_output_dir,
+                    "input_star": input_star,
+                    "ref_star": ref_star,
+                    "command": " ".join(cmd),
+                    "process_id": process.pid,
+                    "started_at": time.time()
+                }
+                self._job_cache[job_dir_relative] = job_info
+                print(f"🚀 Started backend template picker job (PID {process.pid}) in conda env '{conda_env}'")
+                return job_info
+            
+            # Non-backend: run and wait
+            env = os.environ.copy()
+            env['DISPLAY'] = ''
+            env['QT_QPA_PLATFORM'] = 'offscreen'
+            env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+            env['QT_SCALE_FACTOR'] = '1'
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+                cwd=self.relion_dir
+            )
+            
+            if result.returncode != 0:
+                raise RuntimeError(f"RELION template picker failed: {result.stderr}")
+            
+            job_info = {
+                "job_type": "relion_template_picker",
+                "status": "completed",
+                "output_dir": full_output_dir,
+                "input_star": input_star,
+                "ref_star": ref_star,
+                "command": " ".join(cmd),
+                "stdout": result.stdout,
+                "stderr": result.stderr
+            }
+            
+            self._job_cache[job_dir_relative] = job_info
+            
+            print(f"✅ RELION template picker completed successfully!")
+            print(f"Output directory: {full_output_dir}")
+            
+            return job_info
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to run template picker: {e}")
+    
     def particle_extraction(
         self,
         input_star: str,
         output_dir: str = "Particles",
-        coord_suffix: str = "_autopick.star",
+        coord_suffix: str = "autopick.star",
         coord_list: str = "ASINPUT",
         extract_size: int = 256,
         norm: bool = True,
@@ -1981,10 +2155,9 @@ class RELIONTools:
         invert_contrast: bool = False,
         extract_bias_x: float = 0.0,
         extract_bias_y: float = 0.0,
+        reextract_data_star: str = None,
         only_do_unfinished: bool = False,
-        wait_for_completion: bool = False,
-        timeout: int = 3600,
-        check_interval: int = 30,
+        timeout: int = 86400,
         use_backend: bool = False,
         conda_env: str = "relion-5.0",
         **kwargs
@@ -2010,6 +2183,7 @@ class RELIONTools:
             timeout: Maximum time to wait for completion in seconds
             check_interval: Time between status checks in seconds
             use_backend: Whether to run in backend mode
+            reextract_data_star: Re-extract data from STAR file
             conda_env: Conda environment name
             **kwargs: Additional parameters
             
@@ -2022,14 +2196,14 @@ class RELIONTools:
             
             # Extract the relative job directory for caching
             job_dir_relative = os.path.relpath(full_output_dir, self.relion_dir)
-            
+            print(coord_list+'/'+coord_suffix)
             # Build command
             cmd = [
                 "relion_preprocess",
                 "--i", input_star,
                 "--part_dir", full_output_dir + "/",
                 "--part_star", os.path.join(full_output_dir, "particles.star"),
-                "--coord_list", coord_list,
+                "--coord_list", coord_list+'/'+coord_suffix,
                 "--bg_radius", str(int(extract_size*0.25/2)),
                 "--extract",
                 "--extract_size", str(extract_size),
@@ -2053,8 +2227,6 @@ class RELIONTools:
                 cmd.extend(["--extract_bias_x", str(extract_bias_x)])
             if extract_bias_y != 0:
                 cmd.extend(["--extract_bias_y", str(extract_bias_y)])
-            if only_do_unfinished:
-                cmd.append("--only_do_unfinished")
             
             # Add additional parameters from kwargs
             for key, value in kwargs.items():
@@ -2164,8 +2336,7 @@ class RELIONTools:
         j: int = 1,
         only_do_unfinished: bool = False,
         wait_for_completion: bool = False,
-        timeout: int = 3600,
-        check_interval: int = 30,
+        timeout: int = 86400,
         use_backend: bool = False,
         conda_env: str = "relion-5.0",
         **kwargs
@@ -2219,14 +2390,16 @@ class RELIONTools:
                 "--K", str(K),
                 "--iter", str(iter),
                 "--tau2_fudge", str(tau2_fudge),
-            "--particle_diameter", str(particle_diameter),
-            "--offset_range", str(offset_range),
+                "--particle_diameter", str(particle_diameter),
+                "--offset_range", str(offset_range),
+                "--angpix", str(angpix),
                 "--offset_step", str(offset_step),
                 "--oversampling", str(oversampling),
                 "--healpix_order", str(healpix_order),
                 "--pool", str(pool),
                 "--j", str(j),
                 "--pipeline_control", full_output_dir + "/"
+                "--gpu",str("")
             ]
             
             # Add optional parameters
@@ -2283,6 +2456,7 @@ class RELIONTools:
                     "status": "running",
                     "output_dir": full_output_dir,
                     "input_star": input_star,
+                    "optimiser_star": os.path.join(full_output_dir, f"run_it{iter:03d}_optimiser.star"),
                     "command": " ".join(cmd),
                     "process_id": process.pid,
                     "started_at": time.time()
@@ -2314,6 +2488,7 @@ class RELIONTools:
                 "job_type": "relion_2d_classification",
                 "status": "completed",
                 "output_dir": full_output_dir,
+                "optimiser_star": os.path.join(full_output_dir, f"run_it{iter:03d}_optimiser.star"),
                 "input_star": input_star,
                 "command": " ".join(cmd),
                 "stdout": result.stdout,
@@ -2343,8 +2518,10 @@ class RELIONTools:
         fn_sel_parts: str = "particles.star",
         fn_sel_classavgs: str = "class_averages.star",
         wait_for_completion: bool = True,
-        timeout: int = 3600,
+        timeout: int = 86400,
         check_interval: int = 30,
+        use_backend: bool = False,
+        conda_env: str = "relion-5.0",
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -2364,6 +2541,8 @@ class RELIONTools:
             wait_for_completion: Whether to wait for job completion
             timeout: Maximum time to wait for completion in seconds
             check_interval: Time between status checks in seconds
+            use_backend: Whether to run in backend mode
+            conda_env: Conda environment name
             **kwargs: Additional parameters
             
         Returns:
@@ -2385,7 +2564,9 @@ class RELIONTools:
                 "--max_score", str(max_score),
                 "--fn_sel_parts", fn_sel_parts,
                 "--fn_sel_classavgs", fn_sel_classavgs,
-                "--pipeline_control", full_output_dir + "/"
+                "--pipeline_control", full_output_dir + "/",
+                "--fn_root", "rank",
+                "--do_granularity_features"
             ]
             
             # Add optional parameters
@@ -2405,41 +2586,47 @@ class RELIONTools:
             
             print(f"Running RELION auto 2D selection command: {' '.join(cmd)}")
             
-            # Set environment variables to avoid display issues
-            env = os.environ.copy()
-            env['DISPLAY'] = ''
-            env['QT_QPA_PLATFORM'] = 'offscreen'
-            env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
-            env['QT_SCALE_FACTOR'] = '1'
+            if use_backend:
+                if not self._backend_enabled:
+                    raise RuntimeError("Backend execution is not enabled. Call enable_backend_execution(True) first.")
+                
+                env = os.environ.copy()
+                env['DISPLAY'] = ''
+                env['QT_QPA_PLATFORM'] = 'offscreen'
+                env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+                env['QT_SCALE_FACTOR'] = '1'
+                
+                conda_cmd = [
+                    "conda", "run", "-n", conda_env,
+                    "bash", "-c",
+                    f"cd {self.relion_dir} && {' '.join(cmd)}"
+                ]
+                
+                process = subprocess.Popen(
+                    conda_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    cwd=self.relion_dir,
+                    preexec_fn=os.setsid if os.name != 'nt' else None
+                )
+                
+                job_info = {
+                    "job_type": "relion_auto_2d_selection",
+                    "status": "running",
+                    "output_dir": full_output_dir,
+                    "input_opt": input_opt,
+                    "command": " ".join(cmd),
+                    "process_id": process.pid,
+                    "started_at": time.time()
+                }
+                self._job_cache[job_dir_relative] = job_info
+                print(f"🚀 Started backend auto 2D selection job (PID {process.pid}) in conda env '{conda_env}'")
+                return job_info
+            else:
+                raise NotImplementedError("Only Backend execution is supported for auto 2D selection. Please set use_backend to True.")
             
-            result = subprocess.run(
-                cmd,
-                capture_output=True,
-                text=True,
-                timeout=timeout,
-                env=env,
-                cwd=self.relion_dir
-            )
-            
-            if result.returncode != 0:
-                raise RuntimeError(f"RELION auto 2D selection failed: {result.stderr}")
-            
-            job_info = {
-                "job_type": "relion_auto_2d_selection",
-                "status": "completed",
-                "output_dir": full_output_dir,
-                "input_opt": input_opt,
-                "command": " ".join(cmd),
-                "stdout": result.stdout,
-                "stderr": result.stderr
-            }
-            
-            self._job_cache[job_dir_relative] = job_info
-            
-            print(f"✅ RELION auto 2D selection completed successfully!")
-            print(f"Output directory: {full_output_dir}")
-            
-            return job_info
             
         except Exception as e:
             raise RuntimeError(f"Failed to run auto 2D selection: {e}")
