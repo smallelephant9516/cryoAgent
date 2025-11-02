@@ -60,10 +60,8 @@
     },
     "micrograph_selection": {
       "select_field": "rlnCtfMaxResolution",
-      "minval": 3.0,
-      "maxval": 5.0,
-      "min_resolution": 5.0,
-      "quality_threshold": 0.8
+      "minval": 1.0,
+      "maxval": 5.0
     }
   },
   "react_workflow": {

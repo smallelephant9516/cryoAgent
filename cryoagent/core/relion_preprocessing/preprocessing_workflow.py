@@ -82,10 +82,22 @@ class PreprocessingWorkflow:
         
         return self.results
     
+    def _get_workflow_config(self) -> Dict[str, Any]:
+        """Get workflow configuration from JSON file (same method as agent)."""
+        # Use the agent's method to get workflow config from JSON
+        return self.agent._get_workflow_config()
+    
     def _create_workflow_input(self) -> str:
         """Create the workflow input for the ReAct agent."""
         # Get microscope config from the agent
         microscope_config = getattr(self.agent, 'microscope_config', {})
+        
+        # Get workflow config from JSON file (not from config.workflow object)
+        workflow_config = self._get_workflow_config()
+        import_movies_config = workflow_config.get("import_movies", {})
+        motion_correction_config = workflow_config.get("motion_correction", {})
+        ctf_estimation_config = workflow_config.get("ctf_estimation", {})
+        micrograph_selection_config = workflow_config.get("micrograph_selection", {})
         
         return f"""
 Execute the complete RELION preprocessing workflow using the ReAct framework. Follow the Thought → Action → Observation pattern for each step.
@@ -98,29 +110,24 @@ Execute the complete RELION preprocessing workflow using the ReAct framework. Fo
    - Voltage: {microscope_config.get('voltage', 'N/A')} kV
    - CS: {microscope_config.get('cs_mm', 'N/A')} mm
    - Q0: {microscope_config.get('q0', 'N/A')}
-   - Beam tilt X: {microscope_config.get('beamtilt_x', 'N/A')}
-   - Beam tilt Y: {microscope_config.get('beamtilt_y', 'N/A')}
-   - Optics group: {getattr(self.config.workflow, 'optics_group_name', 'opticsGroup1')}
+   - Optics group: {import_movies_config.get('optics_group_name', 'opticsGroup1')}
 
-2. **Motion Correction**: Correct motion using RELION tools with MotionCor2
-   - Use MotionCor2: {getattr(self.config.workflow, 'use_motioncor2', False)}
-   - MotionCor2 executable: {getattr(self.config.workflow, 'motioncor2_exe', '../../tools/MotionCor2_1.6.4_Cuda118_Mar312023')}
-   - GPU: {getattr(self.config.workflow, 'gpu', '0')}
-   - Bin factor: {getattr(self.config.workflow, 'motion_correction_binning', 1)}
-   - B-factor: {getattr(self.config.workflow, 'bfactor', 150)}
-   - Dose per frame: {getattr(self.config.workflow, 'dose_per_frame', 1.39)}
-   - Dose weighting: {getattr(self.config.workflow, 'dose_weighting', True)}
+2. **Motion Correction**: Correct motion using RELION tools
+   - IMPORTANT: All motion correction parameters are automatically loaded from preprocessing_config.json
+   - Config values: Use MotionCor2={motion_correction_config.get('use_motioncor2', False)}, bin_factor={motion_correction_config.get('bin_factor', 1)}, bfactor={motion_correction_config.get('bfactor', 150)}, dose_per_frame={motion_correction_config.get('dose_per_frame', 1.39)}, dose_weighting={motion_correction_config.get('dose_weighting', True)}
+   - MotionCor2 executable: {motion_correction_config.get('motioncor2_exe', '../../tools/MotionCor2_1.6.4_Cuda118_Mar312023')} (if MotionCor2 is enabled)
 
 3. **CTF Estimation**: Estimate CTF parameters using RELION tools
-   - Box size: {getattr(self.config.workflow, 'box_size', 512)}
-   - Resolution range: {getattr(self.config.workflow, 'ctf_min_res', 30)} - {getattr(self.config.workflow, 'ctf_max_res', 5)} Å
-   - Defocus range: {getattr(self.config.workflow, 'df_min', 5000)} - {getattr(self.config.workflow, 'df_max', 50000)} Å
-   - CTFfind executable: {getattr(self.config.workflow, 'ctffind_exe', '/home/daoyi/tools/ctffind/ctffind_4_1_14/ctffind')}
-   - Fast search: {getattr(self.config.workflow, 'fast_search', True)}
+   - Box size: {ctf_estimation_config.get('box_size', 512)}
+   - Resolution range: {ctf_estimation_config.get('res_min', 30)} - {ctf_estimation_config.get('res_max', 5)} Å
+   - Defocus range: {ctf_estimation_config.get('df_min', 5000)} - {ctf_estimation_config.get('df_max', 50000)} Å
+   - CTFfind executable: {ctf_estimation_config.get('ctffind_exe', '/home/daoyi/tools/ctffind/ctffind_4_1_14/ctffind')}
+   - Fast search: {ctf_estimation_config.get('fast_search', True)}
 
 4. **Micrograph Selection**: Select high-quality micrographs using RELION tools
-   - Minimum resolution: {getattr(self.config.workflow, 'min_resolution', 5.0)} Å
-   - Quality threshold: {getattr(self.config.workflow, 'quality_threshold', 0.8)}
+   - Select field: {micrograph_selection_config.get('select_field', 'rlnCtfMaxResolution')}
+   - Min value: {micrograph_selection_config.get('minval', 1.0)} Å
+   - Max value: {micrograph_selection_config.get('maxval', 5.0)} Å
 
 ## ReAct Process Requirements:
 - **Thought**: Analyze what needs to be done and why
@@ -145,7 +152,7 @@ Execute the complete RELION preprocessing workflow using the ReAct framework. Fo
 - Use validate_inputs to check movie files before import
 - Use import_movies to start the import process
 - Use wait_for_job to monitor job completion
-- Use motion_correction with input from import_movies
+- Use motion_correction with ONLY the required input_star parameter (e.g., {{"input_star": "Import/job001/movies.star"}}). DO NOT pass use_motioncor2, bin_factor, bfactor, dose_per_frame, or other optional parameters - they are automatically loaded from preprocessing_config.json
 - Use ctf_estimation with input from motion_correction
 - Use micrograph_selection with input from ctf_estimation
 - Use reason_about_workflow to analyze current state

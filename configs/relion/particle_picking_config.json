@@ -37,7 +37,7 @@
       "max_stddev_noise": 1.1,
       "invert": true,
       "ctf": true,
-      "gpu": ""
+      "gpu": true
     },
     "particle_extraction": {
       "coord_suffix": "autopick.star",
@@ -57,7 +57,6 @@
       "iter": 25,
       "tau2_fudge": 2.0,
       "particle_diameter": 260.0, 
-      "angpix": 1.0,
       "offset_range": 6.0,
       "offset_step": 2.0,
       "oversampling": 1,
@@ -70,7 +69,7 @@
       "scale": true,
       "pool": 1,
       "j": 1,
-      "gpu":""
+      "gpu":true
     },
     "auto_2d_selection": {
       "min_score": 0.05,

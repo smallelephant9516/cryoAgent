@@ -1787,8 +1787,7 @@ class RELIONTools:
         self,
         input_star: str,
         output_dir: str = "AutoPick",
-        particle_diameter: float = 200.0,
-        angpix: float = 1.0,
+        angpix: float = -1,
         threshold: float = 0.25,
         min_distance: float = -1,
         LoG: bool = True,
@@ -1852,9 +1851,6 @@ class RELIONTools:
                 "--odir", full_output_dir + "/",
                 "--pickname", "autopick",
                 "--angpix", str(angpix),
-                "--particle_diameter", str(particle_diameter),
-                "--threshold", str(threshold),
-                "--gauss_max", str(gauss_max),
                 "--pipeline_control", full_output_dir + "/"
             ]
             
@@ -2049,8 +2045,14 @@ class RELIONTools:
                 cmd.append("--invert")
             if ctf:
                 cmd.append("--ctf")
-            if gpu:
-                cmd.extend(["--gpu", gpu])
+            # Handle GPU parameter - can be empty string (use default GPU) or specific GPU ID
+            if gpu is not None:
+                if gpu == "":
+                    # Empty string means use default GPU (just --gpu flag)
+                    cmd.append("--gpu")
+                else:
+                    # Non-empty string specifies GPU ID(s)
+                    cmd.extend(["--gpu", str(gpu)])
             if only_do_unfinished:
                 cmd.append("--only_do_unfinished")
             
@@ -2229,9 +2231,16 @@ class RELIONTools:
                 cmd.extend(["--extract_bias_y", str(extract_bias_y)])
             
             # Add additional parameters from kwargs
+            # Known boolean flags that should be passed without values
+            boolean_flags = {'float16', 'wait_for_completion'}
             for key, value in kwargs.items():
                 if value is not None:
-                    cmd.extend([f"--{key}", str(value)])
+                    if key in boolean_flags and isinstance(value, bool) and value:
+                        # Boolean flag: add just the flag name
+                        cmd.append(f"--{key}")
+                    else:
+                        # Regular parameter: add flag and value
+                        cmd.extend([f"--{key}", str(value)])
             
             print(f"Running RELION particle extraction command: {' '.join(cmd)}")
             
@@ -2321,7 +2330,7 @@ class RELIONTools:
         iter: int = 25,
         tau2_fudge: float = 2.0,
         particle_diameter: float = 200.0,
-        angpix: float = 1.0,
+        angpix: float = -1,
         offset_range: float = 6.0,
         offset_step: float = 2.0,
         oversampling: int = 1,
@@ -2334,6 +2343,7 @@ class RELIONTools:
         scale: bool = True,
         pool: int = 1,
         j: int = 1,
+        gpu: Optional[str] = None,
         only_do_unfinished: bool = False,
         wait_for_completion: bool = False,
         timeout: int = 86400,
@@ -2364,6 +2374,8 @@ class RELIONTools:
             scale: Perform intensity-scale corrections
             pool: Number of images to pool for each thread task
             j: Number of threads to run in parallel
+            gpu: GPU ID(s) to use. Empty string ("") means use default GPU (just --gpu flag),
+                 non-empty string (e.g., "0" or "0,1") specifies GPU ID(s)
             only_do_unfinished: Only process unfinished particles
             wait_for_completion: Whether to wait for job completion
             timeout: Maximum time to wait for completion in seconds
@@ -2399,7 +2411,6 @@ class RELIONTools:
                 "--pool", str(pool),
                 "--j", str(j),
                 "--pipeline_control", full_output_dir + "/"
-                "--gpu",str("")
             ]
             
             # Add optional parameters
@@ -2417,6 +2428,15 @@ class RELIONTools:
                 cmd.append("--scale")
             if only_do_unfinished:
                 cmd.append("--only_do_unfinished")
+            
+            # Handle GPU parameter - can be empty string (use default GPU) or specific GPU ID
+            if gpu is not None:
+                if gpu == "":
+                    # Empty string means use default GPU (just --gpu flag)
+                    cmd.append("--gpu")
+                else:
+                    # Non-empty string specifies GPU ID(s)
+                    cmd.extend(["--gpu", str(gpu)])
             
             # Add additional parameters from kwargs
             for key, value in kwargs.items():
@@ -2499,6 +2519,7 @@ class RELIONTools:
             
             print(f"✅ RELION 2D classification completed successfully!")
             print(f"Output directory: {full_output_dir}")
+            print(f"optimiser_star: {os.path.join(full_output_dir, f'run_it{iter:03d}_optimiser.star')}")
             
             return job_info
             

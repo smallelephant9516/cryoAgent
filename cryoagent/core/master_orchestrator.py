@@ -8,6 +8,7 @@ Updated to use modular agent architecture.
 """
 
 import json
+import os
 import time
 import logging
 import glob
@@ -435,30 +436,50 @@ class ParticlePickingAgent(StageAgent):
             config_loader = ConfigLoader(self.config_path, master_config_path)
             self.config = config_loader.load_config()
             
-            # Initialize CryoSPARC tools
-            self.cryosparc_tools = CryoSPARCTools(self.config.cryosparc)
-            
-            # Import and initialize modular picking agent dynamically
-            from .cryosparc_picking.picking_agent import PickingAgent as ModularPickingAgent
-            from .cryosparc_picking.picking_workflow import PickingWorkflow
-            
-            self.modular_agent = ModularPickingAgent(
-                cryosparc_tools=self.cryosparc_tools,
-                config=self.config
-            )
+            # Detect backend type from config path
+            if "relion" in self.config_path.lower():
+                # RELION backend
+                from .relion_picking.picking_agent import PickingAgent as RelionPickingAgent
+                from .relion_picking.picking_workflow import PickingWorkflow as RelionPickingWorkflow
+                
+                self.cryosparc_tools = None  # No CryoSPARC tools for RELION
+                self.modular_agent = RelionPickingAgent(
+                    config=self.config
+                )
+                self.backend_type = "RELION"
+                
+                # Initialize RELION picking workflow
+                self.modular_workflow = RelionPickingWorkflow(
+                    agent=self.modular_agent,
+                    config=self.config
+                )
+                
+            else:
+                # CryoSPARC backend (default)
+                self.cryosparc_tools = CryoSPARCTools(self.config.cryosparc)
+                
+                # Import and initialize modular picking agent dynamically
+                from .cryosparc_picking.picking_agent import PickingAgent as ModularPickingAgent
+                from .cryosparc_picking.picking_workflow import PickingWorkflow
+                
+                self.modular_agent = ModularPickingAgent(
+                    cryosparc_tools=self.cryosparc_tools,
+                    config=self.config
+                )
+                self.backend_type = "CryoSPARC"
+                
+                # Initialize picking workflow with stage config path
+                self.modular_workflow = PickingWorkflow(
+                    agent=self.modular_agent,
+                    config=self.config,
+                    stage_config_path=self.config_path
+                )
             
             # Set stage name and workflow type for conversation logging
             self.modular_agent.stage_name = "particle_picking"
             self.modular_agent.workflow_type = "cryoem"
             
-            # Initialize picking workflow with stage config path
-            self.modular_workflow = PickingWorkflow(
-                agent=self.modular_agent,
-                config=self.config,
-                stage_config_path=self.config_path
-            )
-            
-            self.logger.info(f"Stage agent {self.stage_name} initialized successfully with modular architecture")
+            self.logger.info(f"Stage agent {self.stage_name} initialized successfully with {self.backend_type} backend")
             return True
             
         except Exception as e:
@@ -472,50 +493,137 @@ class ParticlePickingAgent(StageAgent):
         try:
             self.logger.info(f"Starting {self.get_stage_description()}")
             
-            # Get micrograph job UID from preprocessing stage outputs
+            # Get micrograph input from preprocessing stage outputs
             preprocessing_outputs = context.stage_outputs.get(WorkflowStage.PREPROCESSING, {})
-            micrographs_job_uid = preprocessing_outputs.get("micrograph_selection_job_uid")
             
-            if not micrographs_job_uid:
-                error_msg = "No micrograph_selection_job_uid found in preprocessing outputs"
-                self.logger.error(error_msg)
-                return StageResult(
-                    stage=WorkflowStage.PARTICLE_PICKING,
-                    success=False,
-                    error=error_msg,
-                    execution_time=time.time() - start_time
+            # Get backend type (set during initialization)
+            backend_type = getattr(self, 'backend_type', None)
+            if not backend_type:
+                # Fallback: detect from config path
+                backend_type = "RELION" if "relion" in self.config_path.lower() else "CryoSPARC"
+            
+            # Handle input based on backend type
+            if backend_type == "RELION":
+                # RELION uses file path (selected_micrographs_star)
+                selected_micrographs_star = preprocessing_outputs.get("selected_micrographs_star")
+                
+                if not selected_micrographs_star:
+                    error_msg = "No selected_micrographs_star found in preprocessing outputs (required for RELION)"
+                    self.logger.error(error_msg)
+                    return StageResult(
+                        stage=WorkflowStage.PARTICLE_PICKING,
+                        success=False,
+                        error=error_msg,
+                        execution_time=time.time() - start_time
+                    )
+                
+                if not os.path.exists(selected_micrographs_star):
+                    error_msg = f"Selected micrographs file does not exist: {selected_micrographs_star}"
+                    self.logger.error(error_msg)
+                    return StageResult(
+                        stage=WorkflowStage.PARTICLE_PICKING,
+                        success=False,
+                        error=error_msg,
+                        execution_time=time.time() - start_time
+                    )
+                
+                self.logger.info(f"Using RELION format: selected_micrographs_star={selected_micrographs_star}")
+                
+                # Execute the particle picking workflow using modular architecture
+                # The workflow will read all parameters from the stage config file
+                results = self.modular_workflow.run(
+                    selected_micrographs_star=selected_micrographs_star,
+                    conversation_id=conversation_id
+                )
+                
+                # Store results for later processing
+                self._relion_picking_results = results
+                
+            else:
+                # CryoSPARC uses job UID
+                micrographs_job_uid = preprocessing_outputs.get("micrograph_selection_job_uid")
+                
+                if not micrographs_job_uid:
+                    error_msg = "No micrograph_selection_job_uid found in preprocessing outputs (required for CryoSPARC)"
+                    self.logger.error(error_msg)
+                    return StageResult(
+                        stage=WorkflowStage.PARTICLE_PICKING,
+                        success=False,
+                        error=error_msg,
+                        execution_time=time.time() - start_time
+                    )
+                
+                self.logger.info(f"Using CryoSPARC format: micrographs_job_uid={micrographs_job_uid}")
+                self.logger.info(f"Running particle picking workflow (parameters from {self.config_path})")
+                
+                # Execute the particle picking workflow using modular architecture
+                # The workflow will read all parameters from the stage config file
+                results = self.modular_workflow.run(
+                    micrographs_job_uid=micrographs_job_uid,
+                    conversation_id=conversation_id
                 )
             
-            self.logger.info(f"Running particle picking workflow (parameters from {self.config_path})")
-            
-            # Execute the particle picking workflow using modular architecture
-            # The workflow will read all parameters from the stage config file
-            results = self.modular_workflow.run(
-                micrographs_job_uid=micrographs_job_uid,
-                conversation_id=conversation_id
-            )
-            
             # Delegate result handling to the modular agent (backend-specific logic)
-            stage_outputs = self.modular_agent.process_workflow_results(
-                results=results,
-                context=context
-            )
-            stage_outputs["micrographs_job_uid"] = micrographs_job_uid
-            
-            # Validate that jobs were actually executed (backend-specific)
-            validation_result = self.modular_agent.validate_results(stage_outputs)
-            
-            # Save results (backend-specific)
-            result_file_path = self.modular_agent.save_results(
-                stage_outputs=stage_outputs,
-                context=context,
-                success=validation_result["success"]
-            )
-            self.logger.info(f"Particle picking results saved to: {result_file_path}")
-            print(f"📄 Particle picking results saved to: {result_file_path}")
-            
-            # Add result file path to stage outputs
-            stage_outputs["result_file"] = result_file_path
+            if backend_type == "RELION":
+                # For RELION, check if agent has result processing methods
+                if hasattr(self.modular_agent, 'process_workflow_results'):
+                    # Extract workflow results if agent tracks workflow_state
+                    workflow_results = []
+                    if hasattr(self.modular_agent, 'workflow_state') and self.modular_agent.workflow_state:
+                        for step_name, step_state in self.modular_agent.workflow_state.items():
+                            workflow_results.append({
+                                'step': step_name,
+                                'completed': step_state.get('completed', False),
+                                'job_dir': step_state.get('job_dir'),
+                                'output_file': step_state.get('output_file')
+                            })
+                    
+                    stage_outputs = self.modular_agent.process_workflow_results(
+                        results=workflow_results if workflow_results else self._relion_picking_results,
+                        context=context
+                    )
+                else:
+                    # RELION picking - process workflow results
+                    stage_outputs = self.modular_agent.process_workflow_results(
+                        results=results,
+                        context=context
+                    )
+                    stage_outputs["selected_micrographs_star"] = selected_micrographs_star
+                
+                # Validate that jobs were actually executed (backend-specific)
+                validation_result = self.modular_agent.validate_results(stage_outputs)
+                
+                # Save results (backend-specific)
+                result_file_path = self.modular_agent.save_results(
+                    stage_outputs=stage_outputs,
+                    context=context,
+                    success=validation_result["success"]
+                )
+                
+            else:
+                # CryoSPARC
+                stage_outputs = self.modular_agent.process_workflow_results(
+                    results=results,
+                    context=context
+                )
+                stage_outputs["micrographs_job_uid"] = micrographs_job_uid
+                
+                # Validate that jobs were actually executed (backend-specific)
+                validation_result = self.modular_agent.validate_results(stage_outputs)
+                
+                # Save results (backend-specific)
+                result_file_path = self.modular_agent.save_results(
+                    stage_outputs=stage_outputs,
+                    context=context,
+                    success=validation_result["success"]
+                )
+            if result_file_path:
+                self.logger.info(f"Particle picking results saved to: {result_file_path}")
+                print(f"📄 Particle picking results saved to: {result_file_path}")
+                # Add result file path to stage outputs
+                stage_outputs["result_file"] = result_file_path
+            elif backend_type == "RELION":
+                self.logger.info("RELION picking workflow completed (results saving not yet implemented)")
             
             execution_time = time.time() - start_time
             
@@ -1017,9 +1125,20 @@ class MasterOrchestrator:
                 print(f"   📅 Completed at: {existing_output['timestamp']}")
                 print(f"   ℹ️  Skipping execution to avoid re-running")
                 
-                # Reconstruct stage_outputs with proper key names
-                job_uids = existing_output['data'].get('job_uids', {})
-                stage_outputs = self._reconstruct_stage_outputs_from_cache(stage, job_uids)
+                # Get stage_outputs from the saved JSON file
+                # RELION saves directly in stage_outputs, CryoSPARC might use job_uids
+                data = existing_output['data']
+                if 'stage_outputs' in data:
+                    # RELION format: use stage_outputs directly
+                    stage_outputs = data['stage_outputs']
+                elif 'job_uids' in data:
+                    # CryoSPARC format: reconstruct from job_uids
+                    job_uids = data.get('job_uids', {})
+                    stage_outputs = self._reconstruct_stage_outputs_from_cache(stage, job_uids)
+                else:
+                    # Fallback: try to use the data directly
+                    self.logger.warning(f"No stage_outputs or job_uids found in {existing_output['file_path']}")
+                    stage_outputs = {}
                 
                 # Create a successful stage result from existing output
                 stage_result = StageResult(
@@ -1121,9 +1240,20 @@ class MasterOrchestrator:
                 print(f"   📅 Completed at: {existing_output['timestamp']}")
                 print(f"   ℹ️  Skipping execution to avoid re-running")
                 
-                # Reconstruct stage_outputs with proper key names
-                job_uids = existing_output['data'].get('job_uids', {})
-                stage_outputs = self._reconstruct_stage_outputs_from_cache(stage, job_uids)
+                # Get stage_outputs from the saved JSON file
+                # RELION saves directly in stage_outputs, CryoSPARC might use job_uids
+                data = existing_output['data']
+                if 'stage_outputs' in data:
+                    # RELION format: use stage_outputs directly
+                    stage_outputs = data['stage_outputs']
+                elif 'job_uids' in data:
+                    # CryoSPARC format: reconstruct from job_uids
+                    job_uids = data.get('job_uids', {})
+                    stage_outputs = self._reconstruct_stage_outputs_from_cache(stage, job_uids)
+                else:
+                    # Fallback: try to use the data directly
+                    self.logger.warning(f"No stage_outputs or job_uids found in {existing_output['file_path']}")
+                    stage_outputs = {}
                 
                 # Create a successful stage result from existing output
                 stage_result = StageResult(

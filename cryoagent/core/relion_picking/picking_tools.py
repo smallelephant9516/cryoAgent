@@ -17,7 +17,8 @@ class PickingTools:
                        "Optional parameters: particle_diameter, angpix, threshold, min_distance, "
                        "LoG, LoG_diam_min, LoG_diam_max, LoG_neighbour, LoG_adjust_threshold, "
                        "LoG_upper_threshold, LoG_use_ctf, gauss_max, write_fom_maps, only_do_unfinished, "
-                       "wait_for_completion, timeout, use_backend, conda_env.",
+                       "wait_for_completion, timeout, use_backend, conda_env. "
+                       "All blob picking parameters are automatically loaded from particle_picking_config.json if not provided.",
             func=agent._blob_picker_tool
         )
     
@@ -27,10 +28,11 @@ class PickingTools:
         return Tool(
             name="particle_extraction",
             description="Extract particles from micrographs using coordinate files with relion_preprocess. "
-                       "Required parameters: input_star (micrographs), coord_suffix (e.g., '_autopick.star'). "
-                       "Optional parameters: coord_dir, extract_size, norm, bg_radius, white_dust, black_dust, "
-                       "invert_contrast, extract_bias_x, extract_bias_y, only_do_unfinished, "
-                       "wait_for_completion, timeout, use_backend, conda_env.",
+                       "Required parameters: input_star (micrographs). "
+                       "Optional parameters: coord_list, coord_suffix, coord_dir, extract_size, float16, scale, "
+                       "norm, bg_radius, white_dust, black_dust, invert_contrast, extract_bias_x, extract_bias_y, "
+                       "only_do_unfinished, wait_for_completion, timeout, use_backend, conda_env. "
+                       "All extraction parameters are automatically loaded from particle_picking_config.json if not provided.",
             func=agent._particle_extraction_tool
         )
     
@@ -42,9 +44,10 @@ class PickingTools:
             description="Perform 2D classification of particles using relion_refine. "
                        "Required parameters: input_star (particles from particle_extraction). "
                        "Optional parameters: K (number of classes), iter (iterations), tau2_fudge, "
-                       "particle_diameter, offset_range, offset_step, oversampling, healpix_order, "
+                       "particle_diameter, angpix, offset_range, offset_step, oversampling, healpix_order, "
                        "psi_step, skip_align, skip_rotate, ctf, norm, scale, pool, j, only_do_unfinished, "
-                       "wait_for_completion, timeout, use_backend, conda_env.",
+                       "wait_for_completion, timeout, use_backend, conda_env. "
+                       "All classification parameters are automatically loaded from particle_picking_config.json if not provided.",
             func=agent._classification_2d_tool
         )
     
@@ -57,8 +60,24 @@ class PickingTools:
                        "Required parameters: input_opt (optimiser.star from classification_2d). "
                        "Optional parameters: min_score, max_score, select_min_nr_particles, "
                        "select_min_nr_classes, relative_thresholds, auto_select, fn_sel_parts, "
-                       "fn_sel_classavgs, wait_for_completion, timeout.",
+                       "fn_sel_classavgs, wait_for_completion, timeout. "
+                       "All selection parameters are automatically loaded from particle_picking_config.json if not provided. "
+                       "For round 2, use higher threshold values.",
             func=agent._auto_2d_selection_tool
+        )
+    
+    @staticmethod
+    def create_template_picker_tool(agent) -> Tool:
+        """Create tool for template-based picking using RELION tools."""
+        return Tool(
+            name="template_picker",
+            description="Perform template-based picking using class averages from round 1 as references. "
+                       "Required parameters: input_star (micrographs from preprocessing), ref_star (class_averages.star from round 1 auto_2d_selection). "
+                       "Optional parameters: pickname, fn_topaz_exe, ang, shrink, lowpass, threshold, "
+                       "min_distance, max_stddev_noise, invert, ctf, gpu, only_do_unfinished, "
+                       "wait_for_completion, timeout, use_backend, conda_env. "
+                       "All template picking parameters are automatically loaded from particle_picking_config.json if not provided.",
+            func=agent._template_picker_tool
         )
     
     @staticmethod
