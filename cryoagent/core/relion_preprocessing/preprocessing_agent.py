@@ -170,12 +170,43 @@ class PreprocessingAgent(BaseReActAgent):
             result = self.relion_tools.import_movies(**used_params)
             self._record_tool_execution("import_movies", used_params, result=result)
             
-            # Update workflow state
-            self.workflow_state["import_movies"]["completed"] = True
-            self.workflow_state["import_movies"]["job_dir"] = result.get("output_dir")
-            self.workflow_state["import_movies"]["output_file"] = result.get("output_file")
+            # Extract relative job directory for tracking
+            output_dir_full = result.get("output_dir")
+            if output_dir_full:
+                relion_dir = self.relion_tools.relion_dir
+                job_dir_relative = os.path.relpath(output_dir_full, relion_dir)
+            else:
+                job_dir_relative = None
             
-            return f"✅ Successfully imported movies: {result.get('output_file')}"
+            # Store job_dir in workflow_state for tracking
+            if job_dir_relative:
+                self.workflow_state["import_movies"]["job_dir"] = job_dir_relative
+            
+            # Check if wait_for_completion is requested and job is running
+            wait_for_completion = used_params.get("wait_for_completion", False)
+            job_status = result.get("status")
+            
+            # Check if job actually completed
+            if job_status == "completed":
+                # Update workflow state
+                self.workflow_state["import_movies"]["completed"] = True
+                if result.get("output_file"):
+                    self.workflow_state["import_movies"]["output_file"] = result.get("output_file")
+                return f"✅ Successfully imported movies: {result.get('output_file')}"
+            elif job_status == "running":
+                # Job started but not completed yet
+                self.workflow_state["import_movies"]["completed"] = False
+                
+                # If wait_for_completion=True, instruct LLM to call wait_for_job tool agentically
+                if wait_for_completion and output_dir_full:
+                    # Only pass job_dir - timeout and check_interval are handled by wait_for_job_tool from config
+                    return f"🔄 Started import movies job (still running): {result.get('output_dir')}. " \
+                           f"Since wait_for_completion=True, please use the 'wait_for_job' tool with job_dir: {output_dir_full} to monitor completion."
+                else:
+                    return f"🔄 Started import movies job (still running): {result.get('output_dir')}. Please wait for completion before proceeding."
+            else:
+                # Job failed or unknown status
+                return f"❌ Import movies job has status: {job_status}. Error: {result.get('error', 'Unknown error')}"
                 
         except Exception as e:
             context = used_params or params or {"raw_input": input_str}
@@ -256,12 +287,35 @@ class PreprocessingAgent(BaseReActAgent):
             else:
                 job_dir_relative = None
             
-            # Update workflow state
-            self.workflow_state["motion_correction"]["completed"] = True
-            self.workflow_state["motion_correction"]["job_dir"] = job_dir_relative  # Use relative path
-            self.workflow_state["motion_correction"]["output_file"] = result.get("output_file")
+            # Store job_dir in workflow_state for tracking
+            if job_dir_relative:
+                self.workflow_state["motion_correction"]["job_dir"] = job_dir_relative
             
-            return f"✅ Successfully performed motion correction: {result.get('output_file')}"
+            # Check if wait_for_completion is requested and job is running
+            wait_for_completion = used_params.get("wait_for_completion", False)
+            job_status = result.get("status")
+            
+            # Check if job actually completed
+            if job_status == "completed":
+                # Update workflow state
+                self.workflow_state["motion_correction"]["completed"] = True
+                if result.get("output_file"):
+                    self.workflow_state["motion_correction"]["output_file"] = result.get("output_file")
+                return f"✅ Successfully performed motion correction: {result.get('output_file')}"
+            elif job_status == "running":
+                # Job started but not completed yet
+                self.workflow_state["motion_correction"]["completed"] = False
+                
+                # If wait_for_completion=True, instruct LLM to call wait_for_job tool agentically
+                if wait_for_completion and output_dir_full:
+                    # Only pass job_dir - timeout and check_interval are handled by wait_for_job_tool from config
+                    return f"🔄 Started motion correction job (still running): {result.get('output_dir')}. " \
+                           f"Since wait_for_completion=True, please use the 'wait_for_job' tool with job_dir: {output_dir_full} to monitor completion."
+                else:
+                    return f"🔄 Started motion correction job (still running): {result.get('output_dir')}. Please wait for completion before proceeding."
+            else:
+                # Job failed or unknown status
+                return f"❌ Motion correction job has status: {job_status}. Error: {result.get('error', 'Unknown error')}"
                 
         except Exception as e:
             context = used_params or params or {"raw_input": input_str}
@@ -315,12 +369,35 @@ class PreprocessingAgent(BaseReActAgent):
             else:
                 job_dir_relative = None
             
-            # Update workflow state
-            self.workflow_state["ctf_estimation"]["completed"] = True
-            self.workflow_state["ctf_estimation"]["job_dir"] = job_dir_relative  # Use relative path
-            self.workflow_state["ctf_estimation"]["output_file"] = result.get("output_file")
+            # Store job_dir in workflow_state for tracking
+            if job_dir_relative:
+                self.workflow_state["ctf_estimation"]["job_dir"] = job_dir_relative
             
-            return f"✅ Successfully estimated CTF parameters: {result.get('output_file')}"
+            # Check if wait_for_completion is requested and job is running
+            wait_for_completion = used_params.get("wait_for_completion", False)
+            job_status = result.get("status")
+            
+            # Check if job actually completed
+            if job_status == "completed":
+                # Update workflow state
+                self.workflow_state["ctf_estimation"]["completed"] = True
+                if result.get("output_file"):
+                    self.workflow_state["ctf_estimation"]["output_file"] = result.get("output_file")
+                return f"✅ Successfully estimated CTF parameters: {result.get('output_file')}"
+            elif job_status == "running":
+                # Job started but not completed yet
+                self.workflow_state["ctf_estimation"]["completed"] = False
+                
+                # If wait_for_completion=True, instruct LLM to call wait_for_job tool agentically
+                if wait_for_completion and output_dir_full:
+                    # Only pass job_dir - timeout and check_interval are handled by wait_for_job_tool from config
+                    return f"🔄 Started CTF estimation job (still running): {result.get('output_dir')}. " \
+                           f"Since wait_for_completion=True, please use the 'wait_for_job' tool with job_dir: {output_dir_full} to monitor completion."
+                else:
+                    return f"🔄 Started CTF estimation job (still running): {result.get('output_dir')}. Please wait for completion before proceeding."
+            else:
+                # Job failed or unknown status
+                return f"❌ CTF estimation job has status: {job_status}. Error: {result.get('error', 'Unknown error')}"
                 
         except Exception as e:
             context = used_params or params or {"raw_input": input_str}
@@ -363,17 +440,39 @@ class PreprocessingAgent(BaseReActAgent):
                 # Get the RELION directory from the tools
                 relion_dir = self.relion_tools.relion_dir
                 # Convert full path to relative job directory (e.g., "Select/job002")
-                import os
                 job_dir_relative = os.path.relpath(output_dir_full, relion_dir)
             else:
                 job_dir_relative = None
             
-            # Update workflow state
-            self.workflow_state["micrograph_selection"]["completed"] = True
-            self.workflow_state["micrograph_selection"]["job_dir"] = job_dir_relative  # Store relative path
-            self.workflow_state["micrograph_selection"]["output_file"] = result.get("output_file")
+            # Store job_dir in workflow_state for tracking
+            if job_dir_relative:
+                self.workflow_state["micrograph_selection"]["job_dir"] = job_dir_relative
             
-            return f"✅ Successfully selected micrographs: {result.get('output_file')}"
+            # Check if wait_for_completion is requested and job is running
+            wait_for_completion = used_params.get("wait_for_completion", False)
+            job_status = result.get("status")
+            
+            # Check if job actually completed
+            if job_status == "completed":
+                # Update workflow state
+                self.workflow_state["micrograph_selection"]["completed"] = True
+                if result.get("output_file"):
+                    self.workflow_state["micrograph_selection"]["output_file"] = result.get("output_file")
+                return f"✅ Successfully selected micrographs: {result.get('output_file')}"
+            elif job_status == "running":
+                # Job started but not completed yet
+                self.workflow_state["micrograph_selection"]["completed"] = False
+                
+                # If wait_for_completion=True, instruct LLM to call wait_for_job tool agentically
+                if wait_for_completion and output_dir_full:
+                    # Only pass job_dir - timeout and check_interval are handled by wait_for_job_tool from config
+                    return f"🔄 Started micrograph selection job (still running): {result.get('output_dir')}. " \
+                           f"Since wait_for_completion=True, please use the 'wait_for_job' tool with job_dir: {output_dir_full} to monitor completion."
+                else:
+                    return f"🔄 Started micrograph selection job (still running): {result.get('output_dir')}. Please wait for completion before proceeding."
+            else:
+                # Job failed or unknown status
+                return f"❌ Micrograph selection job has status: {job_status}. Error: {result.get('error', 'Unknown error')}"
             
         except Exception as e:
             context = used_params or params or {"raw_input": input_str}
@@ -411,14 +510,88 @@ class PreprocessingAgent(BaseReActAgent):
             if not job_dir and "input" in params:
                 job_dir = params["input"]
             
-            timeout = int(params.get("timeout", 3600))
-            check_interval = int(params.get("check_interval", 30))
+            # Get defaults from config (via relion_tools)
+            default_timeout = getattr(self.relion_tools, '_backend_timeout', 3600)
+            default_check_interval = getattr(self.relion_tools, '_backend_check_interval', 30)
+            
+            timeout = int(params.get("timeout", default_timeout))
+            check_interval = int(params.get("check_interval", default_check_interval))
             
             if not job_dir:
-                return "❌ Error: job_dir parameter is required"
+                error_msg = "❌ Error: job_dir parameter is required"
+                self._record_tool_execution("wait_for_job", params, error=error_msg)
+                return error_msg
             
-            result = self.relion_tools.wait_for_job_completion(job_dir, timeout, check_interval)
-            self._record_tool_execution("wait_for_job", {"job_dir": job_dir, "timeout": timeout, "check_interval": check_interval}, result=result)
+            # Convert to relative path for comparison with workflow_state
+            job_dir_abs = job_dir
+            if os.path.isabs(job_dir):
+                relion_dir = self.relion_tools.relion_dir
+                try:
+                    job_dir_relative = os.path.relpath(job_dir, relion_dir)
+                except ValueError:
+                    # If relpath fails (e.g., different drives on Windows), use absolute
+                    job_dir_relative = job_dir
+            else:
+                job_dir_relative = job_dir
+                job_dir_abs = os.path.join(self.relion_tools.relion_dir, job_dir)
+            
+            # Record tool execution BEFORE waiting (so it appears in log immediately)
+            wait_params = {"job_dir": job_dir, "timeout": timeout, "check_interval": check_interval}
+            self._record_tool_execution("wait_for_job", wait_params, result={"status": "monitoring_started", "job_dir": job_dir})
+            
+            # Now wait for job completion (this is blocking)
+            result = self.relion_tools.wait_for_job_completion(job_dir_abs, timeout=timeout, check_interval=check_interval)
+            
+            # Update workflow_state when job completes
+            if result.get("status") == "completed":
+                # Find which step this job_dir belongs to
+                matched_step = None
+                for step_name, step_state in self.workflow_state.items():
+                    stored_job_dir = step_state.get("job_dir")
+                    if stored_job_dir:
+                        # Compare relative paths
+                        stored_abs = os.path.join(self.relion_tools.relion_dir, stored_job_dir) if not os.path.isabs(stored_job_dir) else stored_job_dir
+                        if os.path.abspath(stored_abs) == os.path.abspath(job_dir_abs):
+                            matched_step = step_name
+                            break
+                
+                if matched_step:
+                    # Update workflow_state for the matched step
+                    self.workflow_state[matched_step]["completed"] = True
+                    if "output_dir" in result and not self.workflow_state[matched_step].get("output_file"):
+                        # Try to extract output_file from result if available
+                        output_dir = result.get("output_dir")
+                        if output_dir:
+                            # For different step types, output files are in different locations
+                            if "Import" in output_dir:
+                                # Import jobs: output is movies.star
+                                movies_star = os.path.join(output_dir, "movies.star")
+                                if os.path.exists(movies_star):
+                                    self.workflow_state[matched_step]["output_file"] = movies_star
+                            elif "MotionCorr" in output_dir or "motion_correction" in output_dir.lower():
+                                # Motion correction jobs: output is corrected_micrographs.star
+                                corrected_star = os.path.join(output_dir, "corrected_micrographs.star")
+                                if os.path.exists(corrected_star):
+                                    self.workflow_state[matched_step]["output_file"] = corrected_star
+                            elif "CtfFind" in output_dir or "ctf" in output_dir.lower():
+                                # CTF jobs: output is micrographs_ctf.star
+                                ctf_star = os.path.join(output_dir, "micrographs_ctf.star")
+                                if os.path.exists(ctf_star):
+                                    self.workflow_state[matched_step]["output_file"] = ctf_star
+                            elif "Select" in output_dir:
+                                # Selection jobs: output is micrographs.star
+                                micrographs_star = os.path.join(output_dir, "micrographs.star")
+                                if os.path.exists(micrographs_star):
+                                    self.workflow_state[matched_step]["output_file"] = micrographs_star
+                                else:
+                                    # If micrographs.star doesn't exist yet, use output_dir as fallback
+                                    self.workflow_state[matched_step]["output_file"] = output_dir
+                    
+                    self.logger.info(f"Updated workflow_state for {matched_step}: completed=True, job_dir={job_dir_relative}")
+            
+            # Record final result (this updates/replaces the "monitoring_started" entry in the tool_execution_log)
+            # For the realtime log, it will create a new entry showing completion
+            self._record_tool_execution("wait_for_job", wait_params, result=result)
             return result
             
         except Exception as e:
