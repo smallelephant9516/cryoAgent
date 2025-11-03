@@ -186,36 +186,6 @@ class PickingAgent(BaseReActAgent):
             wait_for_completion = self._parse_boolean_param(wait_for_completion_param) if wait_for_completion_param is not None else False
             job_status = result.get("status")
             
-            # If wait_for_completion=True and job is running, automatically call wait_for_job tool
-            if wait_for_completion and job_status == "running" and output_dir_full:
-                timeout = used_params.get("timeout", 3600)
-                check_interval = used_params.get("check_interval", 30)
-                
-                # Call wait_for_job tool directly - this will appear as a separate tool execution in the log
-                wait_input = json.dumps({
-                    "job_dir": output_dir_full,
-                    "timeout": timeout,
-                    "check_interval": check_interval
-                })
-                wait_result_str = self._wait_for_job_tool(wait_input)
-                
-                # Parse the result from wait_for_job_tool (it returns a dict)
-                try:
-                    if isinstance(wait_result_str, dict):
-                        wait_result = wait_result_str
-                    elif isinstance(wait_result_str, str):
-                        wait_result = json.loads(wait_result_str)
-                    else:
-                        wait_result = {"status": "unknown"}
-                    
-                    # Update result with wait status
-                    result["status"] = wait_result.get("status", "unknown")
-                    if "output_dir" in wait_result:
-                        result["output_dir"] = wait_result.get("output_dir")
-                except (json.JSONDecodeError, TypeError, AttributeError) as e:
-                    self.logger.warning(f"Failed to parse wait_for_job result: {e}, result_str type: {type(wait_result_str)}")
-                    # Keep original status
-            
             # Check if job actually completed
             job_status = result.get("status")
             if job_status == "completed":
@@ -227,7 +197,14 @@ class PickingAgent(BaseReActAgent):
             elif job_status == "running":
                 # Job started but not completed yet
                 self.workflow_state["blob_picker"]["completed"] = False
-                return f"🔄 Started blob picker job (still running): {result.get('output_dir')}. Please wait for completion before proceeding."
+                
+                # If wait_for_completion=True, instruct LLM to call wait_for_job tool agentically
+                if wait_for_completion and output_dir_full:
+                    # Only pass job_dir - timeout and check_interval are handled by wait_for_job_tool from config
+                    return f"🔄 Started blob picker job (still running): {result.get('output_dir')}. " \
+                           f"Since wait_for_completion=True, please use the 'wait_for_job' tool with job_dir: {output_dir_full} to monitor completion."
+                else:
+                    return f"🔄 Started blob picker job (still running): {result.get('output_dir')}. Please wait for completion before proceeding."
             else:
                 # Job failed or unknown status
                 return f"❌ Blob picker job has status: {job_status}. Error: {result.get('error', 'Unknown error')}"
@@ -351,25 +328,13 @@ class PickingAgent(BaseReActAgent):
             wait_for_completion = self._parse_boolean_param(wait_for_completion_param) if wait_for_completion_param is not None else False
             job_status = result.get("status")
             
-            # If wait_for_completion=True and job is running, automatically call wait_for_job tool
+            # If wait_for_completion=True and job is running, instruct LLM to call wait_for_job tool
+            # Don't call it directly - let the agent decide to call it
             if wait_for_completion and job_status == "running" and output_dir_full:
-                timeout = used_params.get("timeout", 3600)
-                check_interval = used_params.get("check_interval", 30)
-                
-                # Call wait_for_job tool directly - this will appear as a separate tool execution in the log
-                wait_input = json.dumps({
-                    "job_dir": output_dir_full,
-                    "timeout": timeout,
-                    "check_interval": check_interval
-                })
-                wait_result = self._wait_for_job_tool(wait_input)
-                
-                # Parse the result from wait_for_job_tool (it returns a dict)
-                if isinstance(wait_result, dict):
-                    # Update result with wait status
-                    result["status"] = wait_result.get("status", "unknown")
-                    if "output_dir" in wait_result:
-                        result["output_dir"] = wait_result.get("output_dir")
+                # Only pass job_dir - timeout and check_interval are handled by wait_for_job_tool from config
+                step_name_display = step_name.replace("_", " ")
+                return f"🔄 Started {step_name_display} job (still running): {result.get('output_dir')}. " \
+                       f"Since wait_for_completion=True, please use the 'wait_for_job' tool with job_dir: {output_dir_full} to monitor completion."
             
             # Check if job actually completed
             job_status = result.get("status")
@@ -522,25 +487,13 @@ class PickingAgent(BaseReActAgent):
             wait_for_completion = self._parse_boolean_param(wait_for_completion_param) if wait_for_completion_param is not None else False
             job_status = result.get("status")
             
-            # If wait_for_completion=True and job is running, automatically call wait_for_job tool
+            # If wait_for_completion=True and job is running, instruct LLM to call wait_for_job tool
+            # Don't call it directly - let the agent decide to call it
             if wait_for_completion and job_status == "running" and output_dir_full:
-                timeout = used_params.get("timeout", 7200)
-                check_interval = used_params.get("check_interval", 30)
-                
-                # Call wait_for_job tool directly - this will appear as a separate tool execution in the log
-                wait_input = json.dumps({
-                    "job_dir": output_dir_full,
-                    "timeout": timeout,
-                    "check_interval": check_interval
-                })
-                wait_result = self._wait_for_job_tool(wait_input)
-                
-                # Parse the result from wait_for_job_tool (it returns a dict)
-                if isinstance(wait_result, dict):
-                    # Update result with wait status
-                    result["status"] = wait_result.get("status", "unknown")
-                    if "output_dir" in wait_result:
-                        result["output_dir"] = wait_result.get("output_dir")
+                # Only pass job_dir - timeout and check_interval are handled by wait_for_job_tool from config
+                step_name_display = step_name.replace("_", " ")
+                return f"🔄 Started {step_name_display} job (still running): {result.get('output_dir')}. " \
+                       f"Since wait_for_completion=True, please use the 'wait_for_job' tool with job_dir: {output_dir_full} to monitor completion."
             
             # Check if job actually completed
             job_status = result.get("status")
@@ -649,25 +602,20 @@ class PickingAgent(BaseReActAgent):
             wait_for_completion = self._parse_boolean_param(wait_for_completion_param) if wait_for_completion_param is not None else False
             job_status = result.get("status")
             
-            # If wait_for_completion=True and job is running, automatically call wait_for_job tool
+            # If wait_for_completion=True and job is running, instruct LLM to call wait_for_job tool
+            # Don't call it directly - let the agent decide to call it
             if wait_for_completion and job_status == "running" and output_dir_full:
-                timeout = used_params.get("timeout", 1800)
-                check_interval = used_params.get("check_interval", 30)
+                # Build instruction message for LLM to call wait_for_job tool
+                wait_params_str = f"job_dir: {output_dir_full}"
+                if "timeout" in used_params:
+                    wait_params_str += f", timeout: {used_params['timeout']}"
+                if "check_interval" in used_params:
+                    wait_params_str += f", check_interval: {used_params['check_interval']}"
                 
-                # Call wait_for_job tool directly - this will appear as a separate tool execution in the log
-                wait_input = json.dumps({
-                    "job_dir": output_dir_full,
-                    "timeout": timeout,
-                    "check_interval": check_interval
-                })
-                wait_result = self._wait_for_job_tool(wait_input)
-                
-                # Parse the result from wait_for_job_tool (it returns a dict)
-                if isinstance(wait_result, dict):
-                    # Update result with wait status
-                    result["status"] = wait_result.get("status", "unknown")
-                    if "output_dir" in wait_result:
-                        result["output_dir"] = wait_result.get("output_dir")
+                # Return message instructing LLM to wait for job completion
+                # The LLM will then call the wait_for_job tool agentically
+                return f"🔄 Started auto 2D selection job (still running): {result.get('output_dir')}. " \
+                       f"Since wait_for_completion=True, please use the 'wait_for_job' tool with parameters: {wait_params_str} to monitor completion."
             
             # Check if job actually completed
             job_status = result.get("status")
@@ -689,7 +637,21 @@ class PickingAgent(BaseReActAgent):
                 # Job started but not completed yet
                 if selection_step in self.workflow_state:
                     self.workflow_state[selection_step]["completed"] = False
-                return f"🔄 Started auto 2D selection job (still running): {result.get('output_dir')}. Please wait for completion before proceeding."
+                
+                # If wait_for_completion=True, instruct LLM to call wait_for_job tool agentically
+                wait_for_completion_param = used_params.get("wait_for_completion", False)
+                wait_for_completion = self._parse_boolean_param(wait_for_completion_param) if wait_for_completion_param is not None else False
+                if wait_for_completion and output_dir_full:
+                    wait_params_str = f"job_dir: {output_dir_full}"
+                    if "timeout" in used_params:
+                        wait_params_str += f", timeout: {used_params['timeout']}"
+                    if "check_interval" in used_params:
+                        wait_params_str += f", check_interval: {used_params['check_interval']}"
+                    
+                    return f"🔄 Started auto 2D selection job (still running): {result.get('output_dir')}. " \
+                           f"Since wait_for_completion=True, please use the 'wait_for_job' tool with parameters: {wait_params_str} to monitor completion."
+                else:
+                    return f"🔄 Started auto 2D selection job (still running): {result.get('output_dir')}. Please wait for completion before proceeding."
             else:
                 # Job failed or unknown status
                 return f"❌ Auto 2D selection job has status: {job_status}. Error: {result.get('error', 'Unknown error')}"
@@ -815,25 +777,20 @@ class PickingAgent(BaseReActAgent):
             wait_for_completion = self._parse_boolean_param(wait_for_completion_param) if wait_for_completion_param is not None else False
             job_status = result.get("status")
             
-            # If wait_for_completion=True and job is running, automatically call wait_for_job tool
+            # If wait_for_completion=True and job is running, instruct LLM to call wait_for_job tool
+            # Don't call it directly - let the agent decide to call it
             if wait_for_completion and job_status == "running" and output_dir_full:
-                timeout = used_params.get("timeout", 3600)
-                check_interval = used_params.get("check_interval", 30)
+                # Build instruction message for LLM to call wait_for_job tool
+                wait_params_str = f"job_dir: {output_dir_full}"
+                if "timeout" in used_params:
+                    wait_params_str += f", timeout: {used_params['timeout']}"
+                if "check_interval" in used_params:
+                    wait_params_str += f", check_interval: {used_params['check_interval']}"
                 
-                # Call wait_for_job tool directly - this will appear as a separate tool execution in the log
-                wait_input = json.dumps({
-                    "job_dir": output_dir_full,
-                    "timeout": timeout,
-                    "check_interval": check_interval
-                })
-                wait_result = self._wait_for_job_tool(wait_input)
-                
-                # Parse the result from wait_for_job_tool (it returns a dict)
-                if isinstance(wait_result, dict):
-                    # Update result with wait status
-                    result["status"] = wait_result.get("status", "unknown")
-                    if "output_dir" in wait_result:
-                        result["output_dir"] = wait_result.get("output_dir")
+                # Return message instructing LLM to wait for job completion
+                # The LLM will then call the wait_for_job tool agentically
+                return f"🔄 Started template picker job (still running): {result.get('output_dir')}. " \
+                       f"Since wait_for_completion=True, please use the 'wait_for_job' tool with parameters: {wait_params_str} to monitor completion."
             
             # Check if job actually completed
             job_status = result.get("status")
@@ -846,7 +803,21 @@ class PickingAgent(BaseReActAgent):
             elif job_status == "running":
                 # Job started but not completed yet
                 self.workflow_state["template_picker"]["completed"] = False
-                return f"🔄 Started template picker job (still running): {result.get('output_dir')}. Please wait for completion before proceeding."
+                
+                # If wait_for_completion=True, instruct LLM to call wait_for_job tool agentically
+                wait_for_completion_param = used_params.get("wait_for_completion", False)
+                wait_for_completion = self._parse_boolean_param(wait_for_completion_param) if wait_for_completion_param is not None else False
+                if wait_for_completion and output_dir_full:
+                    wait_params_str = f"job_dir: {output_dir_full}"
+                    if "timeout" in used_params:
+                        wait_params_str += f", timeout: {used_params['timeout']}"
+                    if "check_interval" in used_params:
+                        wait_params_str += f", check_interval: {used_params['check_interval']}"
+                    
+                    return f"🔄 Started template picker job (still running): {result.get('output_dir')}. " \
+                           f"Since wait_for_completion=True, please use the 'wait_for_job' tool with parameters: {wait_params_str} to monitor completion."
+                else:
+                    return f"🔄 Started template picker job (still running): {result.get('output_dir')}. Please wait for completion before proceeding."
             else:
                 # Job failed or unknown status
                 return f"❌ Template picker job has status: {job_status}. Error: {result.get('error', 'Unknown error')}"
@@ -887,11 +858,17 @@ class PickingAgent(BaseReActAgent):
             if not job_dir and "input" in params:
                 job_dir = params["input"]
             
-            timeout = int(params.get("timeout", 3600))
-            check_interval = int(params.get("check_interval", 30))
+            # Get defaults from config (via relion_tools)
+            default_timeout = getattr(self.relion_tools, '_backend_timeout', 3600)
+            default_check_interval = getattr(self.relion_tools, '_backend_check_interval', 30)
+            
+            timeout = int(params.get("timeout", default_timeout))
+            check_interval = int(params.get("check_interval", default_check_interval))
             
             if not job_dir:
-                return "❌ Error: job_dir parameter is required"
+                error_msg = "❌ Error: job_dir parameter is required"
+                self._record_tool_execution("wait_for_job", params, error=error_msg)
+                return error_msg
             
             # Convert to relative path for comparison with workflow_state
             job_dir_abs = job_dir
@@ -906,6 +883,12 @@ class PickingAgent(BaseReActAgent):
                 job_dir_relative = job_dir
                 job_dir_abs = os.path.join(self.relion_tools.relion_dir, job_dir)
             
+            # Record tool execution BEFORE waiting (so it appears in log immediately)
+            # We'll record again after with the final result
+            wait_params = {"job_dir": job_dir, "timeout": timeout, "check_interval": check_interval}
+            self._record_tool_execution("wait_for_job", wait_params, result={"status": "monitoring_started", "job_dir": job_dir})
+            
+            # Now wait for job completion (this is blocking)
             result = self.relion_tools.wait_for_job_completion(
                 job_dir_abs, timeout=timeout, check_interval=check_interval
             )
@@ -955,7 +938,9 @@ class PickingAgent(BaseReActAgent):
                     
                     self.logger.info(f"Updated workflow_state for {matched_step}: completed=True, job_dir={job_dir_relative}")
             
-            self._record_tool_execution("wait_for_job", {"job_dir": job_dir, "timeout": timeout, "check_interval": check_interval}, result=result)
+            # Record final result (this updates/replaces the "monitoring_started" entry in the tool_execution_log)
+            # For the realtime log, it will create a new entry showing completion
+            self._record_tool_execution("wait_for_job", wait_params, result=result)
             return result
             
         except Exception as e:
