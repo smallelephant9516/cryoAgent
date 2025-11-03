@@ -73,6 +73,7 @@ class PickingAgent(BaseReActAgent):
         else:
             return bool(value)
     
+    
     def _get_workflow_config(self) -> Dict[str, Any]:
         """Get workflow configuration from JSON file."""
         import json
@@ -176,18 +177,56 @@ class PickingAgent(BaseReActAgent):
             else:
                 job_dir_relative = None
             
-            # Check if job actually completed (not just started in backend mode)
+            # Store job_dir in workflow_state for tracking
+            if job_dir_relative:
+                self.workflow_state["blob_picker"]["job_dir"] = job_dir_relative
+            
+            # Check if wait_for_completion is requested and job is running
+            wait_for_completion_param = used_params.get("wait_for_completion", False)
+            wait_for_completion = self._parse_boolean_param(wait_for_completion_param) if wait_for_completion_param is not None else False
+            job_status = result.get("status")
+            
+            # If wait_for_completion=True and job is running, automatically call wait_for_job tool
+            if wait_for_completion and job_status == "running" and output_dir_full:
+                timeout = used_params.get("timeout", 3600)
+                check_interval = used_params.get("check_interval", 30)
+                
+                # Call wait_for_job tool directly - this will appear as a separate tool execution in the log
+                wait_input = json.dumps({
+                    "job_dir": output_dir_full,
+                    "timeout": timeout,
+                    "check_interval": check_interval
+                })
+                wait_result_str = self._wait_for_job_tool(wait_input)
+                
+                # Parse the result from wait_for_job_tool (it returns a dict)
+                try:
+                    if isinstance(wait_result_str, dict):
+                        wait_result = wait_result_str
+                    elif isinstance(wait_result_str, str):
+                        wait_result = json.loads(wait_result_str)
+                    else:
+                        wait_result = {"status": "unknown"}
+                    
+                    # Update result with wait status
+                    result["status"] = wait_result.get("status", "unknown")
+                    if "output_dir" in wait_result:
+                        result["output_dir"] = wait_result.get("output_dir")
+                except (json.JSONDecodeError, TypeError, AttributeError) as e:
+                    self.logger.warning(f"Failed to parse wait_for_job result: {e}, result_str type: {type(wait_result_str)}")
+                    # Keep original status
+            
+            # Check if job actually completed
             job_status = result.get("status")
             if job_status == "completed":
-                # Update workflow state only if job is actually completed
+                # Update workflow state
                 self.workflow_state["blob_picker"]["completed"] = True
-                self.workflow_state["blob_picker"]["job_dir"] = job_dir_relative  # Use relative path
-                self.workflow_state["blob_picker"]["output_file"] = result.get("output_file")
+                if result.get("output_file"):
+                    self.workflow_state["blob_picker"]["output_file"] = result.get("output_file")
                 return f"✅ Successfully ran blob picker: {result.get('output_dir')}"
             elif job_status == "running":
-                # Job started but not completed yet - LLM needs to wait
+                # Job started but not completed yet
                 self.workflow_state["blob_picker"]["completed"] = False
-                self.workflow_state["blob_picker"]["job_dir"] = job_dir_relative  # Use relative path
                 return f"🔄 Started blob picker job (still running): {result.get('output_dir')}. Please wait for completion before proceeding."
             else:
                 # Job failed or unknown status
@@ -303,18 +342,46 @@ class PickingAgent(BaseReActAgent):
             # Determine step name based on round
             step_name = "particle_extraction_2" if is_round2 else "particle_extraction"
             
-            # Check if job actually completed (not just started in backend mode)
+            # Store job_dir in workflow_state for tracking
+            if job_dir_relative:
+                self.workflow_state[step_name]["job_dir"] = job_dir_relative
+            
+            # Check if wait_for_completion is requested and job is running
+            wait_for_completion_param = used_params.get("wait_for_completion", False)
+            wait_for_completion = self._parse_boolean_param(wait_for_completion_param) if wait_for_completion_param is not None else False
+            job_status = result.get("status")
+            
+            # If wait_for_completion=True and job is running, automatically call wait_for_job tool
+            if wait_for_completion and job_status == "running" and output_dir_full:
+                timeout = used_params.get("timeout", 3600)
+                check_interval = used_params.get("check_interval", 30)
+                
+                # Call wait_for_job tool directly - this will appear as a separate tool execution in the log
+                wait_input = json.dumps({
+                    "job_dir": output_dir_full,
+                    "timeout": timeout,
+                    "check_interval": check_interval
+                })
+                wait_result = self._wait_for_job_tool(wait_input)
+                
+                # Parse the result from wait_for_job_tool (it returns a dict)
+                if isinstance(wait_result, dict):
+                    # Update result with wait status
+                    result["status"] = wait_result.get("status", "unknown")
+                    if "output_dir" in wait_result:
+                        result["output_dir"] = wait_result.get("output_dir")
+            
+            # Check if job actually completed
             job_status = result.get("status")
             if job_status == "completed":
-                # Update workflow state only if job is actually completed
+                # Update workflow state
                 self.workflow_state[step_name]["completed"] = True
-                self.workflow_state[step_name]["job_dir"] = job_dir_relative  # Use relative path
-                self.workflow_state[step_name]["output_file"] = result.get("output_file")
+                if result.get("output_file"):
+                    self.workflow_state[step_name]["output_file"] = result.get("output_file")
                 return f"✅ Successfully extracted particles: {result.get('output_dir')}"
             elif job_status == "running":
-                # Job started but not completed yet - LLM needs to wait
+                # Job started but not completed yet
                 self.workflow_state[step_name]["completed"] = False
-                self.workflow_state[step_name]["job_dir"] = job_dir_relative  # Use relative path
                 return f"🔄 Started particle extraction job (still running): {result.get('output_dir')}. Please wait for completion before proceeding."
             else:
                 # Job failed or unknown status
@@ -441,21 +508,51 @@ class PickingAgent(BaseReActAgent):
             # Determine step name based on round
             step_name = "classification_2d_2" if is_round2 else "classification_2d"
             
-            # Check if job actually completed (not just started in backend mode)
+            # Store job_dir in workflow_state for tracking
+            if job_dir_relative:
+                self.workflow_state[step_name]["job_dir"] = job_dir_relative
+            
+            # Store optimiser_star if available in result (needed for auto_2d_selection)
+            if "optimiser_star" in result:
+                self.workflow_state[step_name]["optimiser_star"] = result.get("optimiser_star")
+                print(f"optimiser_star in agent is used: {self.workflow_state[step_name]['optimiser_star']}")
+            
+            # Check if wait_for_completion is requested and job is running
+            wait_for_completion_param = used_params.get("wait_for_completion", False)
+            wait_for_completion = self._parse_boolean_param(wait_for_completion_param) if wait_for_completion_param is not None else False
+            job_status = result.get("status")
+            
+            # If wait_for_completion=True and job is running, automatically call wait_for_job tool
+            if wait_for_completion and job_status == "running" and output_dir_full:
+                timeout = used_params.get("timeout", 7200)
+                check_interval = used_params.get("check_interval", 30)
+                
+                # Call wait_for_job tool directly - this will appear as a separate tool execution in the log
+                wait_input = json.dumps({
+                    "job_dir": output_dir_full,
+                    "timeout": timeout,
+                    "check_interval": check_interval
+                })
+                wait_result = self._wait_for_job_tool(wait_input)
+                
+                # Parse the result from wait_for_job_tool (it returns a dict)
+                if isinstance(wait_result, dict):
+                    # Update result with wait status
+                    result["status"] = wait_result.get("status", "unknown")
+                    if "output_dir" in wait_result:
+                        result["output_dir"] = wait_result.get("output_dir")
+            
+            # Check if job actually completed
             job_status = result.get("status")
             if job_status == "completed":
-                # Update workflow state only if job is actually completed
+                # Update workflow state
                 self.workflow_state[step_name]["completed"] = True
-                self.workflow_state[step_name]["job_dir"] = job_dir_relative  # Use relative path
-                self.workflow_state[step_name]["output_file"] = result.get("output_file")
-                # Store optimiser_star if available in result (for auto_2d_selection)
-                if "optimiser_star" in result:
-                    self.workflow_state[step_name]["optimiser_star"] = result.get("optimiser_star")
+                if result.get("output_file"):
+                    self.workflow_state[step_name]["output_file"] = result.get("output_file")
                 return f"✅ Successfully classified particles: {result.get('output_dir')}"
             elif job_status == "running":
-                # Job started but not completed yet - LLM needs to wait
+                # Job started but not completed yet
                 self.workflow_state[step_name]["completed"] = False
-                self.workflow_state[step_name]["job_dir"] = job_dir_relative  # Use relative path
                 return f"🔄 Started 2D classification job (still running): {result.get('output_dir')}. Please wait for completion before proceeding."
             else:
                 # Job failed or unknown status
@@ -482,13 +579,7 @@ class PickingAgent(BaseReActAgent):
             classification_state = self.workflow_state.get(classification_step, {})
             
             # Get input_opt: check params first (explicit input_opt or parsed 'input'), then workflow state, then input_str as fallback
-            input_opt = params.get('input_opt') or params.get('input')
-            if not input_opt:
-                input_opt = classification_state.get("optimiser_star")
-            if not input_opt:
-                # Fallback: use input_str directly if it looks like a path
-                if input_str and (input_str.startswith('/') or input_str.startswith('./') or '/' in input_str):
-                    input_opt = input_str.strip()
+            input_opt = classification_state.get("optimiser_star")
             
             if not input_opt:
                 return "❌ Error: input_opt parameter is required. Provide the optimiser.star file path from 2D classification."
@@ -549,18 +640,55 @@ class PickingAgent(BaseReActAgent):
             else:
                 job_dir_relative = None
             
-            # Check if job actually completed (not just started in backend mode)
+            # Store job_dir in workflow_state for tracking
+            if selection_step in self.workflow_state and job_dir_relative:
+                self.workflow_state[selection_step]["job_dir"] = job_dir_relative
+            
+            # Check if wait_for_completion is requested and job is running
+            wait_for_completion_param = used_params.get("wait_for_completion", False)
+            wait_for_completion = self._parse_boolean_param(wait_for_completion_param) if wait_for_completion_param is not None else False
+            job_status = result.get("status")
+            
+            # If wait_for_completion=True and job is running, automatically call wait_for_job tool
+            if wait_for_completion and job_status == "running" and output_dir_full:
+                timeout = used_params.get("timeout", 1800)
+                check_interval = used_params.get("check_interval", 30)
+                
+                # Call wait_for_job tool directly - this will appear as a separate tool execution in the log
+                wait_input = json.dumps({
+                    "job_dir": output_dir_full,
+                    "timeout": timeout,
+                    "check_interval": check_interval
+                })
+                wait_result = self._wait_for_job_tool(wait_input)
+                
+                # Parse the result from wait_for_job_tool (it returns a dict)
+                if isinstance(wait_result, dict):
+                    # Update result with wait status
+                    result["status"] = wait_result.get("status", "unknown")
+                    if "output_dir" in wait_result:
+                        result["output_dir"] = wait_result.get("output_dir")
+            
+            # Check if job actually completed
             job_status = result.get("status")
             if job_status == "completed":
-                # Update workflow state only if job is actually completed
-                self.workflow_state[selection_step]["completed"] = True
-                self.workflow_state[selection_step]["job_dir"] = job_dir_relative  # Use relative path
-                self.workflow_state[selection_step]["output_file"] = result.get("output_file")
+                # Update workflow state
+                if selection_step in self.workflow_state:
+                    self.workflow_state[selection_step]["completed"] = True
+                    
+                    # Construct output_file path from output_dir if not already set
+                    if not self.workflow_state[selection_step].get("output_file") and output_dir_full:
+                        particles_star = os.path.join(output_dir_full, "particles.star")
+                        if os.path.exists(particles_star):
+                            self.workflow_state[selection_step]["output_file"] = particles_star
+                        else:
+                            self.workflow_state[selection_step]["output_file"] = output_dir_full
+                    
                 return f"✅ Successfully ran auto 2D selection: {result.get('output_dir')}"
             elif job_status == "running":
-                # Job started but not completed yet - LLM needs to wait
-                self.workflow_state[selection_step]["completed"] = False
-                self.workflow_state[selection_step]["job_dir"] = job_dir_relative  # Use relative path
+                # Job started but not completed yet
+                if selection_step in self.workflow_state:
+                    self.workflow_state[selection_step]["completed"] = False
                 return f"🔄 Started auto 2D selection job (still running): {result.get('output_dir')}. Please wait for completion before proceeding."
             else:
                 # Job failed or unknown status
@@ -678,18 +806,46 @@ class PickingAgent(BaseReActAgent):
             else:
                 job_dir_relative = None
             
-            # Check if job actually completed (not just started in backend mode)
+            # Store job_dir in workflow_state for tracking
+            if job_dir_relative:
+                self.workflow_state["template_picker"]["job_dir"] = job_dir_relative
+            
+            # Check if wait_for_completion is requested and job is running
+            wait_for_completion_param = used_params.get("wait_for_completion", False)
+            wait_for_completion = self._parse_boolean_param(wait_for_completion_param) if wait_for_completion_param is not None else False
+            job_status = result.get("status")
+            
+            # If wait_for_completion=True and job is running, automatically call wait_for_job tool
+            if wait_for_completion and job_status == "running" and output_dir_full:
+                timeout = used_params.get("timeout", 3600)
+                check_interval = used_params.get("check_interval", 30)
+                
+                # Call wait_for_job tool directly - this will appear as a separate tool execution in the log
+                wait_input = json.dumps({
+                    "job_dir": output_dir_full,
+                    "timeout": timeout,
+                    "check_interval": check_interval
+                })
+                wait_result = self._wait_for_job_tool(wait_input)
+                
+                # Parse the result from wait_for_job_tool (it returns a dict)
+                if isinstance(wait_result, dict):
+                    # Update result with wait status
+                    result["status"] = wait_result.get("status", "unknown")
+                    if "output_dir" in wait_result:
+                        result["output_dir"] = wait_result.get("output_dir")
+            
+            # Check if job actually completed
             job_status = result.get("status")
             if job_status == "completed":
-                # Update workflow state only if job is actually completed
+                # Update workflow state
                 self.workflow_state["template_picker"]["completed"] = True
-                self.workflow_state["template_picker"]["job_dir"] = job_dir_relative  # Use relative path
-                self.workflow_state["template_picker"]["output_file"] = result.get("output_file")
+                if result.get("output_file"):
+                    self.workflow_state["template_picker"]["output_file"] = result.get("output_file")
                 return f"✅ Successfully ran template picker: {result.get('output_dir')}"
             elif job_status == "running":
-                # Job started but not completed yet - LLM needs to wait
+                # Job started but not completed yet
                 self.workflow_state["template_picker"]["completed"] = False
-                self.workflow_state["template_picker"]["job_dir"] = job_dir_relative  # Use relative path
                 return f"🔄 Started template picker job (still running): {result.get('output_dir')}. Please wait for completion before proceeding."
             else:
                 # Job failed or unknown status
@@ -737,9 +893,68 @@ class PickingAgent(BaseReActAgent):
             if not job_dir:
                 return "❌ Error: job_dir parameter is required"
             
+            # Convert to relative path for comparison with workflow_state
+            job_dir_abs = job_dir
+            if os.path.isabs(job_dir):
+                relion_dir = self.relion_tools.relion_dir
+                try:
+                    job_dir_relative = os.path.relpath(job_dir, relion_dir)
+                except ValueError:
+                    # If relpath fails (e.g., different drives on Windows), use absolute
+                    job_dir_relative = job_dir
+            else:
+                job_dir_relative = job_dir
+                job_dir_abs = os.path.join(self.relion_tools.relion_dir, job_dir)
+            
             result = self.relion_tools.wait_for_job_completion(
-                job_dir, timeout=timeout, check_interval=check_interval
+                job_dir_abs, timeout=timeout, check_interval=check_interval
             )
+            
+            # Update workflow_state when job completes
+            if result.get("status") == "completed":
+                # Find which step this job_dir belongs to
+                matched_step = None
+                for step_name, step_state in self.workflow_state.items():
+                    stored_job_dir = step_state.get("job_dir")
+                    if stored_job_dir:
+                        # Compare relative paths
+                        stored_abs = os.path.join(self.relion_tools.relion_dir, stored_job_dir) if not os.path.isabs(stored_job_dir) else stored_job_dir
+                        if os.path.abspath(stored_abs) == os.path.abspath(job_dir_abs):
+                            matched_step = step_name
+                            break
+                
+                if matched_step:
+                    # Update workflow_state for the matched step
+                    self.workflow_state[matched_step]["completed"] = True
+                    if "output_dir" in result and not self.workflow_state[matched_step].get("output_file"):
+                        # Try to extract output_file from result if available
+                        output_dir = result.get("output_dir")
+                        if output_dir:
+                            # For different step types, output files are in different locations
+                            if "AutoPick" in output_dir or "autopick" in output_dir.lower():
+                                # AutoPick jobs: output files are *_autopick.star files in the directory
+                                pass  # Don't set a single output_file for autopick
+                            elif "Extract" in output_dir:
+                                # Extract jobs: output is particles.star
+                                particles_star = os.path.join(output_dir, "particles.star")
+                                if os.path.exists(particles_star):
+                                    self.workflow_state[matched_step]["output_file"] = particles_star
+                            elif "Class2D" in output_dir:
+                                # Classification jobs: output is run_it*_optimiser.star
+                                # The tool should have already set this, but update if needed
+                                pass
+                            elif "Select" in output_dir:
+                                # Selection jobs: output is particles.star
+                                particles_star = os.path.join(output_dir, "particles.star")
+                                if os.path.exists(particles_star):
+                                    self.workflow_state[matched_step]["output_file"] = particles_star
+                                else:
+                                    # If particles.star doesn't exist yet, use output_dir as fallback
+                                    # The file might be created asynchronously
+                                    self.workflow_state[matched_step]["output_file"] = output_dir
+                    
+                    self.logger.info(f"Updated workflow_state for {matched_step}: completed=True, job_dir={job_dir_relative}")
+            
             self._record_tool_execution("wait_for_job", {"job_dir": job_dir, "timeout": timeout, "check_interval": check_interval}, result=result)
             return result
             
@@ -775,8 +990,44 @@ class PickingAgent(BaseReActAgent):
             input_type = params.get("input_type")
             input_path = params.get("input_path")
             
+            # Try to infer input_type if only input_path is provided
+            if not input_type and input_path:
+                # Check if input_path is a STAR file
+                if input_path.endswith('.star'):
+                    input_type = "star_file"
+                # Check if it's a directory (could be micrographs or movies)
+                elif os.path.isdir(input_path):
+                    input_type = params.get("input") or "files"
+                # Default to star_file if it looks like a file path
+                elif os.path.isfile(input_path):
+                    input_type = "star_file"
+            
+            # If we still don't have both, check if a single "input" was provided (from Case 4 in _parse_tool_input)
             if not input_type or not input_path:
-                return "❌ Error: input_type and input_path parameters are required"
+                single_input = params.get("input")
+                if single_input:
+                    # If single_input is just a word like "micrographs", try to find the actual path
+                    # Check if it's already a valid file path
+                    if os.path.exists(single_input):
+                        input_path = single_input
+                        if single_input.endswith('.star'):
+                            input_type = "star_file"
+                        elif os.path.isdir(single_input):
+                            input_type = "files"
+                        else:
+                            input_type = "star_file"  # Default assumption
+                    # If it's just a keyword like "micrographs", provide helpful error
+                    elif single_input.lower() in ["micrographs", "micrograph", "movies", "movie"]:
+                        return f"❌ Error: Please provide the actual file path, not just '{single_input}'. " \
+                               f"The workflow prompt contains the micrographs STAR file path - use that path. " \
+                               f"Example usage: validate_inputs with JSON: {{\"input_type\": \"star_file\", \"input_path\": \"/path/to/micrographs.star\"}} " \
+                               f"or comma-separated: input_type=star_file,input_path=/path/to/micrographs.star"
+            
+            if not input_type or not input_path:
+                return "❌ Error: input_type and input_path parameters are required. " \
+                       "Usage: validate_inputs with JSON format: {\"input_type\": \"star_file\", \"input_path\": \"/path/to/file.star\"} " \
+                       "or comma-separated: input_type=star_file,input_path=/path/to/file.star. " \
+                       "Note: Use the actual file path from the workflow prompt, not just the word 'micrographs'."
             
             result = self.relion_tools.validate_inputs(input_type, input_path)
             self._record_tool_execution("validate_inputs", {"input_type": input_type, "input_path": input_path}, result=result)
@@ -889,34 +1140,51 @@ class PickingAgent(BaseReActAgent):
         for step in required_steps:
             step_state = self.workflow_state.get(step, {})
             completed_flag = step_state.get("completed", False)
+            job_dir = step_state.get("job_dir")
             
-            if not completed_flag:
-                missing_steps.append(step)
+            # If no job_dir, check if step was never started
+            if not job_dir:
+                if not completed_flag:
+                    missing_steps.append(step)
                 continue
             
-            # Verify actual job status for completed steps
-            job_dir = step_state.get("job_dir")
-            if job_dir:
-                # Convert relative path to absolute
-                if not os.path.isabs(job_dir):
-                    relion_dir = self.relion_tools.relion_dir
-                    job_dir = os.path.join(relion_dir, job_dir)
+            # Convert relative path to absolute for verification
+            if not os.path.isabs(job_dir):
+                relion_dir = self.relion_tools.relion_dir
+                job_dir_abs = os.path.join(relion_dir, job_dir)
+            else:
+                job_dir_abs = job_dir
+            
+            # Verify actual job status - this is the source of truth
+            try:
+                job_status = self.relion_tools.get_job_status(job_dir_abs)
+                actual_status = job_status.get("status", "unknown")
                 
-                # Check actual job status
-                try:
-                    job_status = self.relion_tools.get_job_status(job_dir)
-                    actual_status = job_status.get("status", "unknown")
-                    
-                    if actual_status == "failed":
-                        failed_steps.append(step)
-                        self.logger.warning(f"Step {step} marked as completed but job actually failed: {job_dir}")
-                    elif actual_status != "completed":
-                        # If status is "running" or "unknown", mark as incomplete
-                        missing_steps.append(step)
-                        self.logger.warning(f"Step {step} marked as completed but job status is {actual_status}: {job_dir}")
-                except Exception as e:
-                    self.logger.warning(f"Failed to verify job status for {step}: {e}")
-                    # If we can't verify, trust the completed flag but log a warning
+                if actual_status == "failed":
+                    failed_steps.append(step)
+                    self.logger.warning(f"Step {step} job failed: {job_dir_abs}")
+                elif actual_status == "completed":
+                    # Job actually completed - update workflow_state if needed
+                    if not completed_flag:
+                        self.logger.info(f"Step {step} completed but workflow_state not updated - fixing now")
+                        self.workflow_state[step]["completed"] = True
+                        # Update output_file if available from job_status
+                        if "output_file" in job_status and not step_state.get("output_file"):
+                            self.workflow_state[step]["output_file"] = job_status.get("output_file")
+                    # Step is verified as completed, don't add to missing_steps
+                else:
+                    # Status is "running" or "unknown"
+                    if actual_status == "running":
+                        self.logger.warning(f"Step {step} job still running: {job_dir_abs}")
+                    else:
+                        self.logger.warning(f"Step {step} job status unknown: {actual_status} ({job_dir_abs})")
+                    missing_steps.append(step)
+            except Exception as e:
+                self.logger.warning(f"Failed to verify job status for {step}: {e}")
+                # If we can't verify and completed_flag is False, mark as missing
+                if not completed_flag:
+                    missing_steps.append(step)
+                # If completed_flag is True but we can't verify, trust the flag
         
         # Determine overall success
         if failed_steps:
@@ -960,65 +1228,66 @@ class PickingAgent(BaseReActAgent):
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         status = "completed" if success else "failed"
         
-        # Build step-by-step status information
-        step_status = {}
-        required_steps = [
-            "blob_picker", 
-            "particle_extraction", 
-            "classification_2d", 
-            "auto_2d_selection",
-            "template_picker",
-            "particle_extraction_2",
-            "classification_2d_2",
-            "auto_2d_selection_2"
-        ]
-        
-        for step in required_steps:
-            step_state = self.workflow_state.get(step, {})
-            step_status[step] = {
-                "completed": step_state.get("completed", False),
-                "job_dir": step_state.get("job_dir"),
-                "output_file": step_state.get("output_file"),
-                "status": "pending"
-            }
+        # Get final star file (prefer round 2 if completed, otherwise round 1)
+        final_star_file = None
+        if self.workflow_state.get("auto_2d_selection_2", {}).get("completed"):
+            auto_2d_selection_2_state = self.workflow_state.get("auto_2d_selection_2", {})
+            final_star_file = auto_2d_selection_2_state.get("output_file")
             
-            # Check actual job status if job_dir exists
-            job_dir = step_state.get("job_dir")
-            if job_dir:
-                # Convert relative path to absolute
-                if not os.path.isabs(job_dir):
-                    relion_dir = self.relion_tools.relion_dir
-                    job_dir = os.path.join(relion_dir, job_dir)
-                
-                try:
-                    job_status_result = self.relion_tools.get_job_status(job_dir)
-                    actual_status = job_status_result.get("status", "unknown")
-                    step_status[step]["status"] = actual_status
-                    step_status[step]["job_status"] = job_status_result
-                except Exception as e:
-                    step_status[step]["status"] = "unknown"
-                    step_status[step]["error"] = str(e)
+            # If output_file not set, construct from job_dir
+            if not final_star_file:
+                job_dir = auto_2d_selection_2_state.get("job_dir")
+                if job_dir:
+                    if not os.path.isabs(job_dir):
+                        relion_dir = self.relion_tools.relion_dir
+                        job_dir_abs = os.path.join(relion_dir, job_dir)
+                    else:
+                        job_dir_abs = job_dir
+                    
+                    # Check for particles.star in Select job directory
+                    particles_star = os.path.join(job_dir_abs, "particles.star")
+                    if os.path.exists(particles_star):
+                        final_star_file = particles_star
+                    else:
+                        # Fallback: use job_dir itself
+                        final_star_file = job_dir_abs
+                        
+        elif self.workflow_state.get("auto_2d_selection", {}).get("completed"):
+            auto_2d_selection_state = self.workflow_state.get("auto_2d_selection", {})
+            final_star_file = auto_2d_selection_state.get("output_file")
+            
+            # If output_file not set, construct from job_dir
+            if not final_star_file:
+                job_dir = auto_2d_selection_state.get("job_dir")
+                if job_dir:
+                    if not os.path.isabs(job_dir):
+                        relion_dir = self.relion_tools.relion_dir
+                        job_dir_abs = os.path.join(relion_dir, job_dir)
+                    else:
+                        job_dir_abs = job_dir
+                    
+                    # Check for particles.star in Select job directory
+                    particles_star = os.path.join(job_dir_abs, "particles.star")
+                    if os.path.exists(particles_star):
+                        final_star_file = particles_star
+                    else:
+                        # Fallback: use job_dir itself
+                        final_star_file = job_dir_abs
         
-        # Build stage_outputs with job directories
-        enhanced_stage_outputs = stage_outputs.copy()
-        for step, status_info in step_status.items():
-            if status_info.get("job_dir"):
-                # Convert relative to absolute path for stage_outputs
-                job_dir = status_info["job_dir"]
-                if not os.path.isabs(job_dir):
-                    relion_dir = self.relion_tools.relion_dir
-                    job_dir = os.path.join(relion_dir, job_dir)
-                enhanced_stage_outputs[f"{step}_job_dir"] = job_dir
-            if status_info.get("output_file"):
-                enhanced_stage_outputs[f"{step}_output_file"] = status_info["output_file"]
+        # Convert to absolute path if needed
+        if final_star_file:
+            if not os.path.isabs(final_star_file):
+                relion_dir = self.relion_tools.relion_dir
+                final_star_file = os.path.join(relion_dir, final_star_file)
+                final_star_file = os.path.abspath(final_star_file)
         
+        # Build simplified picking results with only final star file
         picking_results = {
             "timestamp": timestamp,
             "status": status,
             "stage": "particle_picking",
             "agent_type": "relion",
-            "stage_outputs": enhanced_stage_outputs,
-            "step_status": step_status,
+            "final_star_file": final_star_file,
             "metadata": {
                 "workflow_type": getattr(context, 'workflow_type', 'unknown'),
                 "start_time": getattr(context, 'start_time', None),

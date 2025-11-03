@@ -1320,13 +1320,14 @@ class RELIONTools:
                 else:
                     return f"❌ Path does not exist: {input_path}"
             
-            elif input_type in ["star_file", "star"]:
+            elif input_type in ["star_file", "star", "micrographs", "particles", "optimiser"]:
+                # All these are STAR file types - validate as STAR files
                 if not os.path.exists(input_path):
                     return f"❌ Star file does not exist: {input_path}"
                 return f"✅ Star file exists: {input_path}"
             
             else:
-                return f"❌ Unknown input type: {input_type}. Supported types: movies, movie_files, files, star_file, star"
+                return f"❌ Unknown input type: {input_type}. Supported types: movies, movie_files, files, star_file, star, micrographs, particles, optimiser"
                 
         except Exception as e:
             return f"❌ Error validating inputs: {str(e)}"
@@ -2482,6 +2483,7 @@ class RELIONTools:
                     "started_at": time.time()
                 }
                 self._job_cache[job_dir_relative] = job_info
+                print(f"optimiser_star is in relion tools used: ", os.path.join(full_output_dir, f"run_it{iter:03d}_optimiser.star"))
                 print(f"🚀 Started backend 2D classification job (PID {process.pid}) in conda env '{conda_env}'")
                 return job_info
             

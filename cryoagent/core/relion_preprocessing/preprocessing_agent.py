@@ -163,7 +163,7 @@ class PreprocessingAgent(BaseReActAgent):
                 "output_file": "movies.star",
                 "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion", "true")),
                 "timeout": int(params.get("timeout", 600)),
-                "use_backend": self._parse_boolean_param(params.get("use_backend", str(self.relion_tools._backend_enabled))),
+                "use_backend": self._parse_boolean_param(params.get("use_backend", "true")),
                 "conda_env": params.get("conda_env", "relion-5.0")
             }
 
@@ -241,7 +241,7 @@ class PreprocessingAgent(BaseReActAgent):
                 "grouping_for_ps": int(params.get("grouping_for_ps") or 3),
                 "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion", "true")),
                 "timeout": int(params.get("timeout") or 1800),
-                "use_backend": self._parse_boolean_param(params.get("use_backend", str(self.relion_tools._backend_enabled))),
+                "use_backend": self._parse_boolean_param(params.get("use_backend", "true")),
                 "conda_env": params.get("conda_env") or "relion-5.0"
             }
 
@@ -300,7 +300,7 @@ class PreprocessingAgent(BaseReActAgent):
                 "only_do_unfinished": self._parse_boolean_param(params.get("only_do_unfinished", str(ctf_config.get("only_do_unfinished", True)))),
                 "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion", "true")),
                 "timeout": int(params.get("timeout", 1800)),
-                "use_backend": self._parse_boolean_param(params.get("use_backend", str(self.relion_tools._backend_enabled))),
+                "use_backend": self._parse_boolean_param(params.get("use_backend", "true")),
                 "conda_env": params.get("conda_env", "relion-5.0")
             }
 
