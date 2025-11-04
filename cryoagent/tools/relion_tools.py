@@ -2654,4 +2654,521 @@ class RELIONTools:
         except Exception as e:
             raise RuntimeError(f"Failed to run auto 2D selection: {e}")
     
+    def ab_initio_reconstruction(
+        self,
+        input_star: str,
+        output_dir: str = "InitialModel",
+        iter: int = 200,
+        K: int = 1,
+        sym: str = "C1",
+        particle_diameter: float = 200.0,
+        oversampling: int = 1,
+        healpix_order: int = 1,
+        offset_range: float = 6.0,
+        offset_step: float = 2.0,
+        tau2_fudge: float = 4.0,
+        pool: int = 3,
+        pad: int = 1,
+        j: int = 4,
+        gpu: Optional[str] = None,
+        ctf: bool = True,
+        flatten_solvent: bool = True,
+        zero_mask: bool = True,
+        dont_combine_weights_via_disc: bool = True,
+        auto_sampling: bool = True,
+        grad: bool = True,
+        denovo_3dref: bool = True,
+        wait_for_completion: bool = False,
+        timeout: int = 86400,
+        check_interval: int = 30,
+        use_backend: bool = False,
+        conda_env: str = "relion-5.0",
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Perform ab initio 3D reconstruction (de novo 3D refinement).
+        
+        This method performs initial 3D model generation from particles without a reference.
+        It runs relion_refine with --denovo_3dref, then aligns symmetry using relion_align_symmetry.
+        
+        Args:
+            input_star: Path to input particles STAR file
+            output_dir: Output directory for the job (default: "InitialModel")
+            iter: Number of iterations (default: 200)
+            K: Number of classes (default: 1)
+            sym: Symmetry group (default: "C1")
+            particle_diameter: Diameter of particles in Angstroms
+            oversampling: Adaptive oversampling order
+            healpix_order: Healpix order for angular sampling
+            offset_range: Search range for origin offsets in pixels
+            offset_step: Sampling rate for origin offsets in pixels
+            tau2_fudge: Regularization parameter
+            pool: Number of images to pool for each thread task
+            pad: Padding factor
+            j: Number of threads to run in parallel
+            gpu: GPU ID(s) to use. Empty string ("") means use default GPU (just --gpu flag),
+                 non-empty string (e.g., "0" or "0,1") specifies GPU ID(s)
+            ctf: Perform CTF correction
+            flatten_solvent: Flatten solvent region
+            zero_mask: Zero mask outside particle diameter
+            dont_combine_weights_via_disc: Don't combine weights via disc
+            auto_sampling: Use adaptive sampling
+            grad: Use gradient descent
+            denovo_3dref: Perform de novo 3D refinement
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            check_interval: Time between status checks in seconds
+            use_backend: Whether to run in backend mode
+            conda_env: Conda environment name
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            # Find the next job number for the output directory
+            full_output_dir = self._get_next_job_directory(output_dir)
+            
+            # Extract the relative job directory for caching
+            job_dir_relative = os.path.relpath(full_output_dir, self.relion_dir)
+            
+            # Find relion_refine in PATH
+            cmd = ["which", "relion_refine"]
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=10
+            )
+            
+            if result.returncode != 0 or not result.stdout.strip():
+                raise RuntimeError("relion_refine not found in PATH")
+            
+            refine_path = result.stdout.strip()
+            
+            # Build the refinement command
+            cmd = [
+                refine_path,
+                "--o", os.path.join(full_output_dir, "run"),
+                "--iter", str(iter),
+                "--i", input_star,
+                "--K", str(K),
+                "--sym", sym,
+                "--particle_diameter", str(particle_diameter),
+                "--oversampling", str(oversampling),
+                "--healpix_order", str(healpix_order),
+                "--offset_range", str(offset_range),
+                "--offset_step", str(offset_step),
+                "--tau2_fudge", str(tau2_fudge),
+                "--pool", str(pool),
+                "--pad", str(pad),
+                "--j", str(j),
+                "--pipeline_control", full_output_dir + "/"
+            ]
+            
+            # Add optional boolean flags
+            if grad:
+                cmd.append("--grad")
+            if denovo_3dref:
+                cmd.append("--denovo_3dref")
+            if ctf:
+                cmd.append("--ctf")
+            if flatten_solvent:
+                cmd.append("--flatten_solvent")
+            if zero_mask:
+                cmd.append("--zero_mask")
+            if dont_combine_weights_via_disc:
+                cmd.append("--dont_combine_weights_via_disc")
+            if auto_sampling:
+                cmd.append("--auto_sampling")
+            
+            # Handle GPU parameter
+            if gpu is not None:
+                if gpu == "":
+                    cmd.append("--gpu")
+                else:
+                    cmd.extend(["--gpu", str(gpu)])
+            
+            # Add additional parameters from kwargs
+            for key, value in kwargs.items():
+                if value is not None:
+                    if isinstance(value, bool) and value:
+                        cmd.append(f"--{key}")
+                    else:
+                        cmd.extend([f"--{key}", str(value)])
+            
+            print(f"Running RELION ab initio reconstruction command: {' '.join(cmd)}")
+            
+            # Find relion_align_symmetry in PATH for the second step
+            cmd2 = ["which", "relion_align_symmetry"]
+            result2 = subprocess.run(
+                cmd2, capture_output=True, text=True, timeout=10
+            )
+            
+            if result2.returncode != 0 or not result2.stdout.strip():
+                raise RuntimeError("relion_align_symmetry not found in PATH")
+            
+            align_symmetry_path = result2.stdout.strip()
+            
+            # Build the alignment command (will run after refinement)
+            model_star = os.path.join(full_output_dir, f"run_it{iter:03d}_model.star")
+            initial_model = os.path.join(full_output_dir, "initial_model.mrc")
+            
+            align_cmd = [
+                align_symmetry_path,
+                "--i", model_star,
+                "--o", initial_model,
+                "--sym", sym,
+                "--apply_sym",
+                "--select_largest_class",
+                "--pipeline_control", full_output_dir + "/"
+            ]
+            
+            if use_backend:
+                if not self._backend_enabled:
+                    raise RuntimeError("Backend execution is not enabled. Call enable_backend_execution(True) first.")
+                
+                env = os.environ.copy()
+                env['DISPLAY'] = ''
+                env['QT_QPA_PLATFORM'] = 'offscreen'
+                env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+                env['QT_SCALE_FACTOR'] = '1'
+                
+                # Combine both commands with && and add touch for success file
+                combined_cmd = f"{' '.join(cmd)} && rm -f {os.path.join(full_output_dir, 'RELION_JOB_EXIT_SUCCESS')} && {' '.join(align_cmd)} && touch {os.path.join(full_output_dir, 'RELION_JOB_EXIT_SUCCESS')}"
+                
+                conda_cmd = [
+                    "conda", "run", "-n", conda_env,
+                    "bash", "-c",
+                    f"cd {self.relion_dir} && {combined_cmd}"
+                ]
+                
+                process = subprocess.Popen(
+                    conda_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    cwd=self.relion_dir,
+                    preexec_fn=os.setsid if os.name != 'nt' else None
+                )
+                
+                job_info = {
+                    "job_type": "relion_ab_initio_reconstruction",
+                    "status": "running",
+                    "output_dir": full_output_dir,
+                    "input_star": input_star,
+                    "initial_model": initial_model,
+                    "model_star": model_star,
+                    "command": combined_cmd,
+                    "process_id": process.pid,
+                    "started_at": time.time()
+                }
+                self._job_cache[job_dir_relative] = job_info
+                print(f"🚀 Started backend ab initio reconstruction job (PID {process.pid}) in conda env '{conda_env}'")
+                return job_info
+            
+            # Non-backend: run and wait
+            env = os.environ.copy()
+            env['DISPLAY'] = ''
+            env['QT_QPA_PLATFORM'] = 'offscreen'
+            env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+            env['QT_SCALE_FACTOR'] = '1'
+            
+            # Run refinement
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+                cwd=self.relion_dir
+            )
+            
+            if result.returncode != 0:
+                raise RuntimeError(f"RELION ab initio refinement failed: {result.stderr}")
+            
+            # Remove existing success file if present
+            success_file = os.path.join(full_output_dir, "RELION_JOB_EXIT_SUCCESS")
+            if os.path.exists(success_file):
+                os.remove(success_file)
+            
+            # Run alignment
+            result2 = subprocess.run(
+                align_cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+                cwd=self.relion_dir
+            )
+            
+            if result2.returncode != 0:
+                raise RuntimeError(f"RELION align symmetry failed: {result2.stderr}")
+            
+            # Create success file
+            with open(success_file, 'w') as f:
+                pass
+            
+            job_info = {
+                "job_type": "relion_ab_initio_reconstruction",
+                "status": "completed",
+                "output_dir": full_output_dir,
+                "input_star": input_star,
+                "initial_model": initial_model,
+                "model_star": model_star,
+                "command": " ".join(cmd) + " && " + " ".join(align_cmd),
+                "stdout": result.stdout + "\n" + result2.stdout,
+                "stderr": result.stderr + "\n" + result2.stderr
+            }
+            
+            self._job_cache[job_dir_relative] = job_info
+            
+            print(f"✅ RELION ab initio reconstruction completed successfully!")
+            print(f"Output directory: {full_output_dir}")
+            print(f"Initial model: {initial_model}")
+            
+            return job_info
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to run ab initio reconstruction: {e}")
+    
+    def refinement_3d(
+        self,
+        input_star: str,
+        ref_mrc: str,
+        output_dir: str = "Refine3D",
+        sym: str = "C1",
+        particle_diameter: float = 260.0,
+        oversampling: int = 1,
+        healpix_order: int = 2,
+        auto_local_healpix_order: int = 4,
+        offset_range: float = 5.0,
+        offset_step: float = 2.0,
+        pool: int = 3,
+        pad: int = 2,
+        j: int = 2,
+        gpu: Optional[str] = None,
+        ctf: bool = True,
+        flatten_solvent: bool = True,
+        zero_mask: bool = True,
+        dont_combine_weights_via_disc: bool = True,
+        auto_refine: bool = True,
+        split_random_halves: bool = True,
+        firstiter_cc: bool = True,
+        trust_ref_size: bool = True,
+        ini_high: float = 60.0,
+        low_resol_join_halves: float = 40.0,
+        norm: bool = True,
+        scale: bool = True,
+        wait_for_completion: bool = False,
+        timeout: int = 86400,
+        check_interval: int = 30,
+        use_backend: bool = False,
+        conda_env: str = "relion-5.0",
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Perform 3D refinement (auto-refinement) of particles.
+        
+        Args:
+            input_star: Path to input particles STAR file
+            ref_mrc: Path to reference 3D map (MRC file)
+            output_dir: Output directory for the job (default: "Refine3D")
+            sym: Symmetry group (default: "C1")
+            particle_diameter: Diameter of particles in Angstroms
+            oversampling: Adaptive oversampling order
+            healpix_order: Healpix order for angular sampling
+            auto_local_healpix_order: Auto local healpix order
+            offset_range: Search range for origin offsets in pixels
+            offset_step: Sampling rate for origin offsets in pixels
+            pool: Number of images to pool for each thread task
+            pad: Padding factor
+            j: Number of threads to run in parallel
+            gpu: GPU ID(s) to use. Empty string ("") means use default GPU (just --gpu flag),
+                 non-empty string (e.g., "0" or "0,1") specifies GPU ID(s)
+            ctf: Perform CTF correction
+            flatten_solvent: Flatten solvent region
+            zero_mask: Zero mask outside particle diameter
+            dont_combine_weights_via_disc: Don't combine weights via disc
+            auto_refine: Perform auto-refinement
+            split_random_halves: Split data into random halves for validation
+            firstiter_cc: Use cross-correlation in first iteration
+            trust_ref_size: Trust reference size
+            ini_high: Initial high resolution limit in Angstroms
+            low_resol_join_halves: Low resolution limit for joining halves in Angstroms
+            norm: Perform normalization-error correction
+            scale: Perform intensity-scale corrections
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            check_interval: Time between status checks in seconds
+            use_backend: Whether to run in backend mode
+            conda_env: Conda environment name
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            # Find the next job number for the output directory
+            full_output_dir = self._get_next_job_directory(output_dir)
+            
+            # Extract the relative job directory for caching
+            job_dir_relative = os.path.relpath(full_output_dir, self.relion_dir)
+            
+            # Find relion_refine_mpi in PATH
+            cmd = ["which", "relion_refine_mpi"]
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=10
+            )
+            
+            if result.returncode != 0 or not result.stdout.strip():
+                # Fallback to relion_refine if relion_refine_mpi is not available
+                cmd = ["which", "relion_refine"]
+                result = subprocess.run(
+                    cmd, capture_output=True, text=True, timeout=10
+                )
+                if result.returncode != 0 or not result.stdout.strip():
+                    raise RuntimeError("relion_refine_mpi or relion_refine not found in PATH")
+            
+            refine_path = result.stdout.strip()
+            
+            # Build command
+            cmd = ['mpirun',
+                '-np', str(3),
+                refine_path,
+                "--o", os.path.join(full_output_dir, "run"),
+                "--i", input_star,
+                "--ref", ref_mrc,
+                "--sym", sym,
+                "--particle_diameter", str(particle_diameter),
+                "--oversampling", str(oversampling),
+                "--healpix_order", str(healpix_order),
+                "--auto_local_healpix_order", str(auto_local_healpix_order),
+                "--offset_range", str(offset_range),
+                "--offset_step", str(offset_step),
+                "--pool", str(pool),
+                "--pad", str(pad),
+                "--j", str(j),
+                "--ini_high", str(ini_high),
+                "--low_resol_join_halves", str(low_resol_join_halves),
+                "--pipeline_control", full_output_dir + "/"
+            ]
+            
+            # Add optional boolean flags
+            if auto_refine:
+                cmd.append("--auto_refine")
+            if split_random_halves:
+                cmd.append("--split_random_halves")
+            if firstiter_cc:
+                cmd.append("--firstiter_cc")
+            if trust_ref_size:
+                cmd.append("--trust_ref_size")
+            if ctf:
+                cmd.append("--ctf")
+            if flatten_solvent:
+                cmd.append("--flatten_solvent")
+            if zero_mask:
+                cmd.append("--zero_mask")
+            if dont_combine_weights_via_disc:
+                cmd.append("--dont_combine_weights_via_disc")
+            if norm:
+                cmd.append("--norm")
+            if scale:
+                cmd.append("--scale")
+            
+            # Handle GPU parameter
+            if gpu is not None:
+                if gpu == "":
+                    cmd.append("--gpu")
+                else:
+                    cmd.extend(["--gpu", str(gpu)])
+            
+            # Add additional parameters from kwargs
+            for key, value in kwargs.items():
+                if value is not None:
+                    if isinstance(value, bool) and value:
+                        cmd.append(f"--{key}")
+                    else:
+                        cmd.extend([f"--{key}", str(value)])
+            
+            print(f"Running RELION 3D refinement command: {' '.join(cmd)}")
+            
+            if use_backend:
+                if not self._backend_enabled:
+                    raise RuntimeError("Backend execution is not enabled. Call enable_backend_execution(True) first.")
+                
+                env = os.environ.copy()
+                env['DISPLAY'] = ''
+                env['QT_QPA_PLATFORM'] = 'offscreen'
+                env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+                env['QT_SCALE_FACTOR'] = '1'
+                
+                conda_cmd = [
+                    "conda", "run", "-n", conda_env,
+                    "bash", "-c",
+                    f"cd {self.relion_dir} && {' '.join(cmd)}"
+                ]
+                
+                process = subprocess.Popen(
+                    conda_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    cwd=self.relion_dir,
+                    preexec_fn=os.setsid if os.name != 'nt' else None
+                )
+                
+                job_info = {
+                    "job_type": "relion_3d_refinement",
+                    "status": "running",
+                    "output_dir": full_output_dir,
+                    "input_star": input_star,
+                    "ref_mrc": ref_mrc,
+                    "command": " ".join(cmd),
+                    "process_id": process.pid,
+                    "started_at": time.time()
+                }
+                self._job_cache[job_dir_relative] = job_info
+                print(f"🚀 Started backend 3D refinement job (PID {process.pid}) in conda env '{conda_env}'")
+                return job_info
+            
+            # Non-backend: run and wait
+            env = os.environ.copy()
+            env['DISPLAY'] = ''
+            env['QT_QPA_PLATFORM'] = 'offscreen'
+            env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+            env['QT_SCALE_FACTOR'] = '1'
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+                cwd=self.relion_dir
+            )
+            
+            if result.returncode != 0:
+                raise RuntimeError(f"RELION 3D refinement failed: {result.stderr}")
+            
+            job_info = {
+                "job_type": "relion_3d_refinement",
+                "status": "completed",
+                "output_dir": full_output_dir,
+                "input_star": input_star,
+                "ref_mrc": ref_mrc,
+                "command": " ".join(cmd),
+                "stdout": result.stdout,
+                "stderr": result.stderr
+            }
+            
+            self._job_cache[job_dir_relative] = job_info
+            
+            print(f"✅ RELION 3D refinement completed successfully!")
+            print(f"Output directory: {full_output_dir}")
+            
+            return job_info
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to run 3D refinement: {e}")
+    
     

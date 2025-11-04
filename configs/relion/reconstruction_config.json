@@ -1,0 +1,159 @@
+{
+  "stage_info": {
+    "name": "reconstruction",
+    "description": "3D reconstruction stage: Ab initio reconstruction and 3D refinement using RELION",
+    "version": "1.0.0"
+  },
+  "required_inputs": [
+    "particles_star",
+    "particle_diameter",
+    "symmetry"
+  ],
+  "outputs": [
+    "initial_model",
+    "refined_map",
+    "refined_particles",
+    "refined_optimiser",
+    "fsc_data"
+  ],
+  "workflow": {
+    "ab_initio_reconstruction": {
+      "iter": 200,
+      "K": 1,
+      "sym": "C1",
+      "particle_diameter": 200.0,
+      "oversampling": 1,
+      "healpix_order": 1,
+      "offset_range": 6.0,
+      "offset_step": 2.0,
+      "tau2_fudge": 4.0,
+      "pool": 3,
+      "pad": 1,
+      "j": 4,
+      "gpu": "0,1",
+      "ctf": true,
+      "flatten_solvent": true,
+      "zero_mask": true,
+      "dont_combine_weights_via_disc": true,
+      "auto_sampling": true,
+      "grad": true,
+      "denovo_3dref": true
+    },
+    "refinement_3d": {
+      "sym": "D7",
+      "particle_diameter": 260.0,
+      "oversampling": 1,
+      "healpix_order": 2,
+      "auto_local_healpix_order": 4,
+      "offset_range": 5.0,
+      "offset_step": 2.0,
+      "pool": 3,
+      "pad": 2,
+      "j": 2,
+      "gpu": "",
+      "ctf": true,
+      "flatten_solvent": true,
+      "zero_mask": true,
+      "dont_combine_weights_via_disc": true,
+      "auto_refine": true,
+      "split_random_halves": true,
+      "firstiter_cc": true,
+      "trust_ref_size": true,
+      "ini_high": 60.0,
+      "low_resol_join_halves": 40.0,
+      "norm": true,
+      "scale": true
+    }
+  },
+  "react_workflow": {
+    "steps": [
+      {
+        "name": "ab_initio_reconstruction",
+        "description": "Perform ab initio 3D reconstruction (de novo 3D refinement) from particles without a reference. This runs relion_refine with --denovo_3dref flag, then aligns symmetry using relion_align_symmetry to create an initial 3D model.",
+        "required_params": [
+          "input_star",
+          "particle_diameter",
+          "sym"
+        ],
+        "optional_params": [
+          "iter",
+          "K",
+          "oversampling",
+          "healpix_order",
+          "offset_range",
+          "offset_step",
+          "tau2_fudge",
+          "pool",
+          "pad",
+          "j",
+          "gpu",
+          "ctf",
+          "flatten_solvent",
+          "zero_mask",
+          "dont_combine_weights_via_disc",
+          "auto_sampling",
+          "grad",
+          "denovo_3dref"
+        ],
+        "depends_on": [],
+        "input_requirements": {
+          "input_star": "Path to particles STAR file from particle picking/selection stage (e.g., Select/jobXXX/particles.star)"
+        },
+        "output_files": {
+          "initial_model": "InitialModel/jobXXX/initial_model.mrc",
+          "model_star": "InitialModel/jobXXX/run_it200_model.star",
+          "optimiser_star": "InitialModel/jobXXX/run_it200_optimiser.star",
+          "pipeline_control": "InitialModel/jobXXX/RELION_JOB_EXIT_SUCCESS"
+        }
+      },
+      {
+        "name": "refinement_3d",
+        "description": "Perform 3D refinement (auto-refinement) of particles using a reference map. This runs relion_refine_mpi (or relion_refine) with --auto_refine flag to refine the 3D structure with split random halves validation.",
+        "required_params": [
+          "input_star",
+          "ref_mrc",
+          "particle_diameter",
+          "sym"
+        ],
+        "optional_params": [
+          "oversampling",
+          "healpix_order",
+          "auto_local_healpix_order",
+          "offset_range",
+          "offset_step",
+          "pool",
+          "pad",
+          "j",
+          "gpu",
+          "ctf",
+          "flatten_solvent",
+          "zero_mask",
+          "dont_combine_weights_via_disc",
+          "auto_refine",
+          "split_random_halves",
+          "firstiter_cc",
+          "trust_ref_size",
+          "ini_high",
+          "low_resol_join_halves",
+          "norm",
+          "scale"
+        ],
+        "depends_on": [
+          "ab_initio_reconstruction"
+        ],
+        "input_requirements": {
+          "input_star": "Path to particles STAR file from particle picking/selection stage (e.g., Select/jobXXX/particles.star or Extract/jobXXX/particles.star)",
+          "ref_mrc": "Path to reference 3D map (MRC file) from ab initio reconstruction (e.g., InitialModel/jobXXX/initial_model.mrc) or previous refinement"
+        },
+        "output_files": {
+          "refined_map": "Refine3D/jobXXX/run_class001.mrc",
+          "refined_particles": "Refine3D/jobXXX/run_data.star",
+          "refined_optimiser": "Refine3D/jobXXX/run_optimiser.star",
+          "fsc_data": "Refine3D/jobXXX/run_model.star",
+          "pipeline_control": "Refine3D/jobXXX/RELION_JOB_EXIT_SUCCESS"
+        }
+      }
+    ]
+  }
+}
+

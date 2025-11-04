@@ -668,30 +668,54 @@ class ReconstructionAgent(StageAgent):
     
     def __init__(self, config_path: str):
         super().__init__("reconstruction", config_path)
+        self.backend_type = None  # Will be set during initialization
     
     def initialize(self) -> bool:
-        """Initialize the reconstruction agent."""
+        """Initialize the reconstruction agent with modular architecture."""
         try:
-            from .cryosparc_reconstruction import ReconstructionAgent as ModularReconstructionAgent
-            from .cryosparc_reconstruction import ReconstructionWorkflow
-            
             # Load basic configuration
             master_config_path = "configs/master_config.json"
             config_loader = ConfigLoader(self.config_path, master_config_path)
             self.config = config_loader.load_config()
             
-            # Initialize CryoSPARC tools
-            self.cryosparc_tools = CryoSPARCTools(self.config.cryosparc)
+            # Detect backend type from config path
+            # RELION configs are in configs/relion/, CryoSPARC in configs/cryosparc/
             
-            # Initialize modular reconstruction agent and workflow
-            self.modular_agent = ModularReconstructionAgent(self.cryosparc_tools, self.config)
-            self.modular_workflow = ReconstructionWorkflow(self.modular_agent, self.config, stage_config_path=self.config_path)
+            if "relion" in self.config_path.lower():
+                # Import and create RELION-specific agent
+                from .relion_reconstruction.reconstruction_agent import ReconstructionAgent as RelionReconstructionAgent
+                from .relion_reconstruction.reconstruction_workflow import ReconstructionWorkflow
+                
+                self.cryosparc_tools = None  # No CryoSPARC tools for RELION
+                self.modular_agent = RelionReconstructionAgent(
+                    config=self.config
+                )
+                self.backend_type = "RELION"
+                
+                # Initialize RELION reconstruction workflow
+                self.modular_workflow = ReconstructionWorkflow(
+                    agent=self.modular_agent,
+                    config=self.config
+                )
+                
+            else:
+                # Default to CryoSPARC reconstruction
+                from .cryosparc_reconstruction import ReconstructionAgent as ModularReconstructionAgent
+                from .cryosparc_reconstruction import ReconstructionWorkflow
+                
+                # Initialize CryoSPARC tools
+                self.cryosparc_tools = CryoSPARCTools(self.config.cryosparc)
+                
+                # Initialize modular reconstruction agent and workflow
+                self.modular_agent = ModularReconstructionAgent(self.cryosparc_tools, self.config)
+                self.modular_workflow = ReconstructionWorkflow(self.modular_agent, self.config, stage_config_path=self.config_path)
+                self.backend_type = "CryoSPARC"
             
             # Set stage name and workflow type for conversation logging
             self.modular_agent.stage_name = "reconstruction"
             self.modular_agent.workflow_type = "cryoem"
             
-            self.logger.info(f"Stage agent {self.stage_name} initialized with modular reconstruction agent")
+            self.logger.info(f"Stage agent {self.stage_name} initialized with {self.backend_type} backend")
             return True
             
         except Exception as e:
@@ -703,71 +727,126 @@ class ReconstructionAgent(StageAgent):
         start_time = time.time()
         
         try:
-            # Get particles job UID from context (from picking stage)
-            particles_job_uid = context.stage_outputs.get("picked_particles")
-            if not particles_job_uid:
-                # Try alternative sources
-                particles_job_uid = context.stage_outputs.get("selected_particles")
-                if not particles_job_uid:
-                    particles_job_uid = context.stage_outputs.get("final_selection_job_uid")
+            # Detect backend type
+            backend_type = getattr(self, 'backend_type', None)
+            if not backend_type:
+                # Fallback: detect from config path
+                backend_type = "RELION" if "relion" in self.config_path.lower() else "CryoSPARC"
             
-            # If still not found, try to read from particle picking output JSON file
-            if not particles_job_uid:
-                particles_job_uid = self._get_particles_from_output_file()
-            
-            if not particles_job_uid:
+            if backend_type == "RELION":
+                # For RELION, get final_star_file from picking results
+                final_star_file = context.stage_outputs.get("final_star_file")
+                if not final_star_file:
+                    # Try to read from particle picking output JSON file
+                    final_star_file = self._get_relion_particles_from_output_file()
+                
+                if not final_star_file:
+                    return StageResult(
+                        stage=WorkflowStage.RECONSTRUCTION,
+                        success=False,
+                        error="No final_star_file found in context or output files. Please complete particle picking first.",
+                        execution_time=time.time() - start_time
+                    )
+                
+                self.logger.info(f"Starting RELION 3D reconstruction with particles from: {final_star_file}")
+                
+                # Run the RELION reconstruction workflow with final_star_file
+                results = self.modular_workflow.run(final_star_file=final_star_file, conversation_id=conversation_id)
+                
+                # Extract stage outputs from workflow results
+                stage_outputs = {}
+                if hasattr(self.modular_agent, 'workflow_state'):
+                    # Get outputs from workflow state
+                    if self.modular_agent.workflow_state.get("ab_initio_reconstruction", {}).get("completed"):
+                        ab_initio_state = self.modular_agent.workflow_state["ab_initio_reconstruction"]
+                        stage_outputs["initial_model"] = ab_initio_state.get("initial_model")
+                        stage_outputs["ab_initio_job_dir"] = ab_initio_state.get("job_dir")
+                    
+                    if self.modular_agent.workflow_state.get("refinement_3d", {}).get("completed"):
+                        refinement_state = self.modular_agent.workflow_state["refinement_3d"]
+                        stage_outputs["refined_map"] = refinement_state.get("output_file")
+                        stage_outputs["refinement_job_dir"] = refinement_state.get("job_dir")
+                
+                stage_outputs["final_star_file"] = final_star_file
+                
+                # Save results to JSON
+                output_file = self._save_reconstruction_results(stage_outputs, context, success=True)
+                stage_outputs["output_file"] = output_file
+                
                 return StageResult(
                     stage=WorkflowStage.RECONSTRUCTION,
-                    success=False,
-                    error="No particles job UID found in context or output files. Please complete particle picking first.",
-                    execution_time=time.time() - start_time
-                )
-            
-            self.logger.info(f"Starting 3D reconstruction with particles from job {particles_job_uid}")
-            
-            # Check if refinement is enabled in config
-            refinement_type = self.modular_workflow.workflow_params.get('refinement_type', 'none')
-            run_refinement = refinement_type != 'none'
-            
-            if run_refinement:
-                self.logger.info(f"Refinement enabled: {refinement_type}")
-            else:
-                self.logger.info("Refinement disabled (set refinement.type in config to enable)")
-            
-            # Run the modular workflow
-            results = self.modular_workflow.run(
-                particles_job_uid=particles_job_uid,
-                conversation_id=conversation_id,
-                run_refinement=run_refinement
-            )
-            
-            # Extract stage outputs
-            stage_outputs = self._extract_reconstruction_outputs(results)
-            
-            # Validate results
-            validation = self._validate_reconstruction_results(stage_outputs)
-            
-            if not validation["success"]:
-                return StageResult(
-                    stage=WorkflowStage.RECONSTRUCTION,
-                    success=False,
-                    error=validation["error"],
+                    success=True,
                     stage_outputs=stage_outputs,
                     execution_time=time.time() - start_time
                 )
             
-            # Save results to JSON
-            output_file = self._save_reconstruction_results(stage_outputs, context, success=True)
-            
-            # Add output file path to stage_outputs for reference
-            stage_outputs["output_file"] = output_file
-            
-            return StageResult(
-                stage=WorkflowStage.RECONSTRUCTION,
-                success=True,
-                stage_outputs=stage_outputs,
-                execution_time=time.time() - start_time
-            )
+            else:
+                # CryoSPARC path - original logic
+                # Get particles job UID from context (from picking stage)
+                particles_job_uid = context.stage_outputs.get("picked_particles")
+                if not particles_job_uid:
+                    # Try alternative sources
+                    particles_job_uid = context.stage_outputs.get("selected_particles")
+                    if not particles_job_uid:
+                        particles_job_uid = context.stage_outputs.get("final_selection_job_uid")
+                
+                # If still not found, try to read from particle picking output JSON file
+                if not particles_job_uid:
+                    particles_job_uid = self._get_particles_from_output_file()
+                
+                if not particles_job_uid:
+                    return StageResult(
+                        stage=WorkflowStage.RECONSTRUCTION,
+                        success=False,
+                        error="No particles job UID found in context or output files. Please complete particle picking first.",
+                        execution_time=time.time() - start_time
+                    )
+                
+                self.logger.info(f"Starting 3D reconstruction with particles from job {particles_job_uid}")
+                
+                # Check if refinement is enabled in config
+                refinement_type = self.modular_workflow.workflow_params.get('refinement_type', 'none')
+                run_refinement = refinement_type != 'none'
+                
+                if run_refinement:
+                    self.logger.info(f"Refinement enabled: {refinement_type}")
+                else:
+                    self.logger.info("Refinement disabled (set refinement.type in config to enable)")
+                
+                # Run the modular workflow
+                results = self.modular_workflow.run(
+                    particles_job_uid=particles_job_uid,
+                    conversation_id=conversation_id,
+                    run_refinement=run_refinement
+                )
+                
+                # Extract stage outputs
+                stage_outputs = self._extract_reconstruction_outputs(results)
+                
+                # Validate results
+                validation = self._validate_reconstruction_results(stage_outputs)
+                
+                if not validation["success"]:
+                    return StageResult(
+                        stage=WorkflowStage.RECONSTRUCTION,
+                        success=False,
+                        error=validation["error"],
+                        stage_outputs=stage_outputs,
+                        execution_time=time.time() - start_time
+                    )
+                
+                # Save results to JSON
+                output_file = self._save_reconstruction_results(stage_outputs, context, success=True)
+                
+                # Add output file path to stage_outputs for reference
+                stage_outputs["output_file"] = output_file
+                
+                return StageResult(
+                    stage=WorkflowStage.RECONSTRUCTION,
+                    success=True,
+                    stage_outputs=stage_outputs,
+                    execution_time=time.time() - start_time
+                )
             
         except Exception as e:
             self.logger.error(f"3D reconstruction stage failed: {e}")
@@ -784,9 +863,58 @@ class ReconstructionAgent(StageAgent):
     def get_required_inputs(self) -> List[str]:
         return ["picked_particles", "selected_particles"]
     
+    def _get_relion_particles_from_output_file(self) -> Optional[str]:
+        """
+        Read final_star_file from RELION particle picking output JSON file.
+        
+        Returns:
+            Path to final STAR file if found, None otherwise
+        """
+        import json
+        from pathlib import Path
+        
+        try:
+            # Find the most recent particle picking results file
+            outputs_path = Path("outputs")
+            if not outputs_path.exists():
+                return None
+            
+            # Search for particle picking result files
+            result_files = list(outputs_path.glob("particle_picking_results_*.json"))
+            if not result_files:
+                return None
+            
+            # Get the most recent file
+            latest_file = max(result_files, key=lambda f: f.stat().st_mtime)
+            self.logger.info(f"Reading final_star_file from {latest_file}")
+            
+            # Read the JSON file
+            with open(latest_file, 'r') as f:
+                picking_results = json.load(f)
+            
+            # Check if this is a RELION output (has agent_type field)
+            agent_type = picking_results.get("agent_type", "")
+            if agent_type != "relion":
+                self.logger.warning(f"Particle picking output is not from RELION (agent_type: {agent_type})")
+                return None
+            
+            # Get final_star_file for RELION
+            final_star_file = picking_results.get("final_star_file")
+            
+            if final_star_file:
+                self.logger.info(f"Found final_star_file from output file: {final_star_file}")
+            else:
+                self.logger.warning("No final_star_file found in RELION particle picking output file")
+            
+            return final_star_file
+            
+        except Exception as e:
+            self.logger.warning(f"Failed to read final_star_file from output file: {e}")
+            return None
+    
     def _get_particles_from_output_file(self) -> Optional[str]:
         """
-        Read particles job UID from particle picking output JSON file.
+        Read particles job UID from particle picking output JSON file (CryoSPARC format).
         
         Returns:
             Particles job UID if found, None otherwise
