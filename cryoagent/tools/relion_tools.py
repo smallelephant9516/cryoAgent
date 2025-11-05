@@ -6,6 +6,7 @@ import subprocess
 import shutil
 import threading
 import signal
+import shlex
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 from ..config.config_loader import RELIONSettings
@@ -320,10 +321,16 @@ class RELIONTools:
                 env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
                 env['QT_SCALE_FACTOR'] = '1'
 
+                # When using bash -c with a string command, we need to quote all arguments
+                # to prevent shell expansion (especially important for glob patterns like *.tif).
+                # This ensures RELION receives the pattern string and expands it internally.
+                cmd_parts = [shlex.quote(arg) for arg in cmd]
+                cmd_str = ' '.join(cmd_parts)
+                
                 conda_cmd = [
                     "conda", "run", "-n", conda_env,
                     "bash", "-c",
-                    f"cd {self.relion_dir} && {' '.join(cmd)}"
+                    f"cd {shlex.quote(self.relion_dir)} && {cmd_str}"
                 ]
 
                 process = subprocess.Popen(

@@ -40,7 +40,7 @@
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
     "continue_job": true,
-    "relion_dir": "/home/daoyi/relion/relion_test2",
+    "relion_dir": "/home/daoyi/relion/relion_agent",
     "backend_execution": {
       "enabled": true,
       "default_timeout": 3600,

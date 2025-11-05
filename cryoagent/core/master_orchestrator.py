@@ -769,8 +769,8 @@ class ReconstructionAgent(StageAgent):
                 
                 stage_outputs["final_star_file"] = final_star_file
                 
-                # Save results to JSON
-                output_file = self._save_reconstruction_results(stage_outputs, context, success=True)
+                # Save results to JSON (RELION format)
+                output_file = self._save_reconstruction_results(stage_outputs, context, success=True, backend_type="RELION")
                 stage_outputs["output_file"] = output_file
                 
                 return StageResult(
@@ -835,8 +835,8 @@ class ReconstructionAgent(StageAgent):
                         execution_time=time.time() - start_time
                     )
                 
-                # Save results to JSON
-                output_file = self._save_reconstruction_results(stage_outputs, context, success=True)
+                # Save results to JSON (CryoSPARC format)
+                output_file = self._save_reconstruction_results(stage_outputs, context, success=True, backend_type="CryoSPARC")
                 
                 # Add output file path to stage_outputs for reference
                 stage_outputs["output_file"] = output_file
@@ -984,9 +984,10 @@ class ReconstructionAgent(StageAgent):
             "error": None
         }
     
-    def _save_reconstruction_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True) -> str:
+    def _save_reconstruction_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True, backend_type: str = "CryoSPARC") -> str:
         """Save 3D reconstruction results to a JSON file."""
         import datetime
+        import os
         from pathlib import Path
         
         # Create output directory if it doesn't exist
@@ -997,35 +998,84 @@ class ReconstructionAgent(StageAgent):
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         status = "completed" if success else "failed"
         
-        reconstruction_results = {
-            "stage": "3d_reconstruction",
-            "status": status,
-            "timestamp": timestamp,
-            "project_uid": context.project_uid,
-            "workspace_uid": context.workspace_uid,
-            "input_particles_job_uid": context.metadata.get("input_particles_job_uid"),
-            "reconstruction_type": stage_outputs.get("reconstruction_type"),
-            "job_uids": {
-                "ab_initio": stage_outputs.get("ab_initio_job_uid"),
-                "homogeneous_reconstruction": stage_outputs.get("homogeneous_reconstruction_job_uid"),
-                "homogeneous_refinement": stage_outputs.get("homogeneous_refinement_job_uid"),
-                "heterogeneous_refinement": stage_outputs.get("heterogeneous_refinement_job_uid"),
-                "final_volume": stage_outputs.get("final_volume_job_uid")
-            },
-            "outputs": {
-                "final_volume_job_uid": stage_outputs.get("final_volume_job_uid"),
-                "volume_location": stage_outputs.get("volume_location"),
-                "final_volume_absolute_path": stage_outputs.get("final_volume_absolute_path")
-            },
-            "usage_notes": {
-                "next_stage": "refinement_or_analysis",
-                "volume_usage": "Use the final_volume_job_uid for further refinement or analysis",
-                "final_volume_path": "The final_volume_absolute_path field contains the absolute path to the job directory with the reconstructed volume"
+        if backend_type == "RELION":
+            # RELION format: simplified structure matching particle_picking format
+            # Get the folder containing the final density (refinement job directory)
+            final_volume_folder = stage_outputs.get("refinement_job_dir")
+            if not final_volume_folder:
+                # Fallback to ab_initio job directory if refinement not available
+                final_volume_folder = stage_outputs.get("ab_initio_job_dir")
+            
+            # Convert to absolute path if it's relative
+            if final_volume_folder:
+                if not os.path.isabs(final_volume_folder):
+                    # Try to get RELION directory from modular_agent's relion_tools
+                    relion_dir = None
+                    if hasattr(self, 'modular_agent') and hasattr(self.modular_agent, 'relion_tools'):
+                        relion_dir = self.modular_agent.relion_tools.relion_dir
+                    elif hasattr(self, 'relion_dir'):
+                        relion_dir = self.relion_dir
+                    else:
+                        # Try to get from config
+                        try:
+                            from ..config.config_loader import ConfigLoader
+                            config_loader = ConfigLoader(self.config_path, "configs/master_config.json")
+                            config = config_loader.load_config()
+                            relion_dir = config.relion.relion_dir
+                        except:
+                            relion_dir = "."
+                    
+                    final_volume_folder = os.path.join(relion_dir, final_volume_folder)
+                    final_volume_folder = os.path.abspath(final_volume_folder)
+            
+            reconstruction_results = {
+                "timestamp": timestamp,
+                "status": status,
+                "stage": "3d_reconstruction",
+                "agent_type": "relion",
+                "final_volume_folder": final_volume_folder,
+                "metadata": {
+                    "workflow_type": getattr(context, 'workflow_type', context.metadata.get("workflow_type", "unknown")),
+                    "start_time": getattr(context, 'start_time', context.metadata.get("start_time", None)),
+                    "conversation_id": getattr(context, 'conversation_id', context.metadata.get("conversation_id", None))
+                }
             }
-        }
+            
+            # Save to JSON file with RELION naming convention
+            output_file = output_dir / f"3d_reconstruction_results_relion_{timestamp}.json"
+            
+        else:
+            # CryoSPARC format: original structure
+            reconstruction_results = {
+                "stage": "3d_reconstruction",
+                "status": status,
+                "timestamp": timestamp,
+                "project_uid": context.project_uid,
+                "workspace_uid": context.workspace_uid,
+                "input_particles_job_uid": context.metadata.get("input_particles_job_uid"),
+                "reconstruction_type": stage_outputs.get("reconstruction_type"),
+                "job_uids": {
+                    "ab_initio": stage_outputs.get("ab_initio_job_uid"),
+                    "homogeneous_reconstruction": stage_outputs.get("homogeneous_reconstruction_job_uid"),
+                    "homogeneous_refinement": stage_outputs.get("homogeneous_refinement_job_uid"),
+                    "heterogeneous_refinement": stage_outputs.get("heterogeneous_refinement_job_uid"),
+                    "final_volume": stage_outputs.get("final_volume_job_uid")
+                },
+                "outputs": {
+                    "final_volume_job_uid": stage_outputs.get("final_volume_job_uid"),
+                    "volume_location": stage_outputs.get("volume_location"),
+                    "final_volume_absolute_path": stage_outputs.get("final_volume_absolute_path")
+                },
+                "usage_notes": {
+                    "next_stage": "refinement_or_analysis",
+                    "volume_usage": "Use the final_volume_job_uid for further refinement or analysis",
+                    "final_volume_path": "The final_volume_absolute_path field contains the absolute path to the job directory with the reconstructed volume"
+                }
+            }
+            
+            # Save to JSON file with CryoSPARC naming convention
+            output_file = output_dir / f"3d_reconstruction_results_{timestamp}.json"
         
-        # Save to JSON file
-        output_file = output_dir / f"3d_reconstruction_results_{timestamp}.json"
         with open(output_file, 'w') as f:
             json.dump(reconstruction_results, f, indent=2)
         

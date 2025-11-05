@@ -41,7 +41,7 @@
     },
     "refinement_3d": {
       "sym": "D7",
-      "particle_diameter": 260.0,
+      "particle_diameter": 200.0,
       "oversampling": 1,
       "healpix_order": 2,
       "auto_local_healpix_order": 4,
