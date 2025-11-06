@@ -171,7 +171,7 @@ This is a TWO-ROUND workflow for improved particle picking quality.
 
 8. **Auto 2D Selection (Round 2)**: Select best classes with HIGHER threshold
    - Input: Use optimiser STAR file from classification_2d_2 step (automatically detected)
-   - IMPORTANT: Use HIGHER min_score threshold for better quality selection (e.g., 0.5 or higher instead of {selection_config.get('min_score', 0.05)})
+   - IMPORTANT: Use min_score=0.5 for better quality selection (higher than round 1's {selection_config.get('min_score', 0.05)})
    - All other selection parameters from config
    - This is the FINAL output
 
@@ -187,7 +187,7 @@ This is a TWO-ROUND workflow for improved particle picking quality.
 - Wait for each job to complete before starting the next
 - Use wait_for_job to monitor job completion for all picking/extraction/classification steps
 - auto_2d_selection runs synchronously and completes immediately - NO waiting needed
-- For round 2 auto_2d_selection, use HIGHER min_score (e.g., 0.1 or higher) for better quality
+- For round 2 auto_2d_selection, use min_score=0.5 (higher than round 1's {selection_config.get('min_score', 0.05)}) for better quality
 - Validate inputs before starting each step using validate_inputs if needed
 - Check job status and logs if any step fails
 - Use reason_about_workflow to analyze current state
@@ -213,7 +213,7 @@ Round 2:
 - Round 2: Use template_picker with input_star and ref_star (auto-detected from round 1).
 - Round 2: Use particle_extraction with ONLY input_star. coord_list auto-detected from template_picker.
 - Round 2: Use classification_2d with ONLY input_star (auto-detected from extraction_2).
-- Round 2: Use auto_2d_selection with input_opt (auto-detected) and HIGHER min_score (e.g., 0.1).
+- Round 2: Use auto_2d_selection with input_opt (auto-detected) and min_score=0.5 (higher threshold for final selection).
 - Always use wait_for_job to monitor job completion before proceeding.
 - Use reason_about_workflow to analyze current state and determine next step.
 

@@ -50,7 +50,7 @@ class PickingAgent(BaseReActAgent):
         # Initialize logger for this agent
         self.logger = logging.getLogger("RelionPickingAgent")
         
-        # Initialize workflow state tracking for both rounds
+            # Initialize workflow state tracking for both rounds
         self.workflow_state = {
             # Round 1
             "blob_picker": {"completed": False, "job_dir": None, "output_file": None},
@@ -63,6 +63,9 @@ class PickingAgent(BaseReActAgent):
             "classification_2d_2": {"completed": False, "job_dir": None, "output_file": None, "optimiser_star": None},
             "auto_2d_selection_2": {"completed": False, "job_dir": None, "output_file": None}
         }
+        
+        # Store the input micrograph location for later use in save_results
+        self.selected_micrographs_star: Optional[str] = None
     
     def _parse_boolean_param(self, value: Any) -> bool:
         """Parse boolean parameter that might be string or boolean."""
@@ -119,6 +122,9 @@ class PickingAgent(BaseReActAgent):
             input_star = params.get('input_star') or params.get('input')
             if not input_star:
                 return "❌ Error: input_star parameter is required"
+            
+            # Store the micrograph location for later use in save_results
+            self.selected_micrographs_star = input_star
             
             # Get blob picker config from JSON file
             blob_picker_config = self._get_workflow_config().get("blob_picker", {})
@@ -1266,13 +1272,33 @@ class PickingAgent(BaseReActAgent):
                 final_star_file = os.path.join(relion_dir, final_star_file)
                 final_star_file = os.path.abspath(final_star_file)
         
-        # Build simplified picking results with only final star file
+        # Get micrograph location (input micrographs STAR file used for picking)
+        micrograph_location = None
+        # Try to get from stage_outputs first
+        if stage_outputs and "selected_micrographs_star" in stage_outputs:
+            micrograph_location = stage_outputs.get("selected_micrographs_star")
+        # If not in stage_outputs, try to get from agent's stored value
+        elif hasattr(self, 'selected_micrographs_star') and self.selected_micrographs_star:
+            micrograph_location = self.selected_micrographs_star
+        # Fallback: try to get from workflow if available
+        elif hasattr(self, 'workflow') and hasattr(self.workflow, 'selected_micrographs_star'):
+            micrograph_location = self.workflow.selected_micrographs_star
+        
+        # Convert micrograph location to absolute path if needed
+        if micrograph_location:
+            if not os.path.isabs(micrograph_location):
+                relion_dir = self.relion_tools.relion_dir
+                micrograph_location = os.path.join(relion_dir, micrograph_location)
+                micrograph_location = os.path.abspath(micrograph_location)
+        
+        # Build simplified picking results with final star file and micrograph location
         picking_results = {
             "timestamp": timestamp,
             "status": status,
             "stage": "particle_picking",
             "agent_type": "relion",
             "final_star_file": final_star_file,
+            "micrograph_location": micrograph_location,
             "metadata": {
                 "workflow_type": getattr(context, 'workflow_type', 'unknown'),
                 "start_time": getattr(context, 'start_time', None),

@@ -37,6 +37,8 @@ class PreprocessingAgent(BaseReActAgent):
         self.logger = logging.getLogger("PreprocessingAgent")
         # Load microscope configuration
         self.microscope_config = self._load_microscope_config()
+        # Load preprocessing workflow configuration
+        self.preprocessing_config = self._load_preprocessing_config()
     
     def _load_microscope_config(self) -> Dict[str, Any]:
         """Load microscope configuration from separate config file."""
@@ -68,6 +70,52 @@ class PreprocessingAgent(BaseReActAgent):
                 "voltage": 300.0,
                 "cs_mm": 2.7,
                 "dose": 53.0
+            }
+    
+    def _load_preprocessing_config(self) -> Dict[str, Any]:
+        """Load preprocessing workflow configuration from separate config file."""
+        try:
+            # Default path for preprocessing config
+            preprocessing_config_path = 'configs/cryosparc/preprocessing_config.json'
+            
+            # If it's a relative path, make it relative to the project root
+            if not Path(preprocessing_config_path).is_absolute():
+                preprocessing_config_path = Path.cwd() / preprocessing_config_path
+            
+            config_path = Path(preprocessing_config_path)
+            
+            if not config_path.exists():
+                print(f"Warning: Preprocessing configuration file not found: {config_path}")
+                # Return default values if loading fails
+                return {
+                    "motion_correction": {
+                        "binning": 1,
+                        "patch_size": 5
+                    },
+                    "ctf_estimation": {
+                        "min_res": 30.0,
+                        "max_res": 4.0
+                    }
+                }
+            
+            with open(config_path, 'r') as f:
+                preprocessing_data = json.load(f)
+            
+            # Return the workflow parameters
+            return preprocessing_data.get('workflow', {})
+            
+        except Exception as e:
+            print(f"Warning: Could not load preprocessing configuration: {e}")
+            # Return default values if loading fails
+            return {
+                "motion_correction": {
+                    "binning": 1,
+                    "patch_size": 5
+                },
+                "ctf_estimation": {
+                    "min_res": 30.0,
+                    "max_res": 4.0
+                }
             }
     
     def _create_tools(self) -> List[Tool]:
@@ -200,12 +248,17 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             params = self._parse_tool_input(input_str)
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            
+            # Safely get preprocessing config values, handling case where it might not be set yet
+            preprocessing_config = getattr(self, 'preprocessing_config', {})
+            motion_correction_config = preprocessing_config.get('motion_correction', {})
+            
             used_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
                 "movies_job_uid": params.get("movies_job_uid"),
-                "binning": int(params.get("binning", self.config.workflow.motion_correction_binning)),
-                "patch_size": int(params.get("patch_size", self.config.workflow.motion_correction_patch_size)),
+                "binning": int(params.get("binning", motion_correction_config.get("binning", 1))),
+                "patch_size": int(params.get("patch_size", motion_correction_config.get("patch_size", 5))),
                 "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
                 "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
                 "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
@@ -228,12 +281,17 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             params = self._parse_tool_input(input_str)
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            
+            # Safely get preprocessing config values, handling case where it might not be set yet
+            preprocessing_config = getattr(self, 'preprocessing_config', {})
+            ctf_config = preprocessing_config.get('ctf_estimation', {})
+            
             used_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
                 "micrographs_job_uid": params.get("micrographs_job_uid"),
-                "min_res": float(params.get("min_res", self.config.workflow.ctf_min_res)),
-                "max_res": float(params.get("max_res", self.config.workflow.ctf_max_res)),
+                "min_res": float(params.get("min_res", ctf_config.get("min_res", 30.0))),
+                "max_res": float(params.get("max_res", ctf_config.get("max_res", 4.0))),
                 "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
                 "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
                 "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
