@@ -64,6 +64,17 @@ class RELIONTools:
         except Exception:
             return {}
     
+    def _format_command(self, cmd: List[Any]) -> str:
+        """Format a command list into a shell-safe string representation."""
+        quoted_args: List[str] = []
+        for arg in cmd:
+            arg_str = str(arg)
+            if arg_str == "":
+                quoted_args.append('""')
+            else:
+                quoted_args.append(shlex.quote(arg_str))
+        return " ".join(quoted_args)
+
     def _convert_to_relative_path(self, absolute_path: str) -> str:
         """
         Convert an absolute path to a relative path within the RELION working directory.
@@ -308,7 +319,7 @@ class RELIONTools:
                 if value is not None:
                     cmd.extend([f"--{key}", str(value)])
             
-            print(f"Running RELION import movies command: {' '.join(cmd)}")
+            print(f"Running RELION import movies command: {self._format_command(cmd)}")
 
             # If backend execution is requested, wrap with conda and launch without waiting
             if use_backend:
@@ -321,11 +332,10 @@ class RELIONTools:
                 env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
                 env['QT_SCALE_FACTOR'] = '1'
 
-                # When using bash -c with a string command, we need to quote all arguments
+                # When using bash -c with a string command, ensure arguments are safely quoted
                 # to prevent shell expansion (especially important for glob patterns like *.tif).
-                # This ensures RELION receives the pattern string and expands it internally.
-                cmd_parts = [shlex.quote(arg) for arg in cmd]
-                cmd_str = ' '.join(cmd_parts)
+                # _format_command handles the quoting for us.
+                cmd_str = self._format_command(cmd)
                 
                 conda_cmd = [
                     "conda", "run", "-n", conda_env,
@@ -348,7 +358,7 @@ class RELIONTools:
                     "status": "running",
                     "output_dir": full_output_dir,
                     "output_file": os.path.join(full_output_dir, output_file),
-                    "command": " ".join(cmd),
+                    "command": self._format_command(cmd),
                     "process_id": process.pid,
                     "started_at": time.time()
                 }
@@ -381,7 +391,7 @@ class RELIONTools:
                 "status": "completed",
                 "output_dir": full_output_dir,
                 "output_file": os.path.join(full_output_dir, output_file),
-                "command": " ".join(cmd),
+                "command": self._format_command(cmd),
                 "stdout": result.stdout,
                 "stderr": result.stderr
             }
@@ -511,7 +521,7 @@ class RELIONTools:
             for key, value in kwargs.items():
                 if value is not None:
                     cmd.extend([f"--{key}", str(value)])
-            print(f"Running RELION motion correction command: {' '.join(cmd)}")
+            print(f"Running RELION motion correction command: {self._format_command(cmd)}")
 
             if use_backend:
                 if not self._backend_enabled:
@@ -526,7 +536,7 @@ class RELIONTools:
                 conda_cmd = [
                     "conda", "run", "-n", conda_env,
                     "bash", "-c",
-                    f"cd {self.relion_dir} && {' '.join(cmd)}"
+                    f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
                 process = subprocess.Popen(
                     conda_cmd,
@@ -543,7 +553,7 @@ class RELIONTools:
                     "output_dir": full_output_dir,
                     "output_file": os.path.join(full_output_dir, "corrected_micrographs.star"),
                     "input_star": input_star,
-                    "command": " ".join(cmd),
+                    "command": self._format_command(cmd),
                     "process_id": process.pid,
                     "started_at": time.time()
                 }
@@ -582,7 +592,7 @@ class RELIONTools:
                 "output_dir": full_output_dir,
                 "output_file": output_file,
                 "input_star": input_star,
-                "command": " ".join(cmd),
+                "command": self._format_command(cmd),
                 "stdout": result.stdout,
                 "stderr": result.stderr
             }
@@ -686,7 +696,7 @@ class RELIONTools:
             for key, value in kwargs.items():
                 if value is not None:
                     cmd.extend([f"--{key}", str(value)])
-            print(f"Running RELION CTF estimation command: {' '.join(cmd)}")
+            print(f"Running RELION CTF estimation command: {self._format_command(cmd)}")
 
             if use_backend:
                 if not self._backend_enabled:
@@ -701,7 +711,7 @@ class RELIONTools:
                 conda_cmd = [
                     "conda", "run", "-n", conda_env,
                     "bash", "-c",
-                    f"cd {self.relion_dir} && {' '.join(cmd)}"
+                    f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
                 process = subprocess.Popen(
                     conda_cmd,
@@ -718,7 +728,7 @@ class RELIONTools:
                     "output_dir": full_output_dir,
                     "output_file": os.path.join(full_output_dir, "micrographs_ctf.star"),
                     "input_star": input_star,
-                    "command": " ".join(cmd),
+                    "command": self._format_command(cmd),
                     "process_id": process.pid,
                     "started_at": time.time()
                 }
@@ -757,7 +767,7 @@ class RELIONTools:
                 "output_dir": full_output_dir,
                 "output_file": output_file,
                 "input_star": input_star,
-                "command": " ".join(cmd),
+                "command": self._format_command(cmd),
                 "stdout": result.stdout,
                 "stderr": result.stderr
             }
@@ -845,7 +855,7 @@ class RELIONTools:
                 if value is not None:
                     cmd.extend([f"--{key}", str(value)])
             
-            print(f"Running micrograph selection command: {' '.join(cmd)}")
+            print(f"Running micrograph selection command: {self._format_command(cmd)}")
             
             # Set environment variables to avoid display issues
             env = os.environ.copy()
@@ -873,7 +883,7 @@ class RELIONTools:
                 "output_dir": full_output_dir,
                 "output_file": output_file,
                 "input_star": input_star,
-                "command": " ".join(cmd),
+                "command": self._format_command(cmd),
                 "stdout": result.stdout,
                 "stderr": result.stderr
             }
@@ -1399,7 +1409,7 @@ class RELIONTools:
             conda_cmd = [
                 "conda", "run", "-n", conda_env,
                 "bash", "-c",
-                f"cd {self.relion_dir} && {' '.join(command)}"
+                f"cd {shlex.quote(self.relion_dir)} && {self._format_command(command)}"
             ]
             
             # Set environment variables to avoid display issues
@@ -1437,8 +1447,8 @@ class RELIONTools:
                 "job_type": "relion_backend",
                 "status": "running",
                 "output_dir": full_output_dir,
-                "command": " ".join(command),
-                "conda_command": " ".join(conda_cmd),
+                "command": self._format_command(command),
+                "conda_command": self._format_command(conda_cmd),
                 "process_id": process.pid,
                 "started_at": time.time()
             }
@@ -1449,7 +1459,7 @@ class RELIONTools:
             print(f"   Process ID: {process.pid}")
             print(f"   Output directory: {full_output_dir}")
             print(f"   Conda environment: {conda_env}")
-            print(f"   Command: {' '.join(command)}")
+            print(f"   Command: {self._format_command(command)}")
             
             return job_info
             
@@ -1891,7 +1901,7 @@ class RELIONTools:
                 if value is not None:
                     cmd.extend([f"--{key}", str(value)])
             
-            print(f"Running RELION blob picker command: {' '.join(cmd)}")
+            print(f"Running RELION blob picker command: {self._format_command(cmd)}")
             
             if use_backend:
                 if not self._backend_enabled:
@@ -1906,7 +1916,7 @@ class RELIONTools:
                 conda_cmd = [
                     "conda", "run", "-n", conda_env,
                     "bash", "-c",
-                    f"cd {self.relion_dir} && {' '.join(cmd)}"
+                    f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
                 
                 process = subprocess.Popen(
@@ -1924,7 +1934,7 @@ class RELIONTools:
                     "status": "running",
                     "output_dir": full_output_dir,
                     "input_star": input_star,
-                    "command": " ".join(cmd),
+                    "command": self._format_command(cmd),
                     "process_id": process.pid,
                     "started_at": time.time()
                 }
@@ -1956,7 +1966,7 @@ class RELIONTools:
                 "status": "completed",
                 "output_dir": full_output_dir,
                 "input_star": input_star,
-                "command": " ".join(cmd),
+                "command": self._format_command(cmd),
                 "stdout": result.stdout,
                 "stderr": result.stderr
             }
@@ -2056,8 +2066,8 @@ class RELIONTools:
             # Handle GPU parameter - can be empty string (use default GPU) or specific GPU ID
             if gpu is not None:
                 if gpu == "":
-                    # Empty string means use default GPU (just --gpu flag)
-                    cmd.append("--gpu")
+                    # Empty string means let RELION auto-select GPU (--gpu "")
+                    cmd.extend(["--gpu", ""])
                 else:
                     # Non-empty string specifies GPU ID(s)
                     cmd.extend(["--gpu", str(gpu)])
@@ -2069,7 +2079,7 @@ class RELIONTools:
                 if value is not None:
                     cmd.extend([f"--{key}", str(value)])
             
-            print(f"Running RELION template picker command: {' '.join(cmd)}")
+            print(f"Running RELION template picker command: {self._format_command(cmd)}")
             
             if use_backend:
                 if not self._backend_enabled:
@@ -2084,7 +2094,7 @@ class RELIONTools:
                 conda_cmd = [
                     "conda", "run", "-n", conda_env,
                     "bash", "-c",
-                    f"cd {self.relion_dir} && {' '.join(cmd)}"
+                    f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
                 
                 process = subprocess.Popen(
@@ -2103,7 +2113,7 @@ class RELIONTools:
                     "output_dir": full_output_dir,
                     "input_star": input_star,
                     "ref_star": ref_star,
-                    "command": " ".join(cmd),
+                    "command": self._format_command(cmd),
                     "process_id": process.pid,
                     "started_at": time.time()
                 }
@@ -2136,7 +2146,7 @@ class RELIONTools:
                 "output_dir": full_output_dir,
                 "input_star": input_star,
                 "ref_star": ref_star,
-                "command": " ".join(cmd),
+                "command": self._format_command(cmd),
                 "stdout": result.stdout,
                 "stderr": result.stderr
             }
@@ -2250,7 +2260,7 @@ class RELIONTools:
                         # Regular parameter: add flag and value
                         cmd.extend([f"--{key}", str(value)])
             
-            print(f"Running RELION particle extraction command: {' '.join(cmd)}")
+            print(f"Running RELION particle extraction command: {self._format_command(cmd)}")
             
             if use_backend:
                 if not self._backend_enabled:
@@ -2265,7 +2275,7 @@ class RELIONTools:
                 conda_cmd = [
                     "conda", "run", "-n", conda_env,
                     "bash", "-c",
-                    f"cd {self.relion_dir} && {' '.join(cmd)}"
+                    f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
                 
                 process = subprocess.Popen(
@@ -2283,7 +2293,7 @@ class RELIONTools:
                     "status": "running",
                     "output_dir": full_output_dir,
                     "input_star": input_star,
-                    "command": " ".join(cmd),
+                    "command": self._format_command(cmd),
                     "process_id": process.pid,
                     "started_at": time.time()
                 }
@@ -2315,7 +2325,7 @@ class RELIONTools:
                 "status": "completed",
                 "output_dir": full_output_dir,
                 "input_star": input_star,
-                "command": " ".join(cmd),
+                "command": self._format_command(cmd),
                 "stdout": result.stdout,
                 "stderr": result.stderr
             }
@@ -2382,7 +2392,7 @@ class RELIONTools:
             scale: Perform intensity-scale corrections
             pool: Number of images to pool for each thread task
             j: Number of threads to run in parallel
-            gpu: GPU ID(s) to use. Empty string ("") means use default GPU (just --gpu flag),
+            gpu: GPU ID(s) to use. Empty string ("") passes --gpu "" so RELION auto-selects GPU;
                  non-empty string (e.g., "0" or "0,1") specifies GPU ID(s)
             only_do_unfinished: Only process unfinished particles
             wait_for_completion: Whether to wait for job completion
@@ -2440,8 +2450,8 @@ class RELIONTools:
             # Handle GPU parameter - can be empty string (use default GPU) or specific GPU ID
             if gpu is not None:
                 if gpu == "":
-                    # Empty string means use default GPU (just --gpu flag)
-                    cmd.append("--gpu")
+                    # Empty string means let RELION auto-select GPU (--gpu "")
+                    cmd.extend(["--gpu", ""])
                 else:
                     # Non-empty string specifies GPU ID(s)
                     cmd.extend(["--gpu", str(gpu)])
@@ -2451,7 +2461,7 @@ class RELIONTools:
                 if value is not None:
                     cmd.extend([f"--{key}", str(value)])
             
-            print(f"Running RELION 2D classification command: {' '.join(cmd)}")
+            print(f"Running RELION 2D classification command: {self._format_command(cmd)}")
             
             if use_backend:
                 if not self._backend_enabled:
@@ -2466,7 +2476,7 @@ class RELIONTools:
                 conda_cmd = [
                     "conda", "run", "-n", conda_env,
                     "bash", "-c",
-                    f"cd {self.relion_dir} && {' '.join(cmd)}"
+                    f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
                 
                 process = subprocess.Popen(
@@ -2485,7 +2495,7 @@ class RELIONTools:
                     "output_dir": full_output_dir,
                     "input_star": input_star,
                     "optimiser_star": os.path.join(full_output_dir, f"run_it{iter:03d}_optimiser.star"),
-                    "command": " ".join(cmd),
+                    "command": self._format_command(cmd),
                     "process_id": process.pid,
                     "started_at": time.time()
                 }
@@ -2519,7 +2529,7 @@ class RELIONTools:
                 "output_dir": full_output_dir,
                 "optimiser_star": os.path.join(full_output_dir, f"run_it{iter:03d}_optimiser.star"),
                 "input_star": input_star,
-                "command": " ".join(cmd),
+                "command": self._format_command(cmd),
                 "stdout": result.stdout,
                 "stderr": result.stderr
             }
@@ -2614,7 +2624,7 @@ class RELIONTools:
                 if value is not None:
                     cmd.extend([f"--{key}", str(value)])
             
-            print(f"Running RELION auto 2D selection command: {' '.join(cmd)}")
+            print(f"Running RELION auto 2D selection command: {self._format_command(cmd)}")
             
             if use_backend:
                 if not self._backend_enabled:
@@ -2629,7 +2639,7 @@ class RELIONTools:
                 conda_cmd = [
                     "conda", "run", "-n", conda_env,
                     "bash", "-c",
-                    f"cd {self.relion_dir} && {' '.join(cmd)}"
+                    f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
                 
                 process = subprocess.Popen(
@@ -2647,7 +2657,7 @@ class RELIONTools:
                     "status": "running",
                     "output_dir": full_output_dir,
                     "input_opt": input_opt,
-                    "command": " ".join(cmd),
+                    "command": self._format_command(cmd),
                     "process_id": process.pid,
                     "started_at": time.time()
                 }
@@ -2713,7 +2723,7 @@ class RELIONTools:
             pool: Number of images to pool for each thread task
             pad: Padding factor
             j: Number of threads to run in parallel
-            gpu: GPU ID(s) to use. Empty string ("") means use default GPU (just --gpu flag),
+            gpu: GPU ID(s) to use. Empty string ("") passes --gpu "" so RELION auto-selects GPU;
                  non-empty string (e.g., "0" or "0,1") specifies GPU ID(s)
             ctf: Perform CTF correction
             flatten_solvent: Flatten solvent region
@@ -2789,7 +2799,7 @@ class RELIONTools:
             # Handle GPU parameter
             if gpu is not None:
                 if gpu == "":
-                    cmd.append("--gpu")
+                    cmd.extend(["--gpu", ""])
                 else:
                     cmd.extend(["--gpu", str(gpu)])
             
@@ -2801,7 +2811,7 @@ class RELIONTools:
                     else:
                         cmd.extend([f"--{key}", str(value)])
             
-            print(f"Running RELION ab initio reconstruction command: {' '.join(cmd)}")
+            print(f"Running RELION ab initio reconstruction command: {self._format_command(cmd)}")
             
             # Find relion_align_symmetry in PATH for the second step
             cmd2 = ["which", "relion_align_symmetry"]
@@ -2839,12 +2849,12 @@ class RELIONTools:
                 env['QT_SCALE_FACTOR'] = '1'
                 
                 # Combine both commands with && and add touch for success file
-                combined_cmd = f"{' '.join(cmd)} && rm -f {os.path.join(full_output_dir, 'RELION_JOB_EXIT_SUCCESS')} && {' '.join(align_cmd)} && touch {os.path.join(full_output_dir, 'RELION_JOB_EXIT_SUCCESS')}"
+                combined_cmd = f"{self._format_command(cmd)} && rm -f {os.path.join(full_output_dir, 'RELION_JOB_EXIT_SUCCESS')} && {self._format_command(align_cmd)} && touch {os.path.join(full_output_dir, 'RELION_JOB_EXIT_SUCCESS')}"
                 
                 conda_cmd = [
                     "conda", "run", "-n", conda_env,
                     "bash", "-c",
-                    f"cd {self.relion_dir} && {combined_cmd}"
+                    f"cd {shlex.quote(self.relion_dir)} && {combined_cmd}"
                 ]
                 
                 process = subprocess.Popen(
@@ -2921,7 +2931,7 @@ class RELIONTools:
                 "input_star": input_star,
                 "initial_model": initial_model,
                 "model_star": model_star,
-                "command": " ".join(cmd) + " && " + " ".join(align_cmd),
+                "command": self._format_command(cmd) + " && " + self._format_command(align_cmd),
                 "stdout": result.stdout + "\n" + result2.stdout,
                 "stderr": result.stderr + "\n" + result2.stderr
             }
@@ -2989,7 +2999,7 @@ class RELIONTools:
             pool: Number of images to pool for each thread task
             pad: Padding factor
             j: Number of threads to run in parallel
-            gpu: GPU ID(s) to use. Empty string ("") means use default GPU (just --gpu flag),
+            gpu: GPU ID(s) to use. Empty string ("") passes --gpu "" so RELION auto-selects GPU;
                  non-empty string (e.g., "0" or "0,1") specifies GPU ID(s)
             ctf: Perform CTF correction
             flatten_solvent: Flatten solvent region
@@ -3084,7 +3094,7 @@ class RELIONTools:
             # Handle GPU parameter
             if gpu is not None:
                 if gpu == "":
-                    cmd.append("--gpu")
+                    cmd.extend(["--gpu", ""])
                 else:
                     cmd.extend(["--gpu", str(gpu)])
             
@@ -3096,7 +3106,7 @@ class RELIONTools:
                     else:
                         cmd.extend([f"--{key}", str(value)])
             
-            print(f"Running RELION 3D refinement command: {' '.join(cmd)}")
+            print(f"Running RELION 3D refinement command: {self._format_command(cmd)}")
             
             if use_backend:
                 if not self._backend_enabled:
@@ -3111,7 +3121,7 @@ class RELIONTools:
                 conda_cmd = [
                     "conda", "run", "-n", conda_env,
                     "bash", "-c",
-                    f"cd {self.relion_dir} && {' '.join(cmd)}"
+                    f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
                 
                 process = subprocess.Popen(
@@ -3130,7 +3140,7 @@ class RELIONTools:
                     "output_dir": full_output_dir,
                     "input_star": input_star,
                     "ref_mrc": ref_mrc,
-                    "command": " ".join(cmd),
+                    "command": self._format_command(cmd),
                     "process_id": process.pid,
                     "started_at": time.time()
                 }
@@ -3163,7 +3173,7 @@ class RELIONTools:
                 "output_dir": full_output_dir,
                 "input_star": input_star,
                 "ref_mrc": ref_mrc,
-                "command": " ".join(cmd),
+                "command": self._format_command(cmd),
                 "stdout": result.stdout,
                 "stderr": result.stderr
             }
@@ -3177,5 +3187,214 @@ class RELIONTools:
             
         except Exception as e:
             raise RuntimeError(f"Failed to run 3D refinement: {e}")
+    
+    def reextract_particles_original_pixelsize(
+        self,
+        reextract_data_star: str,
+        micrographs_star: str,
+        output_dir: str = "ReExtract",
+        extract_size: int = -1,
+        norm: bool = True,
+        bg_radius: float = -1,
+        white_dust: float = -1,
+        black_dust: float = -1,
+        invert_contrast: bool = False,
+        only_do_unfinished: bool = False,
+        float16: bool = True,
+        timeout: int = 86400,
+        use_backend: bool = False,
+        conda_env: str = "relion-5.0",
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Re-extract particles from micrographs with original pixel size without scaling.
+        
+        This is typically done after ab initio reconstruction to re-extract particles
+        at full resolution for refinement. The particles are extracted from the original
+        micrographs using the coordinates and orientations from the ab initio reconstruction.
+        
+        Args:
+            reextract_data_star: Path to particles STAR file from ab initio reconstruction or selection
+                (contains coordinates and orientations, e.g., Select/jobXXX/particles.star or InitialModel/jobXXX/run_it200_data.star)
+            micrographs_star: Path to micrographs STAR file from Select job (e.g., Select/jobXXX/micrographs.star)
+                This ensures particles are extracted with original pixel size
+            output_dir: Output directory for re-extracted particles (default: "ReExtract")
+            extract_size: Size of particle box in pixels (REQUIRED for re-extraction, typically 440 or larger)
+                Should match or be larger than original extraction size
+            norm: Normalize background to average zero and stddev one
+            bg_radius: Radius of circular mask for background area (if -1, uses extract_size*0.25/2)
+            white_dust: Sigma threshold for white dust removal
+            black_dust: Sigma threshold for black dust removal
+            invert_contrast: Invert contrast in input images
+            only_do_unfinished: Only extract particles if STAR file doesn't exist
+            float16: Use float16 format for memory efficiency (default: True)
+            timeout: Maximum time to wait for completion in seconds
+            use_backend: Whether to run in backend mode
+            conda_env: Conda environment name
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            # Find the next job number for the output directory
+            full_output_dir = self._get_next_job_directory(output_dir)
+            
+            # Extract the relative job directory for caching
+            job_dir_relative = os.path.relpath(full_output_dir, self.relion_dir)
+            
+            # Find relion_preprocess in PATH
+            cmd = ["which", "relion_preprocess"]
+            result = subprocess.run(
+                cmd, capture_output=True, text=True, timeout=10
+            )
+            
+            if result.returncode != 0 or not result.stdout.strip():
+                raise RuntimeError("relion_preprocess not found in PATH")
+            
+            preprocess_path = result.stdout.strip()
+            
+            # Build command for re-extraction with original pixel size
+            part_star = os.path.join(full_output_dir, "particles.star")
+            pick_star = os.path.join(full_output_dir, "extractpick.star")
+            
+            cmd = [
+                preprocess_path,
+                "--i", micrographs_star,  # Use micrographs.star from Select job for original pixel size
+                "--reextract_data_star", reextract_data_star,  # Use data from ab initio or previous step
+                "--part_star", part_star,
+                "--pick_star", pick_star,
+                "--part_dir", full_output_dir + "/",
+                "--extract",
+                "--pipeline_control", full_output_dir + "/"
+            ]
+            
+            # Always include extract_size if specified (required for re-extraction)
+            if extract_size > 0:
+                cmd.extend(["--extract_size", str(extract_size)])
+            
+            # Calculate bg_radius if not specified
+            if bg_radius < 0 and extract_size > 0:
+                bg_radius = int(extract_size * 0.25 / 2)
+            
+            if bg_radius > 0:
+                cmd.extend(["--bg_radius", str(int(bg_radius))])
+            
+            # Add optional parameters
+            if norm:
+                cmd.append("--norm")
+            if white_dust > 0:
+                cmd.extend(["--white_dust", str(white_dust)])
+            if black_dust > 0:
+                cmd.extend(["--black_dust", str(black_dust)])
+            if invert_contrast:
+                cmd.append("--invert_contrast")
+            if only_do_unfinished:
+                cmd.append("--only_do_unfinished")
+            
+            # Add float16 flag if requested (common for memory efficiency)
+            if float16:
+                cmd.append("--float16")
+            
+            # Add additional parameters from kwargs
+            boolean_flags = {'wait_for_completion'}
+            for key, value in kwargs.items():
+                if value is not None:
+                    if key in boolean_flags and isinstance(value, bool) and value:
+                        cmd.append(f"--{key}")
+                    elif not isinstance(value, bool):
+                        cmd.extend([f"--{key}", str(value)])
+            
+            print(f"Running RELION particle re-extraction with original pixel size: {self._format_command(cmd)}")
+            
+            if use_backend:
+                if not self._backend_enabled:
+                    raise RuntimeError("Backend execution is not enabled. Call enable_backend_execution(True) first.")
+                
+                env = os.environ.copy()
+                env['DISPLAY'] = ''
+                env['QT_QPA_PLATFORM'] = 'offscreen'
+                env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+                env['QT_SCALE_FACTOR'] = '1'
+                
+                conda_cmd = [
+                    "conda", "run", "-n", conda_env,
+                    "bash", "-c",
+                    f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
+                ]
+                
+                process = subprocess.Popen(
+                    conda_cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env=env,
+                    cwd=self.relion_dir,
+                    preexec_fn=os.setsid if os.name != 'nt' else None
+                )
+                
+                job_info = {
+                    "job_type": "relion_particle_reextraction",
+                    "status": "running",
+                    "output_dir": full_output_dir,
+                    "reextract_data_star": reextract_data_star,
+                    "micrographs_star": micrographs_star,
+                    "particles_star": part_star,
+                    "pick_star": pick_star,
+                    "command": self._format_command(cmd),
+                    "process_id": process.pid,
+                    "started_at": time.time()
+                }
+                self._job_cache[job_dir_relative] = job_info
+                print(f"🚀 Started backend particle re-extraction job (PID {process.pid}) in conda env '{conda_env}'")
+                return job_info
+            
+            # Non-backend: run and wait
+            env = os.environ.copy()
+            env['DISPLAY'] = ''
+            env['QT_QPA_PLATFORM'] = 'offscreen'
+            env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
+            env['QT_SCALE_FACTOR'] = '1'
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=timeout,
+                env=env,
+                cwd=self.relion_dir
+            )
+            
+            if result.returncode != 0:
+                raise RuntimeError(f"RELION particle re-extraction failed: {result.stderr}")
+            
+            # Create success file
+            success_file = os.path.join(full_output_dir, "RELION_JOB_EXIT_SUCCESS")
+            with open(success_file, 'w') as f:
+                pass
+            
+            job_info = {
+                "job_type": "relion_particle_reextraction",
+                "status": "completed",
+                "output_dir": full_output_dir,
+                "reextract_data_star": reextract_data_star,
+                "micrographs_star": micrographs_star,
+                "particles_star": part_star,
+                "pick_star": pick_star,
+                "command": self._format_command(cmd),
+                "stdout": result.stdout,
+                "stderr": result.stderr
+            }
+            
+            self._job_cache[job_dir_relative] = job_info
+            
+            print(f"✅ RELION particle re-extraction completed successfully!")
+            print(f"Output directory: {full_output_dir}")
+            print(f"Re-extracted particles: {os.path.join(full_output_dir, 'particles.star')}")
+            
+            return job_info
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to run particle re-extraction: {e}")
     
     

@@ -39,9 +39,19 @@
       "grad": true,
       "denovo_3dref": true
     },
+    "particle_reextraction": {
+      "extract_size": 400,
+      "norm": true,
+      "bg_radius": -1,
+      "white_dust": -1,
+      "black_dust": -1,
+      "invert_contrast": true,
+      "float16": true,
+      "only_do_unfinished": false
+    },
     "refinement_3d": {
       "sym": "D7",
-      "particle_diameter": 200.0,
+      "particle_diameter": 260.0,
       "oversampling": 1,
       "healpix_order": 2,
       "auto_local_healpix_order": 4,
@@ -107,6 +117,34 @@
         }
       },
       {
+        "name": "particle_reextraction",
+        "description": "Re-extract particles from micrographs with original pixel size without scaling. This is typically done after ab initio reconstruction to re-extract particles at full resolution for refinement. Uses relion_preprocess with --reextract_data_star to extract particles from original micrographs using coordinates and orientations from ab initio reconstruction.",
+        "required_params": [
+          "reextract_data_star",
+          "micrographs_star"
+        ],
+        "optional_params": [
+          "extract_size",
+          "norm",
+          "bg_radius",
+          "white_dust",
+          "black_dust",
+          "invert_contrast",
+          "only_do_unfinished"
+        ],
+        "depends_on": [
+          "ab_initio_reconstruction"
+        ],
+        "input_requirements": {
+          "reextract_data_star": "Path to particles STAR file from ab initio reconstruction (e.g., InitialModel/jobXXX/run_it200_data.star). Contains coordinates and orientations. Auto-detected if available from ab initio step.",
+          "micrographs_star": "Path to original micrographs STAR file from preprocessing (e.g., Select/jobXXX/micrographs.star). This ensures particles are extracted with original pixel size."
+        },
+        "output_files": {
+          "particles_star": "ReExtract/jobXXX/particles.star",
+          "pipeline_control": "ReExtract/jobXXX/RELION_JOB_EXIT_SUCCESS"
+        }
+      },
+      {
         "name": "refinement_3d",
         "description": "Perform 3D refinement (auto-refinement) of particles using a reference map. This runs relion_refine_mpi (or relion_refine) with --auto_refine flag to refine the 3D structure with split random halves validation.",
         "required_params": [
@@ -139,11 +177,11 @@
           "scale"
         ],
         "depends_on": [
-          "ab_initio_reconstruction"
+          "particle_reextraction"
         ],
         "input_requirements": {
-          "input_star": "Path to particles STAR file from particle picking/selection stage (e.g., Select/jobXXX/particles.star or Extract/jobXXX/particles.star)",
-          "ref_mrc": "Path to reference 3D map (MRC file) from ab initio reconstruction (e.g., InitialModel/jobXXX/initial_model.mrc) or previous refinement"
+          "input_star": "Path to particles STAR file. Should use re-extracted particles from particle_reextraction step (e.g., ReExtract/jobXXX/particles.star) for best results. Auto-detected if available from re-extraction step.",
+          "ref_mrc": "Path to reference 3D map (MRC file) from ab initio reconstruction (e.g., InitialModel/jobXXX/initial_model.mrc) or previous refinement. Auto-detected if available from ab initio step."
         },
         "output_files": {
           "refined_map": "Refine3D/jobXXX/run_class001.mrc",

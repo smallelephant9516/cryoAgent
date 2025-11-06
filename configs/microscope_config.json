@@ -9,7 +9,7 @@
     "voltage": 300.0,
     "cs_mm": 2.7,
     "dose": 53.0,
-    "movies_path": "/home/daoyi/cryoEM_dataset/10025_subset/empiar_10025_subset/*.tif",
+    "movies_path": "/home/daoyi/cryoEM_dataset/10025_subset/agent_test/*.tif",
     "gain_ref_path": "/home/daoyi/cryoEM_dataset/10025_subset/agent_test/norm-amibox05-0.mrc"
   },
   "parameter_descriptions": {

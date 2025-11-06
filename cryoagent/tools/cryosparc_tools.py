@@ -170,6 +170,140 @@ class CryoSPARCTools:
             
         except Exception as e:
             raise RuntimeError(f"Failed to import movies: {e}")
+
+    def import_particles_from_star(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        star_path: str,
+        *,
+        data_sign: Optional[str] = None,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 1800,
+        check_interval: int = 30,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Import RELION particles (.star) into CryoSPARC using the Import Particles job.
+
+        Tries multiple parameter keys for compatibility across CryoSPARC versions while keeping args minimal.
+        """
+        try:
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+
+            # Try robust param key variants
+            param_variants = [
+                {"particles_star_path": star_path},
+                {"star_path": star_path},
+                {"particles_path": star_path},
+                {"input_star_path": star_path},
+            ]
+
+            # Optional data sign parameter (CryoSPARC expects one of {"positive","negative"})
+            if data_sign:
+                ds = str(data_sign).lower()
+                sign_key_variants = [
+                    ("import_data_sign", ds),
+                    ("data_sign", ds),
+                ]
+            else:
+                sign_key_variants = []
+
+            job = None
+            errors: List[Exception] = []
+            for base_params in param_variants:
+                params = {**base_params, **kwargs}
+                # try sign variants
+                sign_applied = False
+                for k, v in sign_key_variants:
+                    try_params = {**params, k: v}
+                    try:
+                        job = workspace.create_job("import_particles", params=try_params)
+                        sign_applied = True
+                        break
+                    except Exception as e:
+                        errors.append(e)
+                        job = None
+                if job is None and not sign_applied:
+                    try:
+                        job = workspace.create_job("import_particles", params=params)
+                    except Exception as e:
+                        errors.append(e)
+                        job = None
+                if job is not None:
+                    break
+
+            if job is None:
+                raise RuntimeError(
+                    "Unable to create import_particles job with provided STAR path; "
+                    f"tried variants of params, last error: {errors[-1] if errors else 'unknown'}"
+                )
+
+            used_lane = lane
+            try:
+                job.queue(lane=lane, hostname=hostname)
+            except Exception as queue_error:
+                message = str(queue_error)
+                if (lane is None and hostname is None and "Must specify a lane" in message):
+                    try:
+                        lanes = self.cs.get_lanes()
+                        if not lanes:
+                            raise queue_error
+                        used_lane = lanes[0]["name"]
+                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
+                        job.queue(lane=used_lane)
+                    except Exception:
+                        raise queue_error
+                else:
+                    raise queue_error
+            print(f"Queued import particles job: {job.uid}")
+
+            self._job_cache[job.uid] = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+                "params": {"star_path": star_path, **kwargs},
+            }
+
+            result: Dict[str, Any] = {
+                "job_uid": job.uid,
+                "job_type": "import_particles",
+                "status": "queued",
+                "params": {"star_path": star_path, **kwargs},
+                "lane": used_lane,
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+            }
+
+            if wait_for_completion:
+                print(f"⏳ Waiting for import particles job {job.uid} to complete...")
+                try:
+                    final_status = self.wait_for_job_completion(
+                        project_uid,
+                        job.uid,
+                        workspace_uid,
+                        timeout,
+                        check_interval,
+                    )
+                    result["status"] = final_status["status"]
+                    result["final_status"] = final_status
+                    if final_status["status"] == "completed":
+                        print(f"✅ Import particles job {job.uid} completed successfully!")
+                    else:
+                        print(
+                            f"⚠️ Import particles job {job.uid} finished with status: {final_status['status']}"
+                        )
+                except TimeoutError:
+                    result["status"] = "timeout"
+                    print(f"⏰ Import particles job {job.uid} timed out after {timeout} seconds")
+                except Exception as e:
+                    result["status"] = "error"
+                    print(f"❌ Error monitoring import particles job {job.uid}: {e}")
+
+            return result
+        except Exception as e:
+            raise RuntimeError(f"Failed to import particles from STAR: {e}")
     
     def motion_correction(
         self,

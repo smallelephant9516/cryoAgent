@@ -2,6 +2,7 @@
 
 import json
 import os
+import glob
 import logging
 from typing import Dict, Any, List
 from langchain.tools import Tool
@@ -53,7 +54,14 @@ class ReconstructionAgent(BaseReActAgent):
                 "completed": False,
                 "job_dir": None,
                 "output_file": None,
-                "initial_model": None
+                "initial_model": None,
+                "data_star": None  # Store data STAR file for re-extraction
+            },
+            "particle_reextraction": {
+                "completed": False,
+                "job_dir": None,
+                "output_file": None,
+                "particles_star": None
             },
             "refinement_3d": {
                 "completed": False,
@@ -90,6 +98,7 @@ class ReconstructionAgent(BaseReActAgent):
         """Create reconstruction-specific tools."""
         return [
             ReconstructionTools.create_ab_initio_reconstruction_tool(self),
+            ReconstructionTools.create_particle_reextraction_tool(self),
             ReconstructionTools.create_refinement_3d_tool(self),
             ReconstructionTools.create_check_job_status_tool(self),
             ReconstructionTools.create_wait_for_job_tool(self),
@@ -181,6 +190,15 @@ class ReconstructionAgent(BaseReActAgent):
                     self.workflow_state["ab_initio_reconstruction"]["initial_model"] = result.get("initial_model")
                 if result.get("output_file"):
                     self.workflow_state["ab_initio_reconstruction"]["output_file"] = result.get("output_file")
+                # Store data STAR file path for re-extraction
+                if output_dir_full:
+                    # Try to find the data STAR file (typically run_itXXX_data.star)
+                    data_star_pattern = os.path.join(output_dir_full, "run_it*_data.star")
+                    data_star_files = glob.glob(data_star_pattern)
+                    if data_star_files:
+                        # Get the one with highest iteration number
+                        data_star_files.sort(reverse=True)
+                        self.workflow_state["ab_initio_reconstruction"]["data_star"] = data_star_files[0]
                 return f"✅ Successfully completed ab initio reconstruction: {result.get('initial_model')}"
             elif job_status == "running":
                 # Job started but not completed yet
@@ -217,7 +235,10 @@ class ReconstructionAgent(BaseReActAgent):
             # Get required parameters
             input_star = params.get("input_star")
             if not input_star:
-                return "❌ Error: input_star parameter is required"
+                # Try to get from particle re-extraction output if available
+                input_star = self.workflow_state["particle_reextraction"].get("particles_star")
+                if not input_star:
+                    return "❌ Error: input_star parameter is required. You can use re-extracted particles from particle_reextraction step if available, or provide the original particles STAR file."
             
             ref_mrc = params.get("ref_mrc")
             if not ref_mrc:
@@ -317,6 +338,152 @@ class ReconstructionAgent(BaseReActAgent):
             self._record_tool_execution("refinement_3d", context, error=str(e))
             return f"❌ Error running 3D refinement: {str(e)}"
     
+    def _find_micrographs_star(self) -> Optional[str]:
+        """Helper method to find micrographs.star file from previous preprocessing stage."""
+        # Method 1: Try to find from preprocessing results JSON file
+        try:
+            import glob
+            outputs_dir = Path("outputs")
+            if outputs_dir.exists():
+                # Look for preprocessing results JSON files
+                result_files = glob.glob(str(outputs_dir / "preprocessing_results_relion_*.json"))
+                if result_files:
+                    # Sort by modification time, get most recent
+                    result_files.sort(key=os.path.getmtime, reverse=True)
+                    with open(result_files[0], 'r') as f:
+                        results = json.load(f)
+                        selected_star = results.get("stage_outputs", {}).get("selected_micrographs_star")
+                        if selected_star and os.path.exists(selected_star):
+                            return selected_star
+        except Exception as e:
+            self.logger.debug(f"Could not find micrographs.star from results file: {e}")
+        
+        # Method 2: Try to find Select job directories in RELION directory
+        try:
+            relion_dir = self.relion_tools.relion_dir
+            select_pattern = os.path.join(relion_dir, "Select", "job*")
+            select_dirs = glob.glob(select_pattern)
+            if select_dirs:
+                # Sort by directory name (job number) and get most recent
+                select_dirs.sort(reverse=True)
+                for select_dir in select_dirs:
+                    micrographs_star = os.path.join(select_dir, "micrographs.star")
+                    if os.path.exists(micrographs_star):
+                        return micrographs_star
+        except Exception as e:
+            self.logger.debug(f"Could not find micrographs.star in Select directories: {e}")
+        
+        return None
+    
+    def _particle_reextraction_tool(self, input_str: str) -> str:
+        """Tool wrapper for particle re-extraction with original pixel size using RELION tools."""
+        params: Dict[str, Any] = {}
+        used_params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            
+            # Get required parameters
+            reextract_data_star = params.get("reextract_data_star")
+            if not reextract_data_star:
+                # Try to get from ab initio reconstruction output
+                reextract_data_star = self.workflow_state["ab_initio_reconstruction"].get("data_star")
+                if reextract_data_star:
+                    self.logger.info(f"Auto-detected reextract_data_star from ab initio: {reextract_data_star}")
+                else:
+                    return "❌ Error: reextract_data_star parameter is required and no data STAR file from ab initio reconstruction found. Please complete ab initio reconstruction first."
+            
+            micrographs_star = params.get("micrographs_star")
+            if not micrographs_star:
+                # Try to auto-detect from previous preprocessing stage
+                micrographs_star = self._find_micrographs_star()
+                if micrographs_star:
+                    self.logger.info(f"Auto-detected micrographs_star from preprocessing: {micrographs_star}")
+                else:
+                    return "❌ Error: micrographs_star parameter is required. " \
+                           "Path to micrographs.star from Select job (e.g., Select/jobXXX/micrographs.star). " \
+                           "Could not auto-detect from previous preprocessing results. " \
+                           "Please check outputs/preprocessing_results_relion_*.json or provide the path manually."
+            
+            # Get re-extraction config from JSON file
+            reextraction_config = self._get_workflow_config().get("particle_reextraction", {})
+            
+            # Extract size is required for re-extraction
+            extract_size = params.get("extract_size")
+            if extract_size is None:
+                extract_size = reextraction_config.get("extract_size", -1)
+            if extract_size == -1 or extract_size is None:
+                return "❌ Error: extract_size parameter is required for particle re-extraction (typically 440 or larger)"
+            
+            used_params = {
+                "reextract_data_star": reextract_data_star,
+                "micrographs_star": micrographs_star,
+                "output_dir": "ReExtract",
+                "extract_size": int(extract_size),
+                "norm": self._parse_boolean_param(params.get("norm", reextraction_config.get("norm", True))),
+                "bg_radius": float(params.get("bg_radius") or reextraction_config.get("bg_radius", -1)),
+                "white_dust": float(params.get("white_dust") or reextraction_config.get("white_dust", -1)),
+                "black_dust": float(params.get("black_dust") or reextraction_config.get("black_dust", -1)),
+                "invert_contrast": self._parse_boolean_param(params.get("invert_contrast", reextraction_config.get("invert_contrast", False))),
+                "only_do_unfinished": self._parse_boolean_param(params.get("only_do_unfinished", reextraction_config.get("only_do_unfinished", False))),
+                "float16": self._parse_boolean_param(params.get("float16", reextraction_config.get("float16", True))),
+                "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion", "false")),
+                "timeout": int(params.get("timeout", 86400)),
+                "use_backend": self._parse_boolean_param(params.get("use_backend", "true")),
+                "conda_env": params.get("conda_env", "relion-5.0")
+            }
+
+            result = self.relion_tools.reextract_particles_original_pixelsize(**used_params)
+            self._record_tool_execution("particle_reextraction", used_params, result=result)
+            
+            # Extract relative job directory for tracking
+            output_dir_full = result.get("output_dir")
+            if output_dir_full:
+                relion_dir = self.relion_tools.relion_dir
+                job_dir_relative = os.path.relpath(output_dir_full, relion_dir)
+            else:
+                job_dir_relative = None
+            
+            # Store job_dir in workflow_state for tracking
+            if job_dir_relative:
+                self.workflow_state["particle_reextraction"]["job_dir"] = job_dir_relative
+            
+            # Check if wait_for_completion is requested and job is running
+            wait_for_completion = used_params.get("wait_for_completion", False)
+            job_status = result.get("status")
+            
+            # Check if job actually completed
+            if job_status == "completed":
+                # Update workflow state
+                self.workflow_state["particle_reextraction"]["completed"] = True
+                particles_star = os.path.join(output_dir_full, "particles.star")
+                if os.path.exists(particles_star):
+                    self.workflow_state["particle_reextraction"]["particles_star"] = particles_star
+                if result.get("output_file"):
+                    self.workflow_state["particle_reextraction"]["output_file"] = result.get("output_file")
+                return f"✅ Successfully completed particle re-extraction: {particles_star}"
+            elif job_status == "running":
+                # Job started but not completed yet
+                self.workflow_state["particle_reextraction"]["completed"] = False
+                
+                # Always instruct LLM to use wait_for_job tool to monitor completion
+                job_dir_for_wait = output_dir_full if output_dir_full else result.get('output_dir')
+                if job_dir_for_wait:
+                    return f"🔄 Started particle re-extraction job (still running). " \
+                           f"Job directory: {job_dir_for_wait}. " \
+                           f"**IMPORTANT: You must use the 'wait_for_job' tool with job_dir='{job_dir_for_wait}' to wait for this job to complete before proceeding.** " \
+                           f"After it completes, you can proceed to 3D refinement."
+                else:
+                    return f"🔄 Started particle re-extraction job (still running): {result.get('output_dir')}. " \
+                           f"**IMPORTANT: Use the 'wait_for_job' tool to monitor job completion before proceeding.**"
+            else:
+                # Job failed or unknown status
+                return f"❌ Particle re-extraction job has status: {job_status}. Error: {result.get('error', 'Unknown error')}"
+                
+        except Exception as e:
+            context = used_params or params or {"raw_input": input_str}
+            self._record_tool_execution("particle_reextraction", context, error=str(e))
+            return f"❌ Error running particle re-extraction: {str(e)}"
+    
     def _check_job_status_tool(self, input_str: str) -> str:
         """Tool wrapper for checking RELION job status."""
         try:
@@ -387,6 +554,18 @@ class ReconstructionAgent(BaseReActAgent):
                         initial_model = os.path.join(job_dir_abs, "initial_model.mrc")
                         if os.path.exists(initial_model):
                             self.workflow_state["ab_initio_reconstruction"]["initial_model"] = initial_model
+                        # Try to find data STAR file for re-extraction
+                        data_star_pattern = os.path.join(job_dir_abs, "run_it*_data.star")
+                        data_star_files = glob.glob(data_star_pattern)
+                        if data_star_files:
+                            data_star_files.sort(reverse=True)
+                            self.workflow_state["ab_initio_reconstruction"]["data_star"] = data_star_files[0]
+                elif "ReExtract" in job_dir_relative:
+                    self.workflow_state["particle_reextraction"]["completed"] = True
+                    if job_dir_abs:
+                        particles_star = os.path.join(job_dir_abs, "particles.star")
+                        if os.path.exists(particles_star):
+                            self.workflow_state["particle_reextraction"]["particles_star"] = particles_star
                 elif "Refine3D" in job_dir_relative:
                     self.workflow_state["refinement_3d"]["completed"] = True
             
@@ -457,11 +636,27 @@ class ReconstructionAgent(BaseReActAgent):
                 analysis += "- Requires: input_star (particles STAR file), particle_diameter, sym\n"
                 analysis += "- This step takes a long time (typically hours)\n"
                 analysis += "- Use validate_inputs first to check particles STAR file\n"
+            elif not self.workflow_state["particle_reextraction"]["completed"]:
+                analysis += "**Next Step**: Run particle_reextraction to re-extract particles with original pixel size\n"
+                analysis += f"- Re-extract data STAR: {self.workflow_state['ab_initio_reconstruction'].get('data_star', 'N/A')} (auto-detected from ab initio)\n"
+                # Try to auto-detect micrographs_star
+                micrographs_star = self._find_micrographs_star()
+                if micrographs_star:
+                    analysis += f"- Micrographs STAR: {micrographs_star} (auto-detected from preprocessing)\n"
+                else:
+                    analysis += "- Micrographs STAR: Not auto-detected (will try to find from preprocessing results or Select/jobXXX/micrographs.star)\n"
+                analysis += "- Requires: reextract_data_star (auto-detected from ab initio), micrographs_star (auto-detected from preprocessing, or provide manually), extract_size (required, typically 440)\n"
+                analysis += "- Optional: norm, bg_radius, invert_contrast, float16, etc.\n"
+                analysis += "- This step re-extracts particles at full resolution for better refinement\n"
             elif not self.workflow_state["refinement_3d"]["completed"]:
                 analysis += "**Next Step**: Run refinement_3d to refine the 3D structure\n"
-                analysis += f"- Input particles: (from previous step)\n"
+                reextracted_star = self.workflow_state["particle_reextraction"].get("particles_star")
+                if reextracted_star:
+                    analysis += f"- Input particles: {reextracted_star} (re-extracted with original pixel size)\n"
+                else:
+                    analysis += f"- Input particles: (from previous step)\n"
                 analysis += f"- Reference model: {self.workflow_state['ab_initio_reconstruction'].get('initial_model', 'N/A')}\n"
-                analysis += "- Requires: input_star, ref_mrc (or will use initial_model from ab initio), particle_diameter, sym\n"
+                analysis += "- Requires: input_star (use re-extracted particles), ref_mrc (or will use initial_model from ab initio), particle_diameter, sym\n"
                 analysis += "- This step also takes a long time\n"
             else:
                 analysis += "**All reconstruction steps completed!** ✅\n"

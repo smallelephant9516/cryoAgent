@@ -12,6 +12,7 @@ from ...config.config_loader import CryoAgentConfig
 class ReconstructionStep(Enum):
     """Enumeration of reconstruction workflow steps."""
     AB_INITIO_RECONSTRUCTION = "ab_initio_reconstruction"
+    PARTICLE_REEXTRACTION = "particle_reextraction"
     REFINEMENT_3D = "refinement_3d"
 
 
@@ -93,6 +94,7 @@ class ReconstructionWorkflow:
         # Get workflow config from JSON file
         workflow_config = self._get_workflow_config()
         ab_initio_config = workflow_config.get("ab_initio_reconstruction", {})
+        reextraction_config = workflow_config.get("particle_reextraction", {})
         refinement_config = workflow_config.get("refinement_3d", {})
         
         # Build the input_star parameter
@@ -117,7 +119,19 @@ Execute the complete RELION reconstruction workflow using the ReAct framework. F
    - GPU: {ab_initio_config.get('gpu', '0,1')}
    - This step performs de novo 3D refinement, then aligns symmetry
 
-2. **3D Refinement**: Refine the 3D structure using the initial model
+2. **Particle Re-extraction**: Re-extract particles from micrographs with original pixel size without scaling
+   - Required parameters: reextract_data_star (auto-detected from ab initio), micrographs_star (auto-detected from preprocessing), extract_size
+   - Extract size: {reextraction_config.get('extract_size', 440)} pixels (REQUIRED)
+   - Norm: {reextraction_config.get('norm', True)}
+   - Invert contrast: {reextraction_config.get('invert_contrast', True)}
+   - Float16: {reextraction_config.get('float16', True)}
+   - This step re-extracts particles at full resolution for better refinement
+   - IMPORTANT: Both reextract_data_star and micrographs_star will be auto-detected if available:
+     * reextract_data_star: Auto-detected from ab initio reconstruction output (InitialModel/jobXXX/run_it*_data.star)
+     * micrographs_star: Auto-detected from preprocessing results (outputs/preprocessing_results_relion_*.json) or Select/jobXXX/micrographs.star
+   - If auto-detection fails, you can provide micrographs_star manually (e.g., Select/jobXXX/micrographs.star)
+
+3. **3D Refinement**: Refine the 3D structure using the initial model and re-extracted particles
    - Required parameters: input_star (particles STAR file), ref_mrc (initial model from ab initio), particle_diameter, sym
    - Symmetry: {refinement_config.get('sym', 'D7')}
    - Particle diameter: {refinement_config.get('particle_diameter', 260.0)} Å
@@ -135,8 +149,10 @@ Execute the complete RELION reconstruction workflow using the ReAct framework. F
 - **Observation**: Analyze results and determine next steps
 
 ## Critical Workflow Rules:
-- Execute steps in order: Ab Initio → 3D Refinement
-- Wait for ab initio reconstruction to complete before starting refinement
+- Execute steps in order: Ab Initio → Particle Re-extraction → 3D Refinement
+- Wait for ab initio reconstruction to complete before starting re-extraction
+- Wait for particle re-extraction to complete before starting refinement
+- Particle re-extraction is REQUIRED and must be performed before 3D refinement
 - Validate inputs before starting each step using validate_inputs
 - Check job status and logs if any step fails
 - Use wait_for_job to monitor job completion (these jobs can take hours)
@@ -145,21 +161,28 @@ Execute the complete RELION reconstruction workflow using the ReAct framework. F
 
 ## Expected Outputs:
 - Ab Initio: InitialModel/jobXXX/initial_model.mrc
+- Particle Re-extraction: ReExtract/jobXXX/particles.star (re-extracted particles with original pixel size)
 - 3D Refinement: Refine3D/jobXXX/run_class001.mrc (refined map)
 
 ## Tool Usage:
 - Use validate_inputs to check particles STAR file before ab initio
 - Use ab_initio_reconstruction with input_star{f'="{final_star_file}"' if final_star_file else ''}, particle_diameter, and sym parameters
 - Use wait_for_job to monitor ab initio completion (this takes a long time)
-- Use refinement_3d with input_star, ref_mrc (from ab initio), particle_diameter, and sym parameters
+- Use particle_reextraction with reextract_data_star (auto-detected from ab initio), micrographs_star (from Select job), extract_size={reextraction_config.get('extract_size', 440)}, and other parameters
+- Use wait_for_job to monitor re-extraction completion
+- Use refinement_3d with input_star (use re-extracted particles from particle_reextraction), ref_mrc (from ab initio), particle_diameter, and sym parameters
 - Use wait_for_job to monitor refinement completion
 - Use reason_about_workflow to analyze current state
 
 ## Important Notes:
-- Both steps are computationally intensive and can take hours to complete
+- Ab initio and refinement are computationally intensive and can take hours to complete
+- Re-extraction is typically faster but still requires waiting for completion
+- Particle re-extraction is REQUIRED before refinement - do not skip this step
 - Use backend execution (use_backend=true) for long-running jobs
 - Monitor jobs using check_job_status and wait_for_job tools
+- The reextract_data_star from ab_initio_reconstruction will be automatically detected if available
 - The initial_model from ab_initio_reconstruction will be automatically used as ref_mrc if not explicitly provided
+- The re-extracted particles from particle_reextraction will be automatically used as input_star for refinement if available
 
 Execute this workflow step by step using the ReAct framework, ensuring each job completes successfully before proceeding.
 """

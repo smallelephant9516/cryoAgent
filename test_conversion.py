@@ -9,7 +9,7 @@ from pathlib import Path
 
 import numpy as np
 
-from cryoagent.tools.file_conversion_tools import FileConversionTools
+from cryoagent.tools import FileConversionTools
 
 
 def build_mock_cs_file(destination: Path) -> None:

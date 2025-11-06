@@ -171,7 +171,7 @@ This is a TWO-ROUND workflow for improved particle picking quality.
 
 8. **Auto 2D Selection (Round 2)**: Select best classes with HIGHER threshold
    - Input: Use optimiser STAR file from classification_2d_2 step (automatically detected)
-   - IMPORTANT: Use HIGHER min_score threshold for better quality selection (e.g., 0.1 or higher instead of {selection_config.get('min_score', 0.05)})
+   - IMPORTANT: Use HIGHER min_score threshold for better quality selection (e.g., 0.5 or higher instead of {selection_config.get('min_score', 0.05)})
    - All other selection parameters from config
    - This is the FINAL output
 

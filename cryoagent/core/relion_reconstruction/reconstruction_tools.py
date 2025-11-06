@@ -22,6 +22,22 @@ class ReconstructionTools:
         )
     
     @staticmethod
+    def create_particle_reextraction_tool(agent) -> Tool:
+        """Create tool for particle re-extraction with original pixel size using RELION tools."""
+        return Tool(
+            name="particle_reextraction",
+            description="Re-extract particles from micrographs with original pixel size without scaling. "
+                       "This is typically done after ab initio reconstruction to re-extract particles "
+                       "at full resolution for refinement. Uses relion_preprocess with --reextract_data_star. "
+                       "Required parameters: reextract_data_star (from ab initio, auto-detected if available), "
+                       "micrographs_star (original micrographs STAR file). "
+                       "Optional parameters: extract_size (default: -1, uses original size), norm, bg_radius, "
+                       "white_dust, black_dust, invert_contrast, only_do_unfinished, wait_for_completion, "
+                       "timeout, use_backend, conda_env.",
+            func=agent._particle_reextraction_tool
+        )
+    
+    @staticmethod
     def create_refinement_3d_tool(agent) -> Tool:
         """Create tool for 3D refinement using RELION tools."""
         return Tool(
@@ -29,7 +45,7 @@ class ReconstructionTools:
             description="Perform 3D refinement (auto-refinement) of particles using a reference map. "
                        "This runs relion_refine_mpi (or relion_refine) with --auto_refine flag to refine the 3D structure "
                        "with split random halves validation. "
-                       "Required parameters: input_star, ref_mrc, particle_diameter, sym. "
+                       "Required parameters: input_star (use re-extracted particles if available), ref_mrc, particle_diameter, sym. "
                        "Optional parameters: oversampling, healpix_order, auto_local_healpix_order, offset_range, offset_step, "
                        "pool, pad, j, gpu, ctf, flatten_solvent, zero_mask, dont_combine_weights_via_disc, auto_refine, "
                        "split_random_halves, firstiter_cc, trust_ref_size, ini_high, low_resol_join_halves, norm, scale, "
