@@ -7,14 +7,14 @@
         "name": "preprocessing",
         "description": "Pre-processing stage: Import movies, motion correction, CTF estimation, and micrograph selection",
         "enabled": true,
-        "agent_group": "relion",
+        "agent_group": "cryosparc",
         "agent_class": "PreprocessingAgent"
       },
       {
         "name": "particle_picking",
         "description": "Particle picking stage: Detect and extract particles from micrographs",
         "enabled": true,
-        "agent_group": "relion",
+        "agent_group": "cryosparc",
         "agent_class": "ParticlePickingAgent"
       },
       {

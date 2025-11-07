@@ -78,9 +78,10 @@ class PickingTools:
         """Create tool for 2D class selection."""
         return Tool(
             name="select_2d_classes",
-            description="Select top N 2D classes based on particle count to use as templates. "
+            description="Select 2D classes to use as templates. "
                        "Required parameters: class_2d_job_uid (from 2D classification). "
-                       "Optional parameters: top_n_classes (default: 5), project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
+                       "Optional parameters: selection_mode (top_n or cryosift), top_n_classes (default: 5 when top_n), "
+                       "cryosift_threshold, cryosift_env, cryosift_weights_path, cryosift_output_dir, project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
             func=agent._select_2d_classes_tool
         )
     

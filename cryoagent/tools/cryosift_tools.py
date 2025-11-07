@@ -2,10 +2,12 @@
 
 from __future__ import annotations
 
+import re
 import subprocess
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Optional, Sequence
+from typing import Dict, List, Optional, Tuple
 
 
 @dataclass
@@ -179,6 +181,142 @@ class CryoSiftTools:
             text=text,
             timeout=timeout,
         )
+
+    def evaluate_and_get_selected_classes(
+        self,
+        classification_dir: Path | str,
+        output_dir: Path | str,
+        *,
+        weights_path: Optional[Path | str] = None,
+        threshold: float = 3.0,
+        extra_args: Optional[Sequence[str]] = None,
+    ) -> Tuple[List[int], Dict[int, float], Path]:
+        """Run CryoSift and collect selected class indices.
+
+        Returns the list of selected class indices, a mapping of indices to
+        their CryoSift scores, and the directory containing CryoSift outputs.
+        """
+
+        classification_path = Path(classification_dir)
+        output_path = Path(output_dir)
+
+        try:
+            self.run_classification_evaluator(
+                classification_path,
+                output_path,
+                weights_path=weights_path,
+                threshold=threshold,
+                extra_args=extra_args,
+                capture_output=True,
+                text=True,
+            )
+        except subprocess.CalledProcessError as exc:
+            # CryoSift may exit with non-zero status after generating outputs (e.g., score.txt bug).
+            print(f"⚠️ CryoSift exited with code {exc.returncode}: {exc}")
+            if not output_path.exists():
+                raise
+
+        score_file = self._locate_score_file(output_path, threshold)
+        if score_file is None:
+            model_scores = self._locate_model_scores(output_path)
+            if not model_scores:
+                raise FileNotFoundError(
+                    f"CryoSift score file not found in {output_path}. Expected 'score.txt', 'score_t*.star', or '*_model.star'."
+                )
+            indices = [idx for idx, score in model_scores.items() if score is not None and score < threshold]
+            scores = {idx: model_scores[idx] for idx in indices}
+            self._write_score_txt(output_path, indices, scores)
+        else:
+            indices, scores = self._parse_score_file(score_file)
+        return indices, scores, output_path
+
+    @staticmethod
+    def _locate_score_file(directory: Path, threshold: float) -> Optional[Path]:
+        candidates = [directory / "score.txt"]
+        pattern = re.compile(r"score[_-]?t?\s*" + re.escape(str(threshold)))
+
+        for path in sorted(directory.glob("score*")):
+            if path.is_file() and path.suffix.lower() in {".star", ".txt"}:
+                if path.name == "score.txt" or pattern.search(path.stem.lower()):
+                    candidates.append(path)
+
+        for candidate in candidates:
+            if candidate.exists():
+                return candidate
+        return None
+
+    @staticmethod
+    def _parse_score_file(score_file: Path) -> Tuple[List[int], Dict[int, float]]:
+        indices: List[int] = []
+        scores: Dict[int, float] = {}
+
+        with score_file.open("r", encoding="utf-8") as f:
+            lines = f.readlines()
+
+        in_data_section = False
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if line.lower().startswith("loop_"):
+                in_data_section = True
+                continue
+            if line.startswith("_"):
+                continue
+
+            parts = line.split()
+            if not parts:
+                continue
+
+            try:
+                index = int(parts[0])
+            except ValueError:
+                if not in_data_section:
+                    continue
+                # STAR files often include references like '00001@file'. Extract leading digits.
+                match = re.match(r"(\d+)", parts[0])
+                if not match:
+                    continue
+                index = int(match.group(1))
+                if "@" in parts[0]:
+                    index -= 1  # STAR references are typically 1-based
+            else:
+                if "@" in parts[0]:
+                    index = max(0, index - 1)
+
+            score: Optional[float] = None
+            if len(parts) > 1:
+                try:
+                    score = float(parts[1])
+                except ValueError:
+                    score = None
+
+            indices.append(index)
+            if score is not None:
+                scores[index] = score
+
+        return indices, scores
+
+    @staticmethod
+    def _locate_model_scores(directory: Path) -> Dict[int, float]:
+        for candidate in sorted(directory.glob("*_model.star")):
+            if candidate.is_file():
+                _, scores = CryoSiftTools._parse_score_file(candidate)
+                return scores
+        return {}
+
+    @staticmethod
+    def _write_score_txt(directory: Path, indices: List[int], scores: Dict[int, float]) -> None:
+        if not indices:
+            return
+        score_path = directory / "score.txt"
+        with score_path.open("w", encoding="utf-8") as f:
+            for idx in indices:
+                score = scores.get(idx)
+                if score is None:
+                    f.write(f"{idx}\n")
+                else:
+                    f.write(f"{idx} {score:.3f}\n")
 
 
 def _flatten(args: Iterable[str | Iterable[str]]) -> Iterable[str]:

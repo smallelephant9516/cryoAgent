@@ -1,9 +1,11 @@
 """CryoSPARC tools for cryoEM image processing."""
 
 import time
+from pathlib import Path
 from typing import Dict, Any, Optional, List
 from cryosparc.tools import CryoSPARC
 from ..config.config_loader import CryoSPARCSettings
+from .cryosift_tools import CryoSiftTools
 
 
 class CryoSPARCTools:
@@ -1295,6 +1297,9 @@ class CryoSPARCTools:
         workspace_uid: str,
         class_2d_job_uid: str,
         top_n_classes: int = 5,
+        *,
+        selection_mode: str = "top_n",
+        cryosift_options: Optional[Dict[str, Any]] = None,
         lane: Optional[str] = None,
         hostname: Optional[str] = None,
         wait_for_completion: bool = False,
@@ -1309,7 +1314,9 @@ class CryoSPARCTools:
             project_uid: CryoSPARC project UID
             workspace_uid: CryoSPARC workspace UID
             class_2d_job_uid: UID of the 2D classification job
-            top_n_classes: Number of top classes to select
+            top_n_classes: Number of top classes to select (used when selection_mode='top_n')
+            selection_mode: Strategy for selecting classes ('top_n' or 'cryosift')
+            cryosift_options: Additional arguments when selection_mode='cryosift'
             lane: Compute lane to use
             hostname: Specific hostname to run on
             wait_for_completion: Whether to wait for job completion
@@ -1377,45 +1384,111 @@ class CryoSPARCTools:
 
             # Wait for interactive job to become ready (status 'waiting')
             selected_indices: List[int] = []
+            selection_metadata = {"strategy": selection_mode}
             try:
                 job.wait_for_status("waiting", timeout=timeout)
             except Exception:
                 # If the job transitions directly to running/completed we continue
                 pass
 
-            # Auto-select top N classes based on particle count
             try:
                 class_info = job.interact("get_class_info")
-                if isinstance(class_info, list) and class_info:
+                if not isinstance(class_info, list) or not class_info:
+                    class_info = []
+
+                if selection_mode.lower() == "cryosift":
+                    cryosift_cfg = cryosift_options or {}
+                    try:
+                        job_dir_info = self.get_job_output_directory(project_uid, class_2d_job_uid)
+                        classification_dir = Path(job_dir_info.get("job_directory", "")).expanduser()
+                        if not classification_dir.exists():
+                            raise FileNotFoundError(
+                                f"Classification directory not found: {classification_dir}"
+                            )
+
+                        output_dir = cryosift_cfg.get("output_dir")
+                        if output_dir:
+                            output_path = Path(output_dir).expanduser()
+                        else:
+                            subdir = cryosift_cfg.get("output_subdir", "cryosift_eval")
+                            output_path = classification_dir / subdir
+
+                        threshold = float(cryosift_cfg.get("threshold", 3.0))
+                        weights_path = cryosift_cfg.get("weights_path")
+                        python_executable = cryosift_cfg.get("python_executable", "python")
+                        conda_env = cryosift_cfg.get("conda_env")
+                        extra_args = cryosift_cfg.get("extra_args")
+
+                        cryosift_tool = CryoSiftTools(
+                            python_executable=python_executable,
+                            conda_env=conda_env,
+                        )
+
+                        indices, scores, output_path = cryosift_tool.evaluate_and_get_selected_classes(
+                            classification_dir,
+                            output_path,
+                            weights_path=weights_path,
+                            threshold=threshold,
+                            extra_args=extra_args,
+                        )
+
+                        selected_indices = [idx for idx in indices if idx is not None]
+                        selection_metadata.update(
+                            {
+                                "threshold": threshold,
+                                "scores": scores,
+                                "output_directory": str(output_path),
+                                "selection_mode": "cryosift",
+                            }
+                        )
+                    except Exception as cryosift_error:
+                        print(f"⚠️ CryoSift-based selection failed: {cryosift_error}")
+                        fallback_strategy = cryosift_cfg.get("fallback_strategy", "top_n")
+                        if fallback_strategy == "top_n":
+                            selection_mode = "top_n"
+                        else:
+                            raise
+
+                if selection_mode.lower() == "top_n":
                     top_n = max(0, int(top_n_classes)) if top_n_classes is not None else 0
-                    if top_n > 0:
+                    if top_n > 0 and class_info:
                         sorted_classes = sorted(
                             class_info,
                             key=lambda c: c.get("num_particles_total", 0),
-                            reverse=True
+                            reverse=True,
                         )
-                        selected = sorted_classes[:min(top_n, len(sorted_classes))]
+                        selected = sorted_classes[: min(top_n, len(sorted_classes))]
                         selected_indices = [int(entry["class_idx"]) for entry in selected]
-                        for entry in class_info:
-                            class_idx = int(entry.get("class_idx", -1))
-                            should_select = class_idx in selected_indices
-                            job.interact(
-                                "set_class_selected",
-                                {
-                                    "class_idx": class_idx,
-                                    "selected": should_select
-                                }
-                            )
-                        selection_metadata = {
-                            "requested_top_n": top_n,
-                            "selected_indices": selected_indices,
-                            "class_counts": {
-                                int(entry.get("class_idx", -1)): int(entry.get("num_particles_total", 0))
-                                for entry in selected
+                        selection_metadata.update(
+                            {
+                                "requested_top_n": top_n,
+                                "class_counts": {
+                                    int(entry.get("class_idx", -1)): int(entry.get("num_particles_total", 0))
+                                    for entry in selected
+                                },
+                                "selection_mode": "top_n",
                             }
-                        }
+                        )
+
+                if selected_indices:
+                    print(f"✅ Selected classes via {selection_metadata.get('selection_mode', selection_mode)}: {selected_indices}")
+
+                if selected_indices and class_info:
+                    valid_indices = {int(entry.get("class_idx", -1)) for entry in class_info}
+                    filtered_indices = [idx for idx in selected_indices if idx in valid_indices]
+                    selected_indices = filtered_indices
+                    for entry in class_info:
+                        class_idx = int(entry.get("class_idx", -1))
+                        should_select = class_idx in selected_indices
+                        job.interact(
+                            "set_class_selected",
+                            {
+                                "class_idx": class_idx,
+                                "selected": should_select,
+                            },
+                        )
             except Exception as auto_select_error:
-                print(f"⚠️ Unable to auto-select top classes interactively: {auto_select_error}")
+                print(f"⚠️ Unable to auto-select classes: {auto_select_error}")
 
             # Close the interactive session (continues even if finish fails)
             try:
@@ -1426,6 +1499,7 @@ class CryoSPARCTools:
             if selected_indices:
                 result["selected_template_indices"] = selected_indices
             if selection_metadata:
+                selection_metadata["strategy"] = selection_metadata.get("selection_mode", selection_mode)
                 result["selection_metadata"] = selection_metadata
 
             # Wait for completion if requested

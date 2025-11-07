@@ -283,25 +283,71 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
             
-            # Get top_n_classes from params or config (default 5)
+            # Determine selection strategy and parameters
+            selection_mode = (params.get("selection_mode") or params.get("selection_strategy") or "top_n").lower()
+
             top_n_classes = params.get("top_n_classes")
-            if not top_n_classes:
+            if top_n_classes is None and selection_mode != "cryosift":
                 top_n_classes = getattr(self.config.workflow, "top_n_classes", 5)
+
+            cryosift_threshold = params.get("cryosift_threshold")
+            cryosift_env = params.get("cryosift_env")
+            cryosift_weights_path = params.get("cryosift_weights_path")
+            cryosift_output_dir = params.get("cryosift_output_dir")
+            cryosift_output_subdir = params.get("cryosift_output_subdir")
+            cryosift_python = params.get("cryosift_python_executable")
+            cryosift_fallback = params.get("cryosift_fallback_strategy")
             
             used_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
                 "class_2d_job_uid": params.get("class_2d_job_uid"),
-                "top_n_classes": int(top_n_classes),
+                "selection_mode": selection_mode,
                 "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
                 "timeout": int(params.get("timeout", 300)),
                 "check_interval": int(params.get("check_interval", 10))
             }
+            if top_n_classes is not None:
+                try:
+                    used_params["top_n_classes"] = int(top_n_classes)
+                except (TypeError, ValueError):
+                    used_params["top_n_classes"] = None
+
+            cryosift_options: Dict[str, Any] = {}
+            if cryosift_threshold is not None:
+                try:
+                    cryosift_options["threshold"] = float(cryosift_threshold)
+                except (TypeError, ValueError):
+                    pass
+            if cryosift_env:
+                cryosift_options["conda_env"] = cryosift_env
+            if cryosift_weights_path:
+                cryosift_options["weights_path"] = cryosift_weights_path
+            if cryosift_output_dir:
+                cryosift_options["output_dir"] = cryosift_output_dir
+            if cryosift_output_subdir:
+                cryosift_options["output_subdir"] = cryosift_output_subdir
+            if cryosift_python:
+                cryosift_options["python_executable"] = cryosift_python
+            if cryosift_fallback:
+                cryosift_options["fallback_strategy"] = cryosift_fallback
+
+            if cryosift_options:
+                used_params["cryosift_options"] = cryosift_options
 
             result = self.cryosparc_tools.select_2d_classes(**used_params)
             self._record_tool_execution("select_2d_classes", used_params, result=result)
             
-            return f"✅ Successfully queued 2D class selection job: {result['job_uid']} (selecting top {top_n_classes} classes)"
+            strategy = result.get("selection_metadata", {}).get("selection_mode", selection_mode)
+            detail = ""
+            if strategy == "top_n" and used_params.get("top_n_classes"):
+                detail = f"selecting top {used_params['top_n_classes']} classes"
+            elif strategy == "cryosift":
+                selected = result.get("selected_template_indices") or []
+                detail = f"CryoSift-selected classes {selected}" if selected else "CryoSift evaluation completed"
+
+            detail_text = f" ({detail})" if detail else ""
+            return f"✅ Successfully queued 2D class selection job: {result['job_uid']}{detail_text}"
             
         except Exception as e:
             context = used_params or params or {"raw_input": input_str}

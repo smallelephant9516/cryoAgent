@@ -43,8 +43,20 @@
       "force_max_res_description": "Whether to force maximum resolution limit throughout classification. If false, resolution increases adaptively during iterations."
     },
     "select_2d_classes": {
+      "selection_mode": "CryoSift",
+      "selection_mode_description": "Strategy for selecting 2D classes: 'top_n' uses particle counts, 'cryosift' runs CryoSift scores.",
       "top_n_classes": 7,
-      "top_n_classes_description": "Number of top classes to select based on particle count. Used for BOTH selections (first and final). These classes will be used as templates for template-based picking."
+      "top_n_classes_description": "Number of top classes to select based on particle count. Used for BOTH selections (first and final) when selection_mode is 'top_n'.",
+      "cryosift_threshold": 3.0,
+      "cryosift_threshold_description": "CryoSift confidence threshold (1-5). Classes scoring BELOW this value are selected when using selection_mode='cryosift'.",
+      "cryosift_env": "magellon2DAssess",
+      "cryosift_env_description": "Conda environment used to run CryoSift evaluation (passed to conda run -n <env>).",
+      "cryosift_weights_path": "/home/daoyi/tools/cryosift/2dclass_evaluator/CNNTraining/final_model/final_model_cont.pth",
+      "cryosift_weights_path_description": "Path to the CryoSift neural network weights file.",
+      "cryosift_output_subdir": "cryosift_eval",
+      "cryosift_output_subdir_description": "Subdirectory (relative to the CryoSPARC 2D classification job directory) where CryoSift outputs will be written.",
+      "cryosift_fallback_strategy": "top_n",
+      "cryosift_fallback_strategy_description": "Fallback behaviour if CryoSift evaluation fails. 'top_n' falls back to particle-count selection; set to 'error' to abort instead."
     },
     "template_picker": {
       "lowpass_resolution": 20.0,
@@ -81,9 +93,9 @@
       },
       {
         "name": "select_2d_classes",
-        "description": "Select top N 2D classes based on particle count. Uses same parameters for all selections.",
-        "required_params": ["class_2d_job_uid", "top_n_classes"],
-        "optional_params": [],
+        "description": "Select 2D classes using either particle-count ranking (top_n) or CryoSift scores.",
+        "required_params": ["class_2d_job_uid"],
+        "optional_params": ["selection_mode", "top_n_classes", "cryosift_threshold", "cryosift_env", "cryosift_weights_path", "cryosift_output_dir", "cryosift_output_subdir", "cryosift_fallback_strategy"],
         "depends_on": ["2d_classification"],
         "notes": "Executed twice: once to generate templates for template picker, once for final particle selection. Same parameters both times."
       },

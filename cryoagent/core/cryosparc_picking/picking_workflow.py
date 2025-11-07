@@ -98,6 +98,14 @@ class PickingWorkflow:
         # Select 2D classes parameters (used for BOTH selections)
         select_config = workflow_config.get("select_2d_classes", {})
         top_n_classes = select_config.get("top_n_classes", 5)
+        selection_mode = select_config.get("selection_mode", "top_n")
+        cryosift_threshold = select_config.get("cryosift_threshold")
+        cryosift_env = select_config.get("cryosift_env")
+        cryosift_weights = select_config.get("cryosift_weights_path")
+        cryosift_output_dir = select_config.get("cryosift_output_dir")
+        cryosift_output_subdir = select_config.get("cryosift_output_subdir")
+        cryosift_python = select_config.get("cryosift_python_executable")
+        cryosift_fallback = select_config.get("cryosift_fallback_strategy")
         
         # Template picker parameters
         template_config = workflow_config.get("template_picker", {})
@@ -125,6 +133,14 @@ class PickingWorkflow:
             
             # Selection parameters (used for BOTH selections)
             "top_n_classes": top_n_classes,
+            "selection_mode": selection_mode,
+            "cryosift_threshold": cryosift_threshold,
+            "cryosift_env": cryosift_env,
+            "cryosift_weights_path": cryosift_weights,
+            "cryosift_output_dir": cryosift_output_dir,
+            "cryosift_output_subdir": cryosift_output_subdir,
+            "cryosift_python_executable": cryosift_python,
+            "cryosift_fallback_strategy": cryosift_fallback,
             
             # Template picker parameters
             "lowpass_resolution": lowpass_resolution,
@@ -186,7 +202,41 @@ class PickingWorkflow:
         p = self.workflow_params  # shorthand
         
         diameter_range = f"{p['particle_diameter']}-{p['diameter_max']}" if p['diameter_max'] else f"{p['particle_diameter']}-{p['particle_diameter'] * 2.0}"
-        
+
+        selection_mode = (p.get("selection_mode") or "top_n").lower()
+
+        select_params = ["class_2d_job_uid=[from step 3]"]
+        final_select_params = ["class_2d_job_uid=[from step 7]"]
+
+        if selection_mode == "cryosift":
+            select_step_title = "**Select CryoSift Classes** - Evaluate CryoSift scores to choose templates"
+            final_select_step_title = "**Select Final CryoSift Classes** - Re-evaluate CryoSift scores after refinement"
+            select_params.append("selection_mode=cryosift")
+            final_select_params.append("selection_mode=cryosift")
+            if p.get("cryosift_threshold") is not None:
+                threshold = p['cryosift_threshold']
+                select_params.append(f"cryosift_threshold={threshold}")
+                final_select_params.append(f"cryosift_threshold={threshold}")
+            if p.get("cryosift_env"):
+                env = p['cryosift_env']
+                select_params.append(f"cryosift_env={env}")
+                final_select_params.append(f"cryosift_env={env}")
+            if p.get("cryosift_weights_path"):
+                select_params.append("cryosift_weights_path=[configured]")
+                final_select_params.append("cryosift_weights_path=[configured]")
+            if p.get("cryosift_output_dir"):
+                select_params.append("cryosift_output_dir=[configured]")
+                final_select_params.append("cryosift_output_dir=[configured]")
+            elif p.get("cryosift_output_subdir"):
+                subdir = p['cryosift_output_subdir']
+                select_params.append(f"cryosift_output_subdir={subdir}")
+                final_select_params.append(f"cryosift_output_subdir={subdir}")
+        else:
+            select_step_title = f"**Select Top Classes** - Select best {p['top_n_classes']} classes as templates"
+            final_select_step_title = f"**Select Final Classes** - Select top {p['top_n_classes']} classes from round 2"
+            select_params.append(f"top_n_classes={p['top_n_classes']}")
+            final_select_params.append(f"top_n_classes={p['top_n_classes']}")
+
         return f"""
 Execute the complete ADVANCED particle picking workflow with 9 steps (template-based refinement):
 
@@ -217,9 +267,9 @@ Execute the complete ADVANCED particle picking workflow with 9 steps (template-b
 
 ═══ PHASE 2: Template-Based Refinement ═══
 
-4. **Select Top Classes** - Select best {p['top_n_classes']} classes as templates
+4. {select_step_title}
    - Tool: select_2d_classes
-   - Parameters: class_2d_job_uid=[from step 3], top_n_classes={p['top_n_classes']}
+   - Parameters: {', '.join(select_params)}
    - Wait for completion and record job UID
 
 5. **Template Picker** - Re-pick particles using class averages as templates
@@ -240,9 +290,9 @@ Execute the complete ADVANCED particle picking workflow with 9 steps (template-b
 
 ═══ PHASE 3: Final Selection ═══
 
-8. **Select Final Classes** - Select top {p['top_n_classes']} classes from round 2
+8. {final_select_step_title}
    - Tool: select_2d_classes
-   - Parameters: class_2d_job_uid=[from step 7], top_n_classes={p['top_n_classes']} (same as first selection)
+   - Parameters: {', '.join(final_select_params)}
    - These are the highest quality particles
    - Wait for completion and record job UID
 
@@ -774,13 +824,31 @@ Begin by executing step 1 (blob_picker) and proceed sequentially through all 9 s
         timeout: int,
         check_interval: int
     ) -> Dict[str, Any]:
-        return {
+        payload: Dict[str, Any] = {
             "class_2d_job_uid": class_2d_job_uid,
+            "selection_mode": params.get("selection_mode"),
             "top_n_classes": params.get("top_n_classes"),
             "wait_for_completion": "true",
             "timeout": timeout,
             "check_interval": check_interval
         }
+
+        if params.get("cryosift_threshold") is not None:
+            payload["cryosift_threshold"] = params.get("cryosift_threshold")
+        if params.get("cryosift_env"):
+            payload["cryosift_env"] = params.get("cryosift_env")
+        if params.get("cryosift_weights_path"):
+            payload["cryosift_weights_path"] = params.get("cryosift_weights_path")
+        if params.get("cryosift_output_dir"):
+            payload["cryosift_output_dir"] = params.get("cryosift_output_dir")
+        if params.get("cryosift_output_subdir"):
+            payload["cryosift_output_subdir"] = params.get("cryosift_output_subdir")
+        if params.get("cryosift_python_executable"):
+            payload["cryosift_python_executable"] = params.get("cryosift_python_executable")
+        if params.get("cryosift_fallback_strategy"):
+            payload["cryosift_fallback_strategy"] = params.get("cryosift_fallback_strategy")
+
+        return payload
 
     def _build_template_picker_params(
         self,
