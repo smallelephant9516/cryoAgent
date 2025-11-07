@@ -70,6 +70,55 @@ class CryoSPARCTools:
         except Exception as e:
             raise ConnectionError(f"Failed to connect to CryoSPARC: {e}")
     
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
+
+    def _infer_particles_output_slot(self, project, job_uid: str) -> str:
+        """Infer the appropriate particles output slot for a CryoSPARC job."""
+        default_slots = [
+            "particles",
+            "particles_selected",
+            "imported_particles",
+            "selected_particles",
+            "particles_all_classes",
+        ]
+
+        try:
+            job = project.find_job(job_uid)
+            job.refresh()
+            doc = getattr(job, "doc", {}) or {}
+            outputs = doc.get("output_result_groups", []) or []
+
+            for group in outputs:
+                name = group.get("name") or ""
+                group_type = (group.get("type") or "").lower()
+                if "particle" in group_type or "particle" in name.lower():
+                    return name
+
+            job_type = (doc.get("type") or doc.get("job_type") or "").lower()
+            if "import" in job_type:
+                return "imported_particles"
+            if "select" in job_type:
+                return "particles_selected"
+            if "extract" in job_type:
+                return "particles"
+        except Exception:
+            pass
+
+        for slot in default_slots:
+            try:
+                job = project.find_job(job_uid)
+                job.refresh()
+                doc = getattr(job, "doc", {}) or {}
+                outputs = doc.get("output_result_groups", []) or []
+                if any((group.get("name") or "") == slot for group in outputs):
+                    return slot
+            except Exception:
+                continue
+
+        return "particles"
+
     def import_movies(
         self,
         project_uid: str,
@@ -195,6 +244,7 @@ class CryoSPARCTools:
 
             # Try robust param key variants
             param_variants = [
+                {"particle_meta_path": star_path},
                 {"particles_star_path": star_path},
                 {"star_path": star_path},
                 {"particles_path": star_path},
@@ -204,10 +254,17 @@ class CryoSPARCTools:
             # Optional data sign parameter (CryoSPARC expects one of {"positive","negative"})
             if data_sign:
                 ds = str(data_sign).lower()
-                sign_key_variants = [
+                sign_key_variants = []
+                if ds in {"positive", "+", "plus", "dark-on-light"}:
+                    sign_key_variants.append(("sign", "dark-on-light"))
+                elif ds in {"negative", "-", "minus", "light-on-dark"}:
+                    sign_key_variants.append(("sign", "light-on-dark"))
+                else:
+                    sign_key_variants.append(("sign", ds))
+                sign_key_variants.extend([
                     ("import_data_sign", ds),
                     ("data_sign", ds),
-                ]
+                ])
             else:
                 sign_key_variants = []
 
@@ -1738,22 +1795,7 @@ class CryoSPARCTools:
             # These names might not be correct - let CryoSPARC use defaults for now
             # TODO: Verify correct parameter names for your CryoSPARC version
             
-            # Create the job
-            # Note: Use "particles_selected" for connections from selection jobs, 
-            # "particles" for extraction or classification jobs
-            # Determine the correct output slot based on the job type
-            particles_output_slot = "particles"
-            try:
-                # Try to determine the job type to use the correct output slot
-                source_job = project.find_job(particles_job_uid)
-                job_type = source_job.doc.get("type", "")
-                # Selection jobs use "particles_selected", others use "particles"
-                if "select" in job_type.lower():
-                    particles_output_slot = "particles_selected"
-            except Exception:
-                # Fallback: Check if job UID contains "select" pattern
-                if "select" in particles_job_uid.lower():
-                    particles_output_slot = "particles_selected"
+            particles_output_slot = self._infer_particles_output_slot(project, particles_job_uid)
             
             job = workspace.create_job(
                 "homo_abinit",  # Ab initio reconstruction job type

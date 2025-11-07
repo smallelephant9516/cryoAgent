@@ -639,6 +639,98 @@ class TransitionAgent:
             except Exception as e:
                 self.logger.warning(f"Could not initialize Relion tools: {e}")
     
+    def _resolve_relion_path(self, path: Optional[str]) -> Optional[str]:
+        """Resolve a path that may be relative to the RELION project directory."""
+        if not path:
+            return None
+
+        try:
+            path_obj = Path(path).expanduser()
+        except Exception:
+            return path
+
+        if path_obj.is_absolute():
+            return str(path_obj)
+
+        relion_dir = Path(getattr(self.relion_tools, "relion_dir", Path.cwd()))
+        candidate = relion_dir / path_obj
+        if candidate.exists():
+            return str(candidate.resolve())
+
+        # Fall back to joining with RELION dir even if it does not exist yet
+        return str(candidate)
+
+    def _load_particle_reextraction_params(self) -> Dict[str, Any]:
+        """Load particle re-extraction parameters from configuration with sensible defaults."""
+        if hasattr(self, "_particle_reextraction_params"):
+            return dict(self._particle_reextraction_params)
+
+        params: Dict[str, Any] = {
+            "extract_size": 0,
+            "norm": True,
+            "bg_radius": -1,
+            "white_dust": -1,
+            "black_dust": -1,
+            "invert_contrast": False,
+            "only_do_unfinished": False,
+            "float16": True,
+            "timeout": 86400,
+            "use_backend": False,
+        }
+
+        config_path = Path("configs/relion/reconstruction_config.json")
+        try:
+            if config_path.exists():
+                with open(config_path, "r", encoding="utf-8") as f:
+                    config_data = json.load(f)
+                workflow_cfg = config_data.get("workflow", {})
+                reextract_cfg = workflow_cfg.get("particle_reextraction", {})
+                for key, value in reextract_cfg.items():
+                    if value is not None:
+                        params[key] = value
+        except Exception as exc:
+            self.logger.warning(f"Could not load particle re-extraction configuration: {exc}")
+
+        self._particle_reextraction_params = dict(params)
+        return dict(params)
+
+    def _load_relion_particle_results(self, stage_outputs: Dict[str, Any]) -> Dict[str, Any]:
+        """Load cached RELION particle picking results from disk when stage outputs are unavailable."""
+        candidate_paths: List[Path] = []
+
+        result_file = stage_outputs.get("result_file")
+        if isinstance(result_file, str):
+            candidate_paths.append(Path(result_file))
+
+        # Allow stage outputs to directly provide a JSON blob
+        serialized = stage_outputs.get("relion_particle_results")
+        if isinstance(serialized, dict):
+            return dict(serialized)
+
+        outputs_dir = Path("outputs")
+        if outputs_dir.exists():
+            pattern = "particle_picking_results_relion_*.json"
+            files = sorted(outputs_dir.glob(pattern), key=lambda f: f.stat().st_mtime, reverse=True)
+            candidate_paths.extend(files)
+
+        seen: set[Path] = set()
+        for path in candidate_paths:
+            try:
+                if not path:
+                    continue
+                resolved = path.expanduser().resolve()
+                if resolved in seen or not resolved.exists():
+                    continue
+                seen.add(resolved)
+                with open(resolved, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                    if isinstance(data, dict):
+                        return data
+            except Exception as exc:
+                self.logger.debug(f"Could not load particle picking results from {path}: {exc}")
+
+        return {}
+
     def get_stage_backend(self, stage_name: str) -> Optional[BackendType]:
         """
         Get the backend type for a given stage from master config.
@@ -1552,25 +1644,270 @@ class TransitionAgent:
                 converted_outputs["error"] = str(e)
         
         elif stage_name == "particle_picking":
-            # Import particles STAR file into CryoSparc
-            star_file = stage_outputs.get("final_star_file")
-            if star_file and os.path.exists(star_file):
-                try:
-                    # CryoSparc can import particles from STAR files
-                    # We need to use CryoSparc's import functionality
-                    # This typically involves creating an import job
-                    
-                    # For now, we'll note the limitation
-                    self.logger.warning(
-                        "Direct STAR to CryoSparc particle import not fully implemented. "
-                        "The STAR file path is preserved: {star_file}"
+            try:
+                reextraction_params = self._load_particle_reextraction_params()
+
+                # Resolve selected particles STAR file (from RELION Select job)
+                particle_star_candidates: List[str] = []
+                for key in [
+                    "reextracted_particles_star",
+                    "selected_particles_star",
+                    "final_star_file",
+                    "auto_2d_selection_2_output_file",
+                    "auto_2d_selection_output_file",
+                ]:
+                    value = stage_outputs.get(key)
+                    if isinstance(value, str):
+                        particle_star_candidates.append(value)
+
+                cached_results = self._load_relion_particle_results(stage_outputs)
+                if cached_results:
+                    stage_outputs.setdefault("relion_particle_results", cached_results)
+                    for key in [
+                        "reextracted_particles_star",
+                        "selected_particles_star",
+                        "final_star_file",
+                    ]:
+                        cache_val = cached_results.get(key)
+                        if isinstance(cache_val, str):
+                            particle_star_candidates.append(cache_val)
+
+                # Derive from job directories if necessary
+                for job_key in ["auto_2d_selection_2_job_dir", "auto_2d_selection_job_dir"]:
+                    job_dir_value = stage_outputs.get(job_key)
+                    job_dir_path = self._resolve_relion_path(job_dir_value) if job_dir_value else None
+                    if job_dir_path:
+                        candidate = Path(job_dir_path) / "particles.star"
+                        particle_star_candidates.append(str(candidate))
+
+                reextract_data_star: Optional[str] = None
+                for candidate in particle_star_candidates:
+                    resolved = self._resolve_relion_path(candidate)
+                    if resolved:
+                        reextract_data_star = resolved
+                        break
+
+                if not reextract_data_star:
+                    raise FileNotFoundError(
+                        "Could not locate RELION particles STAR file to re-extract. "
+                        "Expected keys include 'selected_particles_star' or 'final_star_file'."
                     )
-                    converted_outputs["particles_star_file"] = star_file
-                    converted_outputs["conversion_status"] = "partial"
-                    
-                except Exception as e:
-                    self.logger.error(f"Failed to convert Relion particle picking output: {e}")
-        
+
+                # Resolve micrographs STAR file used for extraction (original pixel size)
+                micrographs_star = stage_outputs.get("selected_micrographs_star")
+                micrographs_star = self._resolve_relion_path(micrographs_star)
+
+                if not micrographs_star and cached_results:
+                    micro_candidate = cached_results.get("micrograph_location")
+                    if isinstance(micro_candidate, dict):
+                        for key in [
+                            "selected_micrographs_star",
+                            "micrographs_star",
+                            "path",
+                            "output_file",
+                        ]:
+                            val = micro_candidate.get(key)
+                            if isinstance(val, str):
+                                micrographs_star = self._resolve_relion_path(val)
+                                if micrographs_star:
+                                    break
+                    elif isinstance(micro_candidate, str):
+                        micrographs_star = self._resolve_relion_path(micro_candidate)
+
+                if not micrographs_star:
+                    # Try to infer from Select job directories
+                    select_dirs = []
+                    for job_key in ["auto_2d_selection_2_job_dir", "auto_2d_selection_job_dir"]:
+                        job_dir_value = stage_outputs.get(job_key)
+                        job_dir_path = self._resolve_relion_path(job_dir_value) if job_dir_value else None
+                        if job_dir_path:
+                            select_dirs.append(Path(job_dir_path))
+
+                    if not select_dirs:
+                        relion_dir = Path(getattr(self.relion_tools, "relion_dir", Path.cwd()))
+                        select_dirs = sorted(relion_dir.glob("Select/job*"), reverse=True)
+
+                    for select_dir in select_dirs:
+                        candidate = select_dir / "micrographs.star"
+                        if candidate.exists():
+                            micrographs_star = str(candidate.resolve())
+                            break
+
+                if not micrographs_star:
+                    raise FileNotFoundError(
+                        "Could not locate micrographs STAR file required for re-extraction."
+                    )
+
+                extract_size = int(reextraction_params.get("extract_size", 0) or 0)
+                if extract_size <= 0:
+                    raise ValueError(
+                        "Re-extraction parameters must define a positive 'extract_size'."
+                    )
+
+                used_reextract_params = {
+                    "reextract_data_star": reextract_data_star,
+                    "micrographs_star": micrographs_star,
+                    "output_dir": "ReExtract",
+                    "extract_size": extract_size,
+                    "norm": bool(reextraction_params.get("norm", True)),
+                    "bg_radius": float(reextraction_params.get("bg_radius", -1) or -1),
+                    "white_dust": float(reextraction_params.get("white_dust", -1) or -1),
+                    "black_dust": float(reextraction_params.get("black_dust", -1) or -1),
+                    "invert_contrast": bool(reextraction_params.get("invert_contrast", False)),
+                    "only_do_unfinished": bool(reextraction_params.get("only_do_unfinished", False)),
+                    "float16": bool(reextraction_params.get("float16", True)),
+                    "timeout": int(reextraction_params.get("timeout", 86400)),
+                    "use_backend": bool(reextraction_params.get("use_backend", False)),
+                }
+
+                reextract_result = self.relion_tools.reextract_particles_original_pixelsize(**used_reextract_params)
+
+                reextract_output_dir = reextract_result.get("output_dir")
+                if not reextract_output_dir:
+                    raise RuntimeError("RELION re-extraction did not return an output directory")
+
+                reextract_output_dir_path = Path(reextract_output_dir)
+                relion_dir = Path(getattr(self.relion_tools, "relion_dir", Path.cwd()))
+                try:
+                    reextract_job_relative = os.path.relpath(reextract_output_dir_path, relion_dir)
+                except ValueError:
+                    reextract_job_relative = str(reextract_output_dir_path)
+
+                if reextract_result.get("status") == "running" and used_reextract_params["use_backend"]:
+                    timeout = used_reextract_params["timeout"]
+                    check_interval = getattr(self.relion_tools, "_backend_check_interval", 30)
+                    wait_status = self.relion_tools.wait_for_job_completion(
+                        str(reextract_output_dir_path),
+                        timeout=timeout,
+                        check_interval=check_interval,
+                    )
+                    if wait_status.get("status") != "completed":
+                        raise RuntimeError(
+                            f"RELION re-extraction job did not complete successfully: {wait_status}"
+                        )
+
+                reextracted_particles_star = reextract_result.get("particles_star")
+                if not reextracted_particles_star:
+                    reextracted_particles_star = str(reextract_output_dir_path / "particles.star")
+
+                reextracted_particles_star = self._resolve_relion_path(reextracted_particles_star)
+                if not reextracted_particles_star or not Path(reextracted_particles_star).exists():
+                    raise FileNotFoundError(
+                        "Re-extracted particles STAR file not found after RELION re-extraction"
+                    )
+
+                # Import re-extracted particles into CryoSPARC
+                data_sign = "negative" if used_reextract_params["invert_contrast"] else "positive"
+                import_result = self.cryosparc_tools.import_particles_from_star(
+                    project_uid=project_uid,
+                    workspace_uid=workspace_uid,
+                    star_path=reextracted_particles_star,
+                    data_sign=data_sign,
+                    wait_for_completion=True,
+                    timeout=1800,
+                )
+
+                import_job_uid = import_result.get("job_uid")
+                if not import_job_uid:
+                    raise RuntimeError("CryoSPARC import_particles job did not return a job UID")
+
+                # Record transition metadata
+                transitions_dir = Path("outputs") / "transitions"
+                transitions_dir.mkdir(parents=True, exist_ok=True)
+                timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                transition_json_path = transitions_dir / f"transition_{stage_name}_{timestamp}.json"
+
+                transition_data = {
+                    "transition_info": {
+                        "from_agent": "relion",
+                        "to_agent": "cryosparc",
+                        "stage": stage_name,
+                        "conversion_timestamp": datetime.datetime.now().isoformat(),
+                    },
+                    "relion_data": {
+                        "reextract_data_star": reextract_data_star,
+                        "micrographs_star": micrographs_star,
+                        "reextracted_particles_star": reextracted_particles_star,
+                        "reextraction_job_dir": reextract_job_relative,
+                    },
+                    "cryosparc_jobs": {
+                        "import_job_uid": import_job_uid,
+                        "import_status": import_result.get("status"),
+                    },
+                    "conversion_metadata": {
+                        "reextraction_params": used_reextract_params,
+                        "data_sign": data_sign,
+                    },
+                }
+
+                with open(transition_json_path, "w", encoding="utf-8") as f:
+                    json.dump(transition_data, f, indent=2)
+
+                converted_outputs.update({
+                    "reextracted_particles_star": reextracted_particles_star,
+                    "reextraction_job_dir": reextract_job_relative,
+                    "reextraction_params": used_reextract_params,
+                    "import_particles_job_uid": import_job_uid,
+                    "import_job_uid": import_job_uid,
+                    "import_particles_status": import_result.get("status"),
+                    "particles_job_uid": import_job_uid,
+                    "selected_particles_job_uid": import_job_uid,
+                    "final_selection_job_uid": import_job_uid,
+                    "final_star_file": reextracted_particles_star,
+                    "particles_star_file": reextracted_particles_star,
+                    "conversion_status": "completed",
+                    "transition_json": str(transition_json_path),
+                    "project_uid": project_uid,
+                    "workspace_uid": workspace_uid,
+                })
+
+                converted_outputs.setdefault("outputs", {})
+                converted_outputs["outputs"]["selected_particles_job_uid"] = import_job_uid
+                converted_outputs.setdefault("job_uids", {})
+                converted_outputs["job_uids"]["imported_particles"] = import_job_uid
+
+                # Update cached RELION particle picking results with CryoSPARC import info
+                try:
+                    outputs_dir = Path("outputs")
+                    if outputs_dir.exists():
+                        result_files = sorted(
+                            outputs_dir.glob("particle_picking_results_relion_*.json"),
+                            key=lambda f: f.stat().st_mtime,
+                            reverse=True,
+                        )
+                        if result_files:
+                            latest_file = result_files[0]
+                            with open(latest_file, "r", encoding="utf-8") as f:
+                                picking_data = json.load(f)
+                            picking_data.setdefault("conversion", {})
+                            picking_data["conversion"].update({
+                                "import_job_uid": import_job_uid,
+                                "import_status": import_result.get("status"),
+                                "reextracted_particles_star": reextracted_particles_star,
+                                "reextraction_job_dir": reextract_job_relative,
+                                "timestamp": datetime.datetime.now().isoformat(),
+                            })
+                            picking_data.setdefault("job_uids", {})
+                            picking_data["job_uids"]["imported_particles"] = import_job_uid
+                            picking_data.setdefault("outputs", {})
+                            picking_data["outputs"]["selected_particles_job_uid"] = import_job_uid
+                            with open(latest_file, "w", encoding="utf-8") as f:
+                                json.dump(picking_data, f, indent=2)
+                            self.logger.info(
+                                f"Updated particle picking results with CryoSPARC import job: {import_job_uid}"
+                            )
+                except Exception as update_exc:
+                    self.logger.warning(
+                        f"Could not update particle picking results with import job info: {update_exc}"
+                    )
+
+            except Exception as e:
+                self.logger.error(f"Failed to convert Relion particle picking output: {e}")
+                import traceback
+                self.logger.error(traceback.format_exc())
+                converted_outputs["conversion_status"] = "failed"
+                converted_outputs["error"] = str(e)
+
         elif stage_name == "reconstruction":
             # For reconstruction, volumes are typically in MRC format which both can use
             self.logger.info("Reconstruction stage conversion not yet implemented")

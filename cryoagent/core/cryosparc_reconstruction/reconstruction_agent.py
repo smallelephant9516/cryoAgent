@@ -252,6 +252,10 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             # Extract required parameters
             # Support both "particles_job_uid" and "job_uid" for flexibility
             particles_job_uid = params.get("particles_job_uid") or params.get("job_uid")
+            if not particles_job_uid and "__arg1" in params:
+                arg_value = str(params.get("__arg1", "")).strip()
+                if arg_value:
+                    particles_job_uid = arg_value.split(",")[0].strip()
             if not particles_job_uid:
                 return json.dumps({
                     "success": False,
@@ -353,11 +357,56 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
     def _homogeneous_refinement_tool(self, tool_input: str) -> str:
         """Execute homogeneous refinement."""
         try:
-            params = self._parse_tool_input(tool_input)
+            params = dict(self._parse_tool_input(tool_input))
             
             # Extract required parameters
             particles_job_uid = params.get("particles_job_uid")
             volume_job_uid = params.get("volume_job_uid")
+            arg_fallback = params.get("__arg1")
+            if arg_fallback and (not particles_job_uid or not volume_job_uid):
+                parsed_particles = None
+                parsed_volume = None
+
+                if isinstance(arg_fallback, dict):
+                    parsed_particles = arg_fallback.get("particles_job_uid")
+                    parsed_volume = arg_fallback.get("volume_job_uid")
+                    params.update({k: v for k, v in arg_fallback.items() if k != "__arg1"})
+                else:
+                    fallback_str = str(arg_fallback).strip()
+                    parsed_dict = None
+                    if fallback_str.startswith("{") and fallback_str.endswith("}"):
+                        try:
+                            parsed_dict = json.loads(fallback_str)
+                        except json.JSONDecodeError:
+                            parsed_dict = None
+                    if isinstance(parsed_dict, dict):
+                        parsed_particles = parsed_dict.get("particles_job_uid")
+                        parsed_volume = parsed_dict.get("volume_job_uid")
+                        params.update({k: v for k, v in parsed_dict.items() if k != "__arg1"})
+                    else:
+                        tokens = [token.strip() for token in fallback_str.split(",") if token.strip()]
+                        positional_values: List[str] = []
+                        for token in tokens:
+                            if "=" in token:
+                                key, value = token.split("=", 1)
+                                key = key.strip()
+                                value = value.strip().strip('"')
+                                if key == "particles_job_uid":
+                                    parsed_particles = parsed_particles or value
+                                elif key == "volume_job_uid":
+                                    parsed_volume = parsed_volume or value
+                                else:
+                                    params.setdefault(key, value)
+                            else:
+                                positional_values.append(token)
+                        if positional_values:
+                            if not parsed_particles and positional_values:
+                                parsed_particles = positional_values[0]
+                            if not parsed_volume and len(positional_values) > 1:
+                                parsed_volume = positional_values[1]
+
+                particles_job_uid = particles_job_uid or parsed_particles
+                volume_job_uid = volume_job_uid or parsed_volume
             
             if not particles_job_uid or not volume_job_uid:
                 return json.dumps({
