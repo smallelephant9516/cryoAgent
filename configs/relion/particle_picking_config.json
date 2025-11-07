@@ -72,7 +72,7 @@
       "gpu":true
     },
     "auto_2d_selection": {
-      "min_score": 0.02,
+      "min_score": 0.3,
       "max_score": 999.0,
       "select_min_nr_particles": -1,
       "select_min_nr_classes": -1,

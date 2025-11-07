@@ -89,15 +89,39 @@ class FileConversionTools:
         cs_path: Union[str, Path],
         star_path: Union[str, Path],
         passthrough_path: Optional[Union[str, Path]] = None,
+        job_directory: Optional[Union[str, Path]] = None,
     ) -> Path:
+        """Convert CryoSparc .cs file to Relion STAR file.
+        
+        Automatically detects if the file is a particle file or exposure/micrograph file
+        and uses the appropriate conversion method.
+        
+        Args:
+            cs_path: Path to CryoSparc .cs file
+            star_path: Path to output Relion STAR file
+            passthrough_path: Optional path to passthrough file
+            job_directory: Optional job directory for resolving relative micrograph paths
+        """
         df_raw = self.read_cs_file(cs_path)
-
+        
+        # Check if this is an exposure/micrograph file (has micrograph_blob/path)
+        # or a particle file (has blob/path)
+        is_exposure = (
+            "micrograph_blob/path" in df_raw.columns or
+            "micrograph_blob_non_dw/path" in df_raw.columns
+        )
+        
+        if is_exposure:
+            # Use micrograph conversion method
+            return self.convert_cs_micrographs_to_star(cs_path, star_path, passthrough_path, job_directory)
+        
+        # Original particle conversion logic
         if passthrough_path is None:
-            cs_path = Path(cs_path)
+            cs_path_obj = Path(cs_path)
             passthrough_candidates = [
-                cs_path.parent / "J57_passthrough_particles.cs",
-                cs_path.parent / f"{cs_path.stem}_passthrough_particles.cs",
-                cs_path.parent / f"{cs_path.stem}_passthrough.cs",
+                cs_path_obj.parent / "J57_passthrough_particles.cs",
+                cs_path_obj.parent / f"{cs_path_obj.stem}_passthrough_particles.cs",
+                cs_path_obj.parent / f"{cs_path_obj.stem}_passthrough.cs",
             ]
             for candidate in passthrough_candidates:
                 if candidate.exists():
@@ -119,6 +143,202 @@ class FileConversionTools:
         self._dataframe_to_star(particles, star_path, format="v3")
         return star_path
 
+    def convert_cs_micrographs_to_star(
+        self,
+        cs_path: Union[str, Path],
+        star_path: Union[str, Path],
+        passthrough_path: Optional[Union[str, Path]] = None,
+        job_directory: Optional[Union[str, Path]] = None,
+        binning_factor: Optional[float] = None,
+    ) -> Path:
+        """Convert CryoSparc exposure/micrograph .cs file to Relion micrographs STAR file."""
+        df_exposure = self.read_cs_file(cs_path)
+        
+        # Find passthrough file if not provided
+        if passthrough_path is None:
+            cs_path_obj = Path(cs_path)
+            passthrough_candidates = [
+                cs_path_obj.parent / f"{cs_path_obj.stem}_passthrough.cs",
+                cs_path_obj.parent / f"{cs_path_obj.stem}_passthrough_exposures_accepted.cs",
+                cs_path_obj.parent / "J57_passthrough_exposures_accepted.cs",
+            ]
+            for candidate in passthrough_candidates:
+                if candidate.exists():
+                    passthrough_path = candidate
+                    break
+        
+        # Load passthrough data which contains CTF info and micrograph paths
+        df_passthrough = None
+        if passthrough_path and Path(passthrough_path).exists():
+            try:
+                df_passthrough = self.read_cs_file(passthrough_path)
+                print(f"Loading passthrough data from: {passthrough_path}")
+            except Exception as exc:
+                print(f"Warning: Could not load passthrough file {passthrough_path}: {exc}")
+        
+        # Use passthrough data if available (has more complete info), otherwise use exposure data
+        df_raw = df_passthrough if df_passthrough is not None else df_exposure
+        
+        # Get micrograph paths - try different field names
+        micrograph_path_field = None
+        for field in ["micrograph_blob_non_dw/path", "micrograph_blob/path", "micrograph_thumbnail_blob_1x/micrograph_path"]:
+            if field in df_raw.columns:
+                micrograph_path_field = field
+                break
+        
+        if micrograph_path_field is None:
+            raise ValueError("Could not find micrograph path field in CryoSparc data")
+        
+        micrograph_paths = df_raw[micrograph_path_field].apply(self._decode_bytes)
+        n_micrographs = len(df_raw)
+        
+        # Convert paths to absolute paths
+        # CryoSparc paths are typically relative to the job directory or project directory
+        cs_path_obj = Path(cs_path)
+        base_dir = Path(job_directory) if job_directory else cs_path_obj.parent
+        
+        def resolve_micrograph_path(path_str: str) -> str:
+            """Resolve micrograph path to absolute path."""
+            path = Path(path_str)
+            # If already absolute, return as is
+            if path.is_absolute():
+                return str(path)
+            # Try relative to job directory first
+            full_path = base_dir / path
+            if full_path.exists():
+                return str(full_path.resolve())
+            # Try relative to parent (project directory)
+            full_path = base_dir.parent / path
+            if full_path.exists():
+                return str(full_path.resolve())
+            # If not found, return absolute path based on job directory
+            return str((base_dir / path).resolve())
+        
+        micrograph_paths_absolute = micrograph_paths.apply(resolve_micrograph_path)
+        
+        # Build micrographs data
+        micrograph_data: Dict[str, Any] = {
+            "rlnMicrographName": micrograph_paths_absolute.tolist(),
+        }
+        
+        # Pixel size
+        psize_field = None
+        for field in ["micrograph_blob_non_dw/psize_A", "micrograph_blob/psize_A", "micrograph_thumbnail_blob_1x/psize_A"]:
+            if field in df_raw.columns:
+                psize_field = field
+                break
+        
+        if psize_field:
+            pixel_size = pd.to_numeric(df_raw[psize_field], errors="coerce")
+            micrograph_data["rlnMicrographOriginalPixelSize"] = pixel_size
+        else:
+            micrograph_data["rlnMicrographOriginalPixelSize"] = pd.Series([np.nan] * n_micrographs)
+        
+        # Get binning factor from motion correction
+        # The binning factor affects the pixel size: if binning is 1, pixel size is unchanged
+        # If binning > 1, the effective pixel size increases (pixel size = original / binning_factor)
+        
+        # Use provided binning_factor if available, otherwise default to 1.0
+        if binning_factor is None:
+            binning_factor = 1.0
+        
+        # Calculate rlnMicrographPixelSize
+        # If binning factor is 1, it equals rlnMicrographOriginalPixelSize
+        # Otherwise, it's rlnMicrographOriginalPixelSize / binning_factor
+        original_pixel_size = micrograph_data["rlnMicrographOriginalPixelSize"]
+        if binning_factor == 1.0:
+            micrograph_data["rlnMicrographPixelSize"] = original_pixel_size.copy()
+        else:
+            micrograph_data["rlnMicrographPixelSize"] = original_pixel_size / binning_factor
+        
+        # CTF parameters
+        defocus_u = df_raw.get("ctf/df1_A")
+        defocus_v = df_raw.get("ctf/df2_A")
+        micrograph_data["rlnDefocusU"] = pd.to_numeric(defocus_u, errors="coerce") if defocus_u is not None else pd.Series([np.nan] * n_micrographs)
+        micrograph_data["rlnDefocusV"] = pd.to_numeric(defocus_v, errors="coerce") if defocus_v is not None else pd.Series([np.nan] * n_micrographs)
+        
+        defocus_angle_series = df_raw.get("ctf/df_angle_rad")
+        if defocus_angle_series is not None:
+            micrograph_data["rlnDefocusAngle"] = np.degrees(pd.to_numeric(defocus_angle_series, errors="coerce"))
+        else:
+            micrograph_data["rlnDefocusAngle"] = pd.Series([0.0] * n_micrographs)
+        
+        phase_shift_series = df_raw.get("ctf/phase_shift_rad")
+        if phase_shift_series is not None:
+            micrograph_data["rlnPhaseShift"] = np.degrees(pd.to_numeric(phase_shift_series, errors="coerce"))
+        else:
+            micrograph_data["rlnPhaseShift"] = pd.Series([0.0] * n_micrographs)
+        
+        # Microscope parameters
+        voltage_series = df_raw.get("ctf/accel_kv")
+        if voltage_series is None:
+            voltage_series = df_raw.get("mscope_params/accel_kv")
+        
+        cs_series = df_raw.get("ctf/cs_mm")
+        if cs_series is None:
+            cs_series = df_raw.get("mscope_params/cs_mm")
+        
+        amp_series = df_raw.get("ctf/amp_contrast")
+        
+        micrograph_data["rlnVoltage"] = pd.to_numeric(voltage_series, errors="coerce") if voltage_series is not None else pd.Series([np.nan] * n_micrographs)
+        micrograph_data["rlnSphericalAberration"] = pd.to_numeric(cs_series, errors="coerce") if cs_series is not None else pd.Series([np.nan] * n_micrographs)
+        micrograph_data["rlnAmplitudeContrast"] = pd.to_numeric(amp_series, errors="coerce") if amp_series is not None else pd.Series([np.nan] * n_micrographs)
+        
+        # Optics group
+        optics_group_series = df_raw.get("ctf/exp_group_id")
+        if optics_group_series is None:
+            optics_group_series = df_raw.get("mscope_params/exp_group_id")
+        if optics_group_series is None:
+            optics_group_series = pd.Series(np.ones(n_micrographs, dtype=int))
+        else:
+            optics_group_series = pd.to_numeric(optics_group_series, errors="coerce").fillna(1).astype(int)
+        micrograph_data["rlnOpticsGroup"] = optics_group_series
+        
+        # CTF quality metrics
+        ctf_fit_to_A = df_raw.get("ctf/ctf_fit_to_A")
+        if ctf_fit_to_A is None:
+            ctf_fit_to_A = df_raw.get("ctf_stats/ctf_fit_to_A")
+        if ctf_fit_to_A is not None:
+            micrograph_data["rlnCtfMaxResolution"] = pd.to_numeric(ctf_fit_to_A, errors="coerce")
+        else:
+            micrograph_data["rlnCtfMaxResolution"] = pd.Series([np.nan] * n_micrographs)
+        
+        ctf_fom = df_raw.get("ctf/fig_of_merit_gctf")
+        if ctf_fom is None:
+            ctf_fom = df_raw.get("ctf/cross_corr_ctffind4")
+        if ctf_fom is not None:
+            micrograph_data["rlnCtfFigureOfMerit"] = pd.to_numeric(ctf_fom, errors="coerce")
+        else:
+            micrograph_data["rlnCtfFigureOfMerit"] = pd.Series([np.nan] * n_micrographs)
+        
+        # Create DataFrame
+        micrographs_df = pd.DataFrame(micrograph_data)
+        print(f"Loaded {len(micrographs_df)} micrographs")
+        
+        # Create optics table
+        optics_records: List[Dict[str, Any]] = []
+        for group in sorted(optics_group_series.unique()):
+            mask = optics_group_series == group
+            optics_records.append({
+                "rlnOpticsGroupName": f"opticsGroup{group}",
+                "rlnOpticsGroup": int(group),
+                "rlnMicrographOriginalPixelSize": float(self._first_valid(micrographs_df.loc[mask, "rlnMicrographOriginalPixelSize"], np.nan)),
+                "rlnMicrographPixelSize": float(self._first_valid(micrographs_df.loc[mask, "rlnMicrographPixelSize"], np.nan)),
+                "rlnVoltage": float(self._first_valid(micrographs_df.loc[mask, "rlnVoltage"], np.nan)),
+                "rlnSphericalAberration": float(self._first_valid(micrographs_df.loc[mask, "rlnSphericalAberration"], np.nan)),
+                "rlnAmplitudeContrast": float(self._first_valid(micrographs_df.loc[mask, "rlnAmplitudeContrast"], np.nan)),
+            })
+        
+        optics_df = pd.DataFrame(optics_records)
+        micrographs_df.attrs["optics"] = optics_df
+        
+        # Write STAR file with micrographs data type
+        star_path = Path(star_path)
+        star_path.parent.mkdir(parents=True, exist_ok=True)
+        self._dataframe_to_star(micrographs_df, star_path, format="v3", data_type="micrographs")
+        
+        return star_path
+    
     def _merge_location_data(self, df_main: pd.DataFrame, df_passthrough: pd.DataFrame) -> pd.DataFrame:
         df_merged = df_main.copy()
         # Placeholder for potential merges (kept for future extension)
@@ -314,9 +534,30 @@ class FileConversionTools:
         data: pd.DataFrame,
         star_file: Union[str, Path],
         format: str = "v3",
+        data_type: Optional[str] = None,
     ) -> None:
+        """Write DataFrame to Relion STAR file.
+        
+        Args:
+            data: DataFrame with data to write
+            star_file: Output STAR file path
+            format: STAR file format version (default: "v3")
+            data_type: Type of data block - "particles" or "micrographs". 
+                      If None, will auto-detect from columns.
+        """
         data = data.copy()
         optics = data.attrs.get("optics")
+        
+        # Auto-detect data type if not specified
+        if data_type is None:
+            # Check if this looks like micrograph data (has rlnMicrographName but not rlnImageName)
+            has_micrograph_name = "rlnMicrographName" in data.columns
+            has_image_name = "rlnImageName" in data.columns
+            if has_micrograph_name and not has_image_name:
+                data_type = "micrographs"
+            else:
+                data_type = "particles"
+        
         with open(star_file, "w", encoding="utf-8") as handle:
             handle.write("# version 30001\n\n")
             if optics is not None and len(optics) > 0:
@@ -330,13 +571,13 @@ class FileConversionTools:
                     handle.write(" ".join(values) + "\n")
                 handle.write("\n")
 
-            handle.write("data_particles\n\n")
+            handle.write(f"data_{data_type}\n\n")
             handle.write("loop_\n")
-            particle_columns = [c for c in data.columns if c.startswith("rln")]
-            for idx, col in enumerate(particle_columns, start=1):
+            data_columns = [c for c in data.columns if c.startswith("rln")]
+            for idx, col in enumerate(data_columns, start=1):
                 handle.write(f"_{col} #{idx}\n")
             for _, row in data.iterrows():
-                values = [self._format_star_value(row[col]) for col in particle_columns]
+                values = [self._format_star_value(row[col]) for col in data_columns]
                 handle.write(" ".join(values) + "\n")
 
     @staticmethod

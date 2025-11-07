@@ -14,14 +14,14 @@
         "name": "particle_picking",
         "description": "Particle picking stage: Detect and extract particles from micrographs",
         "enabled": true,
-        "agent_group": "cryosparc",
+        "agent_group": "relion",
         "agent_class": "ParticlePickingAgent"
       },
       {
         "name": "reconstruction",
         "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
         "enabled": true,
-        "agent_group": "cryosparc",
+        "agent_group": "relion",
         "agent_class": "ReconstructionAgent"
       }
     ],

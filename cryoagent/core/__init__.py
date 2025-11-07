@@ -7,10 +7,15 @@ from .base_react_agent import BaseReActAgent
 from .cryosparc_preprocessing import PreprocessingAgent, PreprocessingWorkflow
 from .cryosparc_picking import PickingAgent, PickingWorkflow
 
+# Transition agent for format conversion
+from .transition_agent import TransitionAgent
+
 __all__ = [
     # Base
     "BaseReActAgent",
     # Preprocessing
     "PreprocessingAgent",
     "PreprocessingWorkflow",
+    # Transition
+    "TransitionAgent",
 ]

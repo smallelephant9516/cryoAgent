@@ -21,6 +21,7 @@ from enum import Enum
 from ..config.config_loader import ConfigLoader, CryoAgentConfig
 from ..tools.cryosparc_tools import CryoSPARCTools
 from ..utils.general_llm_logger import GeneralLLMLogger
+from .transition_agent import TransitionAgent
 
 
 class WorkflowStage(Enum):
@@ -1160,6 +1161,7 @@ class MasterOrchestrator:
         self.workflow_context = None
         self.start_time = None
         self.logger = logging.getLogger("MasterOrchestrator")
+        self.transition_agent = None
         
     def initialize(self) -> bool:
         """
@@ -1208,6 +1210,41 @@ class MasterOrchestrator:
                 else:
                     self.logger.error(f"Failed to initialize stage agent {stage_name}")
                     return False
+            
+            # Initialize transition agent
+            # Try to get CryoSparc and Relion tools from initialized stage agents
+            cryosparc_tools = None
+            relion_tools = None
+            
+            # Look for CryoSparc tools in any stage agent
+            for agent in self.stage_agents.values():
+                if hasattr(agent, 'cryosparc_tools') and agent.cryosparc_tools:
+                    cryosparc_tools = agent.cryosparc_tools
+                    self.logger.info("Found CryoSparc tools from stage agent")
+                    break
+                # Also check modular_agent
+                if hasattr(agent, 'modular_agent') and hasattr(agent.modular_agent, 'cryosparc_tools') and agent.modular_agent.cryosparc_tools:
+                    cryosparc_tools = agent.modular_agent.cryosparc_tools
+                    self.logger.info("Found CryoSparc tools from modular agent")
+                    break
+            
+            # Look for Relion tools in any stage agent
+            for agent in self.stage_agents.values():
+                if hasattr(agent, 'modular_agent') and hasattr(agent.modular_agent, 'relion_tools') and agent.modular_agent.relion_tools:
+                    relion_tools = agent.modular_agent.relion_tools
+                    self.logger.info("Found Relion tools from modular agent")
+                    break
+            
+            try:
+                self.transition_agent = TransitionAgent(
+                    self.master_config_path,
+                    cryosparc_tools=cryosparc_tools,
+                    relion_tools=relion_tools
+                )
+                self.logger.info("Transition agent initialized successfully")
+            except Exception as e:
+                self.logger.warning(f"Failed to initialize transition agent: {e}")
+                self.transition_agent = None
             
             self.logger.info("Master orchestrator initialized successfully")
             return True
@@ -1313,10 +1350,58 @@ class MasterOrchestrator:
                     # CryoSPARC format: reconstruct from job_uids
                     job_uids = data.get('job_uids', {})
                     stage_outputs = self._reconstruct_stage_outputs_from_cache(stage, job_uids)
+                    # Ensure project_uid and workspace_uid are included
+                    if 'project_uid' in data:
+                        stage_outputs['project_uid'] = data['project_uid']
+                    if 'workspace_uid' in data:
+                        stage_outputs['workspace_uid'] = data['workspace_uid']
+                    # Preserve micrograph_location data if it exists (needed for transition)
+                    if 'micrograph_location' in data:
+                        stage_outputs['micrograph_location'] = data['micrograph_location']
                 else:
                     # Fallback: try to use the data directly
                     self.logger.warning(f"No stage_outputs or job_uids found in {existing_output['file_path']}")
                     stage_outputs = {}
+                    # Try to get project/workspace from data
+                    if 'project_uid' in data:
+                        stage_outputs['project_uid'] = data['project_uid']
+                    if 'workspace_uid' in data:
+                        stage_outputs['workspace_uid'] = data['workspace_uid']
+                    # Preserve micrograph_location if it exists
+                    if 'micrograph_location' in data:
+                        stage_outputs['micrograph_location'] = data['micrograph_location']
+                
+                # Check if transition is needed before next stage (even when loading from cache)
+                stage_index = stages_to_execute.index(stage)
+                if stage_index < len(stages_to_execute) - 1:
+                    next_stage = stages_to_execute[stage_index + 1]
+                    next_stage_name = next_stage.value
+                    
+                    if self.transition_agent:
+                        try:
+                            # Perform transition if needed
+                            stage_outputs = self.transition_agent.perform_transition(
+                                current_stage=stage_name,
+                                next_stage=next_stage_name,
+                                current_stage_outputs=stage_outputs,
+                                project_uid=self.workflow_context.project_uid,
+                                workspace_uid=self.workflow_context.workspace_uid
+                            )
+                            
+                            transition_info = stage_outputs.get("transition_info")
+                            if transition_info:
+                                print(f"🔄 Format transition: {transition_info['from_agent']} -> {transition_info['to_agent']}")
+                                self.logger.info(f"Transition completed (from cache): {transition_info}")
+                                # Print additional info about created files
+                                if 'relion_job_dir' in transition_info:
+                                    print(f"   📁 Relion job directory: {transition_info['relion_job_dir']}")
+                                if 'config_file' in transition_info:
+                                    print(f"   📄 Config file: {transition_info['config_file']}")
+                        except Exception as e:
+                            self.logger.error(f"Transition failed (from cache): {e}")
+                            import traceback
+                            self.logger.error(f"Transition error traceback: {traceback.format_exc()}")
+                            print(f"⚠️ Warning: Transition failed: {e}")
                 
                 # Create a successful stage result from existing output
                 stage_result = StageResult(
@@ -1344,7 +1429,41 @@ class MasterOrchestrator:
             
             # Update context with stage outputs
             if stage_result.success:
-                self.workflow_context.stage_outputs[stage] = stage_result.stage_outputs
+                stage_outputs = stage_result.stage_outputs
+                
+                # Check if transition is needed before next stage
+                stage_index = stages_to_execute.index(stage)
+                if stage_index < len(stages_to_execute) - 1:
+                    next_stage = stages_to_execute[stage_index + 1]
+                    next_stage_name = next_stage.value
+                    
+                    if self.transition_agent:
+                        try:
+                            # Perform transition if needed
+                            stage_outputs = self.transition_agent.perform_transition(
+                                current_stage=stage_name,
+                                next_stage=next_stage_name,
+                                current_stage_outputs=stage_outputs,
+                                project_uid=self.workflow_context.project_uid,
+                                workspace_uid=self.workflow_context.workspace_uid
+                            )
+                            
+                            transition_info = stage_outputs.get("transition_info")
+                            if transition_info:
+                                print(f"🔄 Format transition: {transition_info['from_agent']} -> {transition_info['to_agent']}")
+                                self.logger.info(f"Transition completed: {transition_info}")
+                                # Print additional info about created files
+                                if 'relion_job_dir' in transition_info:
+                                    print(f"   📁 Relion job directory: {transition_info['relion_job_dir']}")
+                                if 'config_file' in transition_info:
+                                    print(f"   📄 Config file: {transition_info['config_file']}")
+                        except Exception as e:
+                            self.logger.error(f"Transition failed: {e}")
+                            import traceback
+                            self.logger.error(f"Transition error traceback: {traceback.format_exc()}")
+                            print(f"⚠️ Warning: Transition failed: {e}")
+                
+                self.workflow_context.stage_outputs[stage] = stage_outputs
                 print(f"✅ Stage {stage_name} completed successfully")
                 print(f"   Execution time: {stage_result.execution_time:.2f} seconds")
             else:
@@ -1428,10 +1547,99 @@ class MasterOrchestrator:
                     # CryoSPARC format: reconstruct from job_uids
                     job_uids = data.get('job_uids', {})
                     stage_outputs = self._reconstruct_stage_outputs_from_cache(stage, job_uids)
+                    # Ensure project_uid and workspace_uid are included
+                    if 'project_uid' in data:
+                        stage_outputs['project_uid'] = data['project_uid']
+                    if 'workspace_uid' in data:
+                        stage_outputs['workspace_uid'] = data['workspace_uid']
+                    # Preserve micrograph_location data if it exists (needed for transition)
+                    if 'micrograph_location' in data:
+                        stage_outputs['micrograph_location'] = data['micrograph_location']
                 else:
                     # Fallback: try to use the data directly
                     self.logger.warning(f"No stage_outputs or job_uids found in {existing_output['file_path']}")
                     stage_outputs = {}
+                    # Try to get project/workspace from data
+                    if 'project_uid' in data:
+                        stage_outputs['project_uid'] = data['project_uid']
+                    if 'workspace_uid' in data:
+                        stage_outputs['workspace_uid'] = data['workspace_uid']
+                    # Preserve micrograph_location if it exists
+                    if 'micrograph_location' in data:
+                        stage_outputs['micrograph_location'] = data['micrograph_location']
+                
+                # Check if transition is needed before next stage (even when loading from cache)
+                stage_index = stages.index(stage)
+                if stage_index < len(stages) - 1:
+                    next_stage = stages[stage_index + 1]
+                    next_stage_name = next_stage.value
+                    
+                    if self.transition_agent:
+                        # Check if transition is actually needed
+                        needs_transition, _, _ = self.transition_agent.check_transition_needed(
+                            current_stage=stage_name,
+                            next_stage=next_stage_name
+                        )
+                        
+                        if needs_transition:
+                            try:
+                                # Perform transition if needed
+                                transition_result = self.transition_agent.perform_transition(
+                                    current_stage=stage_name,
+                                    next_stage=next_stage_name,
+                                    current_stage_outputs=stage_outputs,
+                                    project_uid=self.workflow_context.project_uid,
+                                    workspace_uid=self.workflow_context.workspace_uid
+                                )
+                                
+                                # Check if transition was successful
+                                if not transition_result.get("success", False):
+                                    error_msg = transition_result.get("error", "Unknown transition error")
+                                    self.logger.error(f"Transition failed (from cache): {error_msg}")
+                                    print(f"❌ Transition failed: {error_msg}")
+                                    print(f"⚠️  Stopping workflow - transition is required but failed")
+                                    # Create a failed stage result to stop the workflow
+                                    stage_result = StageResult(
+                                        stage=stage,
+                                        success=False,
+                                        stage_outputs=stage_outputs,
+                                        execution_time=0.0,
+                                        error=f"Transition failed: {error_msg}",
+                                        reasoning="Transition required but failed"
+                                    )
+                                    self.stage_results.append(stage_result)
+                                    break
+                                
+                                # Merge converted outputs into stage_outputs
+                                converted_outputs = transition_result.get("converted_outputs", {})
+                                stage_outputs.update(converted_outputs)
+                                
+                                transition_info = stage_outputs.get("transition_info")
+                                if transition_info:
+                                    print(f"🔄 Format transition: {transition_info['from_agent']} -> {transition_info['to_agent']}")
+                                    self.logger.info(f"Transition completed (from cache): {transition_info}")
+                                    # Print additional info about created files
+                                    if 'relion_job_dir' in transition_info:
+                                        print(f"   📁 Relion job directory: {transition_info['relion_job_dir']}")
+                                    if 'config_file' in transition_info:
+                                        print(f"   📄 Config file: {transition_info['config_file']}")
+                            except Exception as e:
+                                self.logger.error(f"Transition failed (from cache): {e}")
+                                import traceback
+                                self.logger.error(f"Transition error traceback: {traceback.format_exc()}")
+                                print(f"❌ Transition failed: {e}")
+                                print(f"⚠️  Stopping workflow - transition is required but failed")
+                                # Create a failed stage result to stop the workflow
+                                stage_result = StageResult(
+                                    stage=stage,
+                                    success=False,
+                                    stage_outputs=stage_outputs,
+                                    execution_time=0.0,
+                                    error=f"Transition failed: {e}",
+                                    reasoning="Transition required but failed"
+                                )
+                                self.stage_results.append(stage_result)
+                                break
                 
                 # Create a successful stage result from existing output
                 stage_result = StageResult(
@@ -1459,7 +1667,68 @@ class MasterOrchestrator:
             
             # Update context with stage outputs
             if stage_result.success:
-                self.workflow_context.stage_outputs[stage] = stage_result.stage_outputs
+                stage_outputs = stage_result.stage_outputs
+                
+                # Check if transition is needed before next stage
+                stage_index = stages.index(stage)
+                if stage_index < len(stages) - 1:
+                    next_stage = stages[stage_index + 1]
+                    next_stage_name = next_stage.value
+                    
+                    if self.transition_agent:
+                        # Check if transition is actually needed
+                        needs_transition, _, _ = self.transition_agent.check_transition_needed(
+                            current_stage=stage_name,
+                            next_stage=next_stage_name
+                        )
+                        
+                        if needs_transition:
+                            try:
+                                # Perform transition if needed
+                                transition_result = self.transition_agent.perform_transition(
+                                    current_stage=stage_name,
+                                    next_stage=next_stage_name,
+                                    current_stage_outputs=stage_outputs,
+                                    project_uid=self.workflow_context.project_uid,
+                                    workspace_uid=self.workflow_context.workspace_uid
+                                )
+                                
+                                # Check if transition was successful
+                                if not transition_result.get("success", False):
+                                    error_msg = transition_result.get("error", "Unknown transition error")
+                                    self.logger.error(f"Transition failed: {error_msg}")
+                                    print(f"❌ Transition failed: {error_msg}")
+                                    print(f"⚠️  Stopping workflow - transition is required but failed")
+                                    # Mark stage as failed to stop workflow
+                                    stage_result.success = False
+                                    stage_result.error = f"Transition failed: {error_msg}"
+                                    break
+                                
+                                # Merge converted outputs into stage_outputs
+                                converted_outputs = transition_result.get("converted_outputs", {})
+                                stage_outputs.update(converted_outputs)
+                                
+                                transition_info = stage_outputs.get("transition_info")
+                                if transition_info:
+                                    print(f"🔄 Format transition: {transition_info['from_agent']} -> {transition_info['to_agent']}")
+                                    self.logger.info(f"Transition completed: {transition_info}")
+                                    # Print additional info about created files
+                                    if 'relion_job_dir' in transition_info:
+                                        print(f"   📁 Relion job directory: {transition_info['relion_job_dir']}")
+                                    if 'config_file' in transition_info:
+                                        print(f"   📄 Config file: {transition_info['config_file']}")
+                            except Exception as e:
+                                self.logger.error(f"Transition failed: {e}")
+                                import traceback
+                                self.logger.error(f"Transition error traceback: {traceback.format_exc()}")
+                                print(f"❌ Transition failed: {e}")
+                                print(f"⚠️  Stopping workflow - transition is required but failed")
+                                # Mark stage as failed to stop workflow
+                                stage_result.success = False
+                                stage_result.error = f"Transition failed: {e}"
+                                break
+                
+                self.workflow_context.stage_outputs[stage] = stage_outputs
                 print(f"✅ Stage {stage_name} completed successfully")
                 print(f"   Execution time: {stage_result.execution_time:.2f} seconds")
             else:
