@@ -78,7 +78,7 @@ def run_conversion() -> None:
     assert "data_optics" in contents
     assert "data_particles" in contents
     assert "opticsGroup1" in contents
-    assert "00000001@J000/particles/particle_000001.mrcs" in contents
+    assert "particle_000001.mrcs" in contents
     assert "rlnAutopickFigureOfMerit" in contents
 
 

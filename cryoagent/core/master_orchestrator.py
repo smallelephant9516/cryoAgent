@@ -737,6 +737,16 @@ class ReconstructionAgent(StageAgent):
             if backend_type == "RELION":
                 # For RELION, get final_star_file from picking results
                 final_star_file = context.stage_outputs.get("final_star_file")
+                if not final_star_file and isinstance(context.stage_outputs, dict):
+                    for stage_dict in context.stage_outputs.values():
+                        if isinstance(stage_dict, dict):
+                            final_star_file = (
+                                stage_dict.get("final_star_file")
+                                or stage_dict.get("particles_star")
+                                or stage_dict.get("star_file")
+                            )
+                            if final_star_file:
+                                break
                 if not final_star_file:
                     # Try to read from particle picking output JSON file
                     final_star_file = self._get_relion_particles_from_output_file()
@@ -782,18 +792,8 @@ class ReconstructionAgent(StageAgent):
                 )
             
             else:
-                # CryoSPARC path - original logic
-                # Get particles job UID from context (from picking stage)
-                particles_job_uid = context.stage_outputs.get("picked_particles")
-                if not particles_job_uid:
-                    # Try alternative sources
-                    particles_job_uid = context.stage_outputs.get("selected_particles")
-                    if not particles_job_uid:
-                        particles_job_uid = context.stage_outputs.get("final_selection_job_uid")
-                
-                # If still not found, try to read from particle picking output JSON file
-                if not particles_job_uid:
-                    particles_job_uid = self._get_particles_from_output_file()
+                # CryoSPARC path - original logic with context-aware lookup
+                particles_job_uid = self._resolve_particles_job_uid(context)
                 
                 if not particles_job_uid:
                     return StageResult(
@@ -863,6 +863,114 @@ class ReconstructionAgent(StageAgent):
     
     def get_required_inputs(self) -> List[str]:
         return ["picked_particles", "selected_particles"]
+    
+    def _resolve_particles_job_uid(self, context: WorkflowContext) -> Optional[str]:
+        """
+        Resolve the particles job UID needed for reconstruction by inspecting
+        the workflow context and cached particle picking outputs.
+        """
+        stage_outputs_map = getattr(context, "stage_outputs", {}) or {}
+        candidate_mappings: List[Dict[str, Any]] = []
+        
+        # Primary: particle picking stage outputs stored under enum key
+        picking_outputs = stage_outputs_map.get(WorkflowStage.PARTICLE_PICKING)
+        if isinstance(picking_outputs, StageResult):
+            picking_outputs = picking_outputs.stage_outputs
+        if picking_outputs:
+            candidate_mappings.append(picking_outputs)
+        
+        # Secondary: some flows may store using string key
+        if "particle_picking" in stage_outputs_map:
+            alt_outputs = stage_outputs_map.get("particle_picking")
+            if isinstance(alt_outputs, StageResult):
+                alt_outputs = alt_outputs.stage_outputs
+            if alt_outputs and alt_outputs not in candidate_mappings:
+                candidate_mappings.append(alt_outputs)
+        
+        # Fallback: inspect the entire stage_outputs map for legacy keys
+        candidate_mappings.append(stage_outputs_map)
+        
+        for mapping in candidate_mappings:
+            value = self._extract_particles_uid_from_mapping(mapping)
+            if value:
+                self.logger.info(f"Resolved particles job UID '{value}' from workflow context")
+                return value
+        
+        # Fallback: try to read from the most recent particle picking JSON output
+        particles_job_uid = self._get_particles_from_output_file()
+        if particles_job_uid:
+            self.logger.info(f"Resolved particles job UID '{particles_job_uid}' from cached particle picking JSON")
+        return particles_job_uid
+    
+    def _extract_particles_uid_from_mapping(self, mapping: Dict[str, Any]) -> Optional[str]:
+        """Search for a usable particles job UID within a mapping structure."""
+        if isinstance(mapping, StageResult):
+            mapping = mapping.stage_outputs
+        if not isinstance(mapping, dict):
+            return None
+        
+        primary_keys = [
+            "selected_particles_job_uid",
+            "final_selection_job_uid",
+            "selected_particles",
+            "classified_particles",
+            "extracted_particles",
+            "picked_particles"
+        ]
+        
+        for key in primary_keys:
+            value = mapping.get(key)
+            if value:
+                return value
+        
+        outputs = mapping.get("outputs")
+        if isinstance(outputs, dict):
+            for key in primary_keys:
+                value = outputs.get(key)
+                if value:
+                    return value
+        
+        job_uids = mapping.get("job_uids")
+        if isinstance(job_uids, dict):
+            for key in ["final_selection", "selected_particles", "classified_particles", "extracted_particles", "blob_picker"]:
+                value = job_uids.get(key)
+                if value:
+                    return value
+        
+        result_file = mapping.get("result_file")
+        if result_file:
+            value = self._extract_particles_uid_from_file(result_file)
+            if value:
+                return value
+        
+        stage_outputs = mapping.get("stage_outputs")
+        if isinstance(stage_outputs, dict):
+            value = self._extract_particles_uid_from_mapping(stage_outputs)
+            if value:
+                return value
+        
+        return None
+    
+    def _extract_particles_uid_from_file(self, file_path: Union[str, Path]) -> Optional[str]:
+        """Read a JSON file and attempt to extract a particles job UID."""
+        try:
+            with open(file_path, "r") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            self.logger.warning(f"Unable to read particle picking result file '{file_path}': {exc}")
+            return None
+        
+        if not isinstance(data, dict):
+            return None
+        
+        # Prefer outputs or stage_outputs sections if present
+        for key in ["outputs", "stage_outputs", "data", "stageOutputs"]:
+            section = data.get(key)
+            value = self._extract_particles_uid_from_mapping(section) if isinstance(section, dict) else None
+            if value:
+                return value
+        
+        return self._extract_particles_uid_from_mapping(data)
     
     def _get_relion_particles_from_output_file(self) -> Optional[str]:
         """

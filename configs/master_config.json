@@ -7,7 +7,7 @@
         "name": "preprocessing",
         "description": "Pre-processing stage: Import movies, motion correction, CTF estimation, and micrograph selection",
         "enabled": true,
-        "agent_group": "cryosparc",
+        "agent_group": "relion",
         "agent_class": "PreprocessingAgent"
       },
       {
@@ -40,7 +40,7 @@
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
     "continue_job": true,
-    "relion_dir": "/home/daoyi/relion/10025_rrc",
+    "relion_dir": "/home/daoyi/relion/relion_rcc",
     "backend_execution": {
       "enabled": true,
       "default_timeout": 3600,

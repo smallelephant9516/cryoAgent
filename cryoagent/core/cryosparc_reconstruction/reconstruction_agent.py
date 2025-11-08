@@ -29,6 +29,14 @@ class ReconstructionAgent(BaseReActAgent):
             llm: Language model for the agent
         """
         super().__init__(cryosparc_tools, config, llm)
+        self.workflow_defaults: Dict[str, Any] = {}
+    
+    def update_workflow_defaults(self, defaults: Dict[str, Any]) -> None:
+        """Store workflow-level default parameters for later tool invocations."""
+        if defaults:
+            if not hasattr(self, "workflow_defaults") or self.workflow_defaults is None:
+                self.workflow_defaults = {}
+            self.workflow_defaults.update(defaults)
     
     def _create_tools(self) -> List[Tool]:
         """Create 3D reconstruction-specific tools."""
@@ -362,6 +370,12 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             # Extract required parameters
             particles_job_uid = params.get("particles_job_uid")
             volume_job_uid = params.get("volume_job_uid")
+            job_uid_arg = params.get("job_uid")
+            if job_uid_arg and (not particles_job_uid or not volume_job_uid):
+                parts = [token.strip() for token in str(job_uid_arg).split(",") if token.strip()]
+                if len(parts) >= 2:
+                    particles_job_uid = particles_job_uid or parts[0]
+                    volume_job_uid = volume_job_uid or parts[1]
             arg_fallback = params.get("__arg1")
             if arg_fallback and (not particles_job_uid or not volume_job_uid):
                 parsed_particles = None
@@ -409,9 +423,25 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 volume_job_uid = volume_job_uid or parsed_volume
             
             if not particles_job_uid or not volume_job_uid:
+                defaults = getattr(self, "workflow_defaults", {}) or {}
+                particles_job_uid = particles_job_uid or defaults.get("particles_job_uid") or defaults.get("selected_particles_job_uid")
+                if not volume_job_uid:
+                    volume_job_uid = (
+                        defaults.get("volume_job_uid")
+                        or defaults.get("last_volume_job_uid")
+                        or defaults.get("ab_init_job_uid")
+                        or defaults.get("homogeneous_reconstruction_job_uid")
+                    )
+            
+            if not particles_job_uid or not volume_job_uid:
+                missing = []
+                if not particles_job_uid:
+                    missing.append("particles_job_uid")
+                if not volume_job_uid:
+                    missing.append("volume_job_uid")
                 return json.dumps({
                     "success": False,
-                    "error": "Missing required parameters: particles_job_uid and volume_job_uid"
+                    "error": f"Missing required parameters: {', '.join(missing)}"
                 })
             
             # Get project and workspace UIDs
@@ -419,8 +449,16 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
             
             # Extract optional parameters
-            refinement_resolution = params.get("refinement_resolution", None)
-            symmetry = params.get("symmetry", "C1")
+            defaults = getattr(self, "workflow_defaults", {}) or {}
+            refinement_resolution = params.get("refinement_resolution")
+            if refinement_resolution in ("", None):
+                refinement_resolution = defaults.get("refinement_resolution")
+            symmetry = params.get("symmetry")
+            if not symmetry:
+                symmetry = defaults.get("refinement_symmetry", "C1")
+            params["symmetry"] = symmetry
+            if refinement_resolution is not None:
+                params["refinement_resolution"] = refinement_resolution
             
             # Advanced refinement parameters
             refine_do_init_scale_est = params.get("refine_do_init_scale_est", "true").lower() == "true"

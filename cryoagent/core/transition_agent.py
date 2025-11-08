@@ -12,6 +12,7 @@ import logging
 import glob
 import time
 import datetime
+import shutil
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
 from enum import Enum
@@ -267,53 +268,15 @@ class TransitionWorkflow:
             
             self.logger.info(f"Using job directory: {job_dir}")
             
-            # Find exposure/micrograph .cs file - look for exposure files first
-            micrographs_cs = None
-            exposure_candidates = [
-                job_dir / "0_exposures_accepted.cs",
-                job_dir / "exposures_accepted.cs",
-            ]
-            for candidate in exposure_candidates:
-                if candidate.exists():
-                    micrographs_cs = candidate
-                    break
-            
-            # Fallback: look for any .cs file
+            micrographs_cs, passthrough_file = self._locate_micrographs_cs_files(job_dir)
             if not micrographs_cs:
-                cs_files = list(job_dir.glob("*.cs"))
-                # Prefer files with "exposure" in the name
-                exposure_files = [f for f in cs_files if "exposure" in f.name.lower()]
-                if exposure_files:
-                    micrographs_cs = exposure_files[0]
-                elif cs_files:
-                    micrographs_cs = cs_files[0]
-                else:
-                    return {
-                        "success": False,
-                        "error": f"No .cs file found in {job_dir}",
-                        "converted_outputs": {}
-                    }
-            
+                return {
+                    "success": False,
+                    "error": f"No micrograph .cs file found in {job_dir}",
+                    "converted_outputs": {}
+                }
+
             self.logger.info(f"Using CryoSparc file: {micrographs_cs}")
-            
-            # Find passthrough file for exposure data (contains CTF info and micrograph paths)
-            passthrough_file = None
-            # Try specific patterns first
-            passthrough_candidates = [
-                job_dir / f"{micrographs_cs.stem}_passthrough_exposures_accepted.cs",
-                job_dir / f"{micrographs_cs.stem}_passthrough.cs",
-            ]
-            for candidate in passthrough_candidates:
-                if candidate.exists():
-                    passthrough_file = candidate
-                    break
-            
-            # Fallback: glob for any passthrough file
-            if not passthrough_file:
-                passthrough_glob = list(job_dir.glob("*_passthrough_exposures_accepted.cs"))
-                if passthrough_glob:
-                    passthrough_file = passthrough_glob[0]
-            
             if passthrough_file:
                 self.logger.info(f"Found passthrough file: {passthrough_file}")
             
@@ -398,10 +361,223 @@ class TransitionWorkflow:
                 "converted_outputs": {}
             }
     
+    def _locate_micrographs_cs_files(self, job_dir: Path) -> Tuple[Optional[Path], Optional[Path]]:
+        """Locate CryoSPARC micrograph .cs file and optional passthrough file."""
+        micrographs_cs: Optional[Path] = None
+        exposure_candidates = [
+            job_dir / "0_exposures_accepted.cs",
+            job_dir / "exposures_accepted.cs",
+            job_dir / "micrographs.cs",
+        ]
+        for candidate in exposure_candidates:
+            if candidate.exists():
+                micrographs_cs = candidate
+                break
+
+        if not micrographs_cs:
+            cs_files = sorted(job_dir.glob("*.cs"))
+            exposure_files = [
+                f for f in cs_files if any(token in f.name.lower() for token in ("exposure", "micrograph"))
+            ]
+            if exposure_files:
+                micrographs_cs = exposure_files[0]
+            elif cs_files:
+                micrographs_cs = cs_files[0]
+
+        if not micrographs_cs:
+            return None, None
+
+        passthrough_file: Optional[Path] = None
+        passthrough_candidates = [
+            job_dir / f"{micrographs_cs.stem}_passthrough_exposures_accepted.cs",
+            job_dir / f"{micrographs_cs.stem}_passthrough.cs",
+        ]
+        for candidate in passthrough_candidates:
+            if candidate.exists():
+                passthrough_file = candidate
+                break
+
+        if not passthrough_file:
+            passthrough_glob = sorted(job_dir.glob("*_passthrough_exposures_accepted.cs"))
+            if passthrough_glob:
+                passthrough_file = passthrough_glob[0]
+
+        return micrographs_cs, passthrough_file
+
+    def _load_cached_cryosparc_picking_results(self) -> Dict[str, Any]:
+        """Load the most recent CryoSPARC particle picking results JSON if available."""
+        outputs_dir = Path("outputs")
+        if not outputs_dir.exists():
+            return {}
+
+        pattern = "particle_picking_results_cryosparc_*.json"
+        result_files = sorted(outputs_dir.glob(pattern), key=lambda f: f.stat().st_mtime, reverse=True)
+        if not result_files:
+            return {}
+
+        try:
+            with open(result_files[0], "r", encoding="utf-8") as f:
+                data = json.load(f)
+            data.setdefault("__source_file__", str(result_files[0]))
+            return data if isinstance(data, dict) else {}
+        except Exception as exc:
+            self.logger.warning(f"Could not load cached CryoSPARC picking results: {exc}")
+            return {}
+
+    def _ensure_transit_subdir(self, relion_dir: Path, subdir: str) -> Tuple[Path, str]:
+        """Ensure relion/transit_cs/<subdir> exists and return absolute/relative paths."""
+        transit_root = relion_dir / "transit_cs"
+        sub_path = transit_root / subdir
+        sub_path.mkdir(parents=True, exist_ok=True)
+        try:
+            relative = os.path.relpath(sub_path, relion_dir)
+        except ValueError:
+            relative = str(sub_path)
+        return sub_path, relative
+
+    def _prepare_micrographs_for_reconstruction(self, relion_dir: Path) -> Dict[str, Any]:
+        """Ensure a RELION micrographs STAR file is available for downstream reconstruction."""
+        transit_micrographs_dir, transit_micrographs_rel = self._ensure_transit_subdir(relion_dir, "Micrographs")
+        star_file_path = transit_micrographs_dir / "micrographs.star"
+
+        candidate_paths: List[Path] = []
+        for key in ("micrographs_star", "selected_micrographs_star"):
+            candidate = self.stage_outputs.get(key)
+            if not candidate:
+                continue
+            candidate_path = Path(candidate)
+            if not candidate_path.is_absolute():
+                rel_candidate = relion_dir / candidate_path
+                if rel_candidate.exists():
+                    candidate_path = rel_candidate.resolve()
+                else:
+                    candidate_path = candidate_path.resolve()
+            if candidate_path.exists():
+                candidate_paths.append(candidate_path)
+
+        micrographs_job_uid = (
+            self.stage_outputs.get("micrographs_job_uid")
+            or self.stage_outputs.get("micrograph_selection_job_uid")
+            or self.stage_outputs.get("input_micrographs_job_uid")
+            or self.stage_outputs.get("job_uids", {}).get("micrograph_selection")
+        )
+        if not micrographs_job_uid:
+            cached_picking = self._load_cached_cryosparc_picking_results()
+            if cached_picking:
+                micrographs_job_uid = (
+                    cached_picking.get("input_micrographs_job_uid")
+                    or cached_picking.get("job_uids", {}).get("micrograph_selection")
+                )
+
+        if not micrographs_job_uid and candidate_paths:
+            try:
+                source_path = candidate_paths[0]
+                if source_path.resolve() != star_file_path.resolve():
+                    shutil.copy2(source_path, star_file_path)
+                else:
+                    # Ensure file exists
+                    star_file_path.touch(exist_ok=True)
+                return {
+                    "success": True,
+                    "micrographs_star": str(star_file_path.resolve()),
+                    "relion_job_dir": str(transit_micrographs_dir),
+                    "relion_job_dir_relative": transit_micrographs_rel,
+                    "relion_job_dir_absolute": str(transit_micrographs_dir),
+                    "source_job_uid": None,
+                    "source_directory": None,
+                    "passthrough_file": None,
+                    "source_cs_file": None,
+                    "created": True,
+                }
+            except Exception as exc:
+                self.logger.warning(f"Failed to reuse existing micrographs STAR file: {exc}")
+
+        if not micrographs_job_uid:
+            if star_file_path.exists():
+                return {
+                    "success": True,
+                    "micrographs_star": str(star_file_path.resolve()),
+                    "relion_job_dir": str(transit_micrographs_dir),
+                    "relion_job_dir_relative": transit_micrographs_rel,
+                    "relion_job_dir_absolute": str(transit_micrographs_dir),
+                    "source_job_uid": None,
+                    "source_directory": None,
+                    "passthrough_file": None,
+                    "source_cs_file": None,
+                    "created": False,
+                }
+            return {
+                "success": False,
+                "error": "Micrographs job UID not found in stage outputs; cannot create micrographs STAR file."
+            }
+
+        if not self.transition_agent.cryosparc_tools:
+            return {
+                "success": False,
+                "error": "CryoSPARC tools are not available to convert micrographs for RELION."
+            }
+
+        try:
+            job_info = self.transition_agent.cryosparc_tools.get_job_output_directory(
+                self.project_uid,
+                micrographs_job_uid
+            )
+            job_dir = Path(job_info["job_directory"])
+        except Exception as exc:
+            return {
+                "success": False,
+                "error": f"Failed to resolve CryoSPARC micrographs job directory for {micrographs_job_uid}: {exc}"
+            }
+
+        if not job_dir.exists():
+            return {
+                "success": False,
+                "error": f"CryoSPARC micrographs job directory does not exist: {job_dir}"
+            }
+
+        micrographs_cs, passthrough_file = self._locate_micrographs_cs_files(job_dir)
+        if not micrographs_cs:
+            return {
+                "success": False,
+                "error": f"Could not locate micrographs .cs file in {job_dir}"
+            }
+
+        created_now = not star_file_path.exists()
+        self.transition_agent.conversion_tools.convert_cs_to_star(
+            micrographs_cs,
+            star_file_path,
+            passthrough_path=str(passthrough_file) if passthrough_file else None,
+            job_directory=str(job_dir)
+        )
+
+        return {
+            "success": True,
+            "micrographs_star": str(star_file_path.resolve()),
+            "relion_job_dir": str(transit_micrographs_dir),
+            "relion_job_dir_relative": transit_micrographs_rel,
+            "relion_job_dir_absolute": str(transit_micrographs_dir),
+            "source_job_uid": micrographs_job_uid,
+            "source_directory": str(job_dir),
+            "passthrough_file": str(passthrough_file) if passthrough_file else None,
+            "source_cs_file": str(micrographs_cs),
+            "created": created_now,
+        }
+
     def _convert_particle_picking_outputs(self, relion_dir: Path) -> Dict[str, Any]:
         """Convert particle picking outputs (particles)."""
-        job_uid = (self.stage_outputs.get("final_selection_job_uid") or 
-                  self.stage_outputs.get("selected_particles_job_uid"))
+        job_uid = (
+            self.stage_outputs.get("final_selection_job_uid")
+            or self.stage_outputs.get("selected_particles_job_uid")
+            or self.stage_outputs.get("job_uids", {}).get("final_selection")
+            or self.stage_outputs.get("outputs", {}).get("selected_particles_job_uid")
+        )
+        if not job_uid:
+            cached_picking = self._load_cached_cryosparc_picking_results()
+            if cached_picking:
+                job_uid = (
+                    cached_picking.get("outputs", {}).get("selected_particles_job_uid")
+                    or cached_picking.get("job_uids", {}).get("final_selection")
+                )
         if not job_uid or not self.transition_agent.cryosparc_tools:
             return {
                 "success": False,
@@ -416,6 +592,19 @@ class TransitionWorkflow:
             )
             job_dir = Path(job_info["job_directory"])
             
+            micrographs_prep = self._prepare_micrographs_for_reconstruction(relion_dir)
+            if not micrographs_prep.get("success"):
+                self.logger.error(f"Micrographs STAR preparation failed: {micrographs_prep.get('error')}")
+                return {
+                    "success": False,
+                    "error": micrographs_prep.get("error", "Failed to prepare micrographs STAR file"),
+                    "converted_outputs": {}
+                }
+            if micrographs_prep.get("created"):
+                self.logger.info(f"Created micrographs STAR file: {micrographs_prep['micrographs_star']}")
+            else:
+                self.logger.info(f"Reusing micrographs STAR file: {micrographs_prep['micrographs_star']}")
+
             # Find particles.cs file
             particles_cs = job_dir / "particles_selected.cs"
             if not particles_cs.exists():
@@ -434,27 +623,34 @@ class TransitionWorkflow:
             # Look for passthrough file
             passthrough_file = job_dir / "particles_selected_passthrough.cs"
             if not passthrough_file.exists():
-                passthrough_file = job_dir / "particles_passthrough.cs"
-                if not passthrough_file.exists():
-                    passthrough_file = None
+                passthrough_candidates = [
+                    job_dir / "particles_passthrough.cs",
+                    job_dir / f"{job_dir.name}_passthrough_particles_selected.cs",
+                    job_dir / f"{job_dir.name}_particles_selected_passthrough.cs",
+                    job_dir / f"{job_dir.name}_passthrough_particles.cs",
+                ]
+                passthrough_file = None
+                for candidate in passthrough_candidates:
+                    if candidate.exists():
+                        passthrough_file = candidate
+                        break
             
-            # Create Relion Select job directory for particles
-            relion_job_dir = self.transition_agent.relion_tools._get_next_job_directory("Select")
-            relion_job_dir_path = Path(relion_job_dir)
-            relion_job_dir_relative = os.path.relpath(relion_job_dir, relion_dir)
+            # Create transit_cs/Particles directory for converted STAR file
+            transit_particles_dir, transit_particles_rel = self._ensure_transit_subdir(relion_dir, "Particles")
             
-            # Convert to STAR file in Relion directory
+            # Convert to STAR file in transit directory
             star_file_name = "particles.star"
-            star_file_path = relion_job_dir_path / star_file_name
+            star_file_path = transit_particles_dir / star_file_name
             
             self.transition_agent.conversion_tools.convert_cs_to_star(
                 particles_cs,
                 star_file_path,
-                passthrough_path=passthrough_file if passthrough_file and passthrough_file.exists() else None
+                passthrough_path=passthrough_file if passthrough_file and passthrough_file.exists() else None,
+                job_directory=str(job_dir)
             )
             
             # Generate JSON config file in Relion directory
-            config_file_path = relion_job_dir_path / "transition_config.json"
+            config_file_path = transit_particles_dir / "transition_config.json"
             config_data = {
                 "transition_info": {
                     "from_agent": "cryosparc",
@@ -465,14 +661,28 @@ class TransitionWorkflow:
                     "conversion_timestamp": datetime.datetime.now().isoformat()
                 },
                 "relion_job": {
-                    "job_dir": relion_job_dir_relative,
-                    "job_dir_absolute": relion_job_dir,
-                    "star_file": star_file_name,
+                    "job_dir": str(transit_particles_dir),
+                    "job_dir_relative": transit_particles_rel,
+                    "job_dir_absolute": str(transit_particles_dir),
+                    "star_file": str(star_file_path.absolute()),
+                    "star_file_relative": star_file_name,
                     "star_file_absolute": str(star_file_path.absolute())
+                },
+                "micrographs_job": {
+                    "source_job_uid": micrographs_prep.get("source_job_uid"),
+                    "source_directory": micrographs_prep.get("source_directory"),
+                    "job_dir": micrographs_prep.get("relion_job_dir_relative") or micrographs_prep.get("relion_job_dir"),
+                    "job_dir_absolute": micrographs_prep.get("relion_job_dir_absolute") or micrographs_prep.get("relion_job_dir"),
+                    "star_file": micrographs_prep.get("micrographs_star"),
+                    "star_file_relative": "micrographs.star",
+                    "star_file_absolute": micrographs_prep.get("micrographs_star"),
+                    "passthrough_file": micrographs_prep.get("passthrough_file"),
+                    "created_during_transition": micrographs_prep.get("created", False)
                 },
                 "conversion_metadata": {
                     "source_file": str(particles_cs),
                     "passthrough_file": str(passthrough_file) if passthrough_file else None,
+                    "micrographs_source_file": micrographs_prep.get("source_cs_file"),
                     "converter": "FileConversionTools",
                     "relion_dir": str(relion_dir)
                 }
@@ -481,30 +691,59 @@ class TransitionWorkflow:
             with open(config_file_path, 'w') as f:
                 json.dump(config_data, f, indent=2)
             
-            # Also save a copy in outputs folder for easy access
-            outputs_dir = Path("outputs")
-            outputs_dir.mkdir(exist_ok=True)
+            # Also save a copy in transitions folder for easy access
+            transitions_dir = Path("outputs") / "transitions"
+            transitions_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-            outputs_config_file = outputs_dir / f"transition_particle_picking_{timestamp}.json"
-            with open(outputs_config_file, 'w') as f:
+            transitions_config_file = transitions_dir / f"transition_particle_picking_{timestamp}.json"
+            with open(transitions_config_file, 'w') as f:
                 json.dump(config_data, f, indent=2)
             
-            self.logger.info(f"Created Relion job directory: {relion_job_dir}")
+            self.logger.info(f"Created transit particles directory: {transit_particles_dir}")
             self.logger.info(f"Converted STAR file: {star_file_path}")
             self.logger.info(f"Created config file: {config_file_path}")
-            self.logger.info(f"Saved transition config to outputs: {outputs_config_file}")
+            self.logger.info(f"Saved transition config to transitions folder: {transitions_config_file}")
             
             return {
                 "success": True,
                 "converted_outputs": {
                     "final_star_file": str(star_file_path.absolute()),
+                    "particles_star": str(star_file_path.absolute()),
+                    "particles_relion_job_dir": transit_particles_rel,
+                    "particles_relion_job_dir_absolute": str(transit_particles_dir),
+                    "micrographs_star": micrographs_prep.get("micrographs_star"),
+                    "selected_micrographs_star": micrographs_prep.get("micrographs_star"),
+                    "micrographs_relion_job_dir_relative": micrographs_prep.get("relion_job_dir_relative") or micrographs_prep.get("relion_job_dir"),
+                    "micrographs_relion_job_dir": micrographs_prep.get("relion_job_dir_relative") or micrographs_prep.get("relion_job_dir"),
+                    "micrographs_relion_job_dir_absolute": micrographs_prep.get("relion_job_dir_absolute") or micrographs_prep.get("relion_job_dir"),
+                    "micrographs_source_job_uid": micrographs_prep.get("source_job_uid"),
+                    "micrograph_location": {
+                        "description": "Micrographs STAR generated for RELION transit",
+                        "micrographs_star": micrographs_prep.get("micrographs_star"),
+                        "job_dir": micrographs_prep.get("relion_job_dir_relative") or micrographs_prep.get("relion_job_dir"),
+                        "job_dir_absolute": micrographs_prep.get("relion_job_dir_absolute") or micrographs_prep.get("relion_job_dir"),
+                        "source_job_uid": micrographs_prep.get("source_job_uid"),
+                    },
                     "transition_config": str(config_file_path.absolute()),
-                    "transition_config_outputs": str(outputs_config_file.absolute())
+                    "transition_config_outputs": str(transitions_config_file.absolute())
                 },
-                "relion_job_dir": relion_job_dir_relative,
+                "relion_job_dir": str(transit_particles_dir),
+                "relion_job_dir_relative": transit_particles_rel,
                 "star_file": str(star_file_path.absolute()),
+                "particles_star": str(star_file_path.absolute()),
+                "micrographs_star": micrographs_prep.get("micrographs_star"),
+                "micrographs_relion_job_dir_relative": micrographs_prep.get("relion_job_dir_relative") or micrographs_prep.get("relion_job_dir"),
+                "micrographs_relion_job_dir": micrographs_prep.get("relion_job_dir_relative") or micrographs_prep.get("relion_job_dir"),
+                "micrographs_relion_job_dir_absolute": micrographs_prep.get("relion_job_dir_absolute") or micrographs_prep.get("relion_job_dir"),
+                "micrograph_location": {
+                    "description": "Micrographs STAR generated for RELION transit",
+                    "micrographs_star": micrographs_prep.get("micrographs_star"),
+                    "job_dir": micrographs_prep.get("relion_job_dir_relative") or micrographs_prep.get("relion_job_dir"),
+                    "job_dir_absolute": micrographs_prep.get("relion_job_dir_absolute") or micrographs_prep.get("relion_job_dir"),
+                    "source_job_uid": micrographs_prep.get("source_job_uid"),
+                },
                 "config_file": str(config_file_path.absolute()),
-                "outputs_config_file": str(outputs_config_file.absolute())
+                "outputs_config_file": str(transitions_config_file.absolute())
             }
             
         except Exception as e:
@@ -1954,11 +2193,44 @@ class TransitionAgent:
             # Extract converted outputs from existing transition
             if current_backend == BackendType.CRYOSPARC and next_backend == BackendType.RELION:
                 relion_job = existing_transition.get("relion_job", {})
+                micrographs_job = existing_transition.get("micrographs_job", {})
+                transition_config_path = existing_transition.get("transition_config")
+                if not transition_config_path and relion_job.get("job_dir_absolute"):
+                    transition_config_path = str(Path(relion_job.get("job_dir_absolute")) / "transition_config.json")
+
+                particles_star = relion_job.get("star_file_absolute")
                 converted_outputs = {
-                    "selected_micrographs_star": relion_job.get("star_file_absolute"),
+                    "final_star_file": particles_star,
+                    "particles_star": particles_star,
+                    "star_file": particles_star,
+                    "relion_job_dir": relion_job.get("job_dir_absolute") or relion_job.get("job_dir"),
+                    "relion_job_dir_relative": relion_job.get("job_dir"),
+                    "particles_relion_job_dir": relion_job.get("job_dir"),
+                    "particles_relion_job_dir_absolute": relion_job.get("job_dir_absolute"),
                     "selection_job_dir": relion_job.get("job_dir"),
-                    "transition_config": str(Path(relion_job.get("job_dir_absolute", "")) / "transition_config.json"),
+                    "transition_config": transition_config_path,
                 }
+
+                micrographs_star = micrographs_job.get("star_file_absolute")
+                if micrographs_star:
+                    converted_outputs.update({
+                        "micrographs_star": micrographs_star,
+                        "selected_micrographs_star": micrographs_star,
+                        "micrographs_relion_job_dir": micrographs_job.get("job_dir"),
+                        "micrographs_relion_job_dir_relative": micrographs_job.get("job_dir"),
+                        "micrographs_relion_job_dir_absolute": micrographs_job.get("job_dir_absolute"),
+                        "micrographs_source_job_uid": micrographs_job.get("source_job_uid"),
+                        "micrograph_location": {
+                            "description": "Micrographs STAR generated for RELION transit",
+                            "micrographs_star": micrographs_star,
+                            "job_dir": micrographs_job.get("job_dir"),
+                            "job_dir_absolute": micrographs_job.get("job_dir_absolute"),
+                            "source_job_uid": micrographs_job.get("source_job_uid"),
+                        },
+                    })
+
+                if existing_transition.get("transition_config_outputs"):
+                    converted_outputs["transition_config_outputs"] = existing_transition.get("transition_config_outputs")
             elif current_backend == BackendType.RELION and next_backend == BackendType.CRYOSPARC:
                 cryosparc_jobs = existing_transition.get("cryosparc_jobs", {})
                 preprocessing_outputs = existing_transition.get("preprocessing_outputs", {})
@@ -1972,10 +2244,13 @@ class TransitionAgent:
             else:
                 converted_outputs = {}
             
-            # Merge with original outputs
-            result = {**current_stage_outputs, **converted_outputs}
-            result["transition_info"] = existing_transition.get("transition_info", {})
-            return result
+            merged_outputs = dict(current_stage_outputs)
+            merged_outputs.update(converted_outputs)
+            transition_info = existing_transition.get("transition_info", {})
+            if transition_config_path:
+                transition_info.setdefault("config_file", transition_config_path)
+            merged_outputs["transition_info"] = transition_info
+            return merged_outputs
         
         self.logger.info(f"❌ [perform_transition] No existing transition found, will perform new conversion")
         
@@ -1992,17 +2267,45 @@ class TransitionAgent:
             
             # Merge converted outputs with original (converted takes precedence)
             converted_outputs = conversion_result.get("converted_outputs", {})
-            result = {**current_stage_outputs, **converted_outputs}
-            result["transition_info"] = {
+            merged_outputs = dict(current_stage_outputs)
+            merged_outputs.update(converted_outputs)
+
+            for key in [
+                "star_file",
+                "final_star_file",
+                "particles_star",
+                "particles_relion_job_dir",
+                "particles_relion_job_dir_absolute",
+                "micrographs_star",
+                "micrographs_relion_job_dir",
+                "micrographs_relion_job_dir_relative",
+                "micrographs_relion_job_dir_absolute",
+                "micrograph_location",
+                "config_file",
+                "outputs_config_file",
+                "transition_config",
+                "transition_config_outputs",
+                "relion_job_dir",
+                "relion_job_dir_relative",
+            ]:
+                value = conversion_result.get(key)
+                if value:
+                    merged_outputs[key] = value
+
+            transition_info = {
                 "from_agent": "cryosparc",
                 "to_agent": "relion",
                 "stage": current_stage,
                 "converted": list(converted_outputs.keys()),
+                "star_file": conversion_result.get("star_file") or converted_outputs.get("final_star_file"),
                 "relion_job_dir": conversion_result.get("relion_job_dir"),
+                "relion_job_dir_relative": conversion_result.get("relion_job_dir_relative"),
                 "config_file": conversion_result.get("config_file"),
-                "verification": conversion_result.get("verification")
+                "transition_config": converted_outputs.get("transition_config") or conversion_result.get("transition_config"),
+                "verification": conversion_result.get("verification"),
             }
-            return result
+            merged_outputs["transition_info"] = transition_info
+            return merged_outputs
         
         elif current_backend == BackendType.RELION and next_backend == BackendType.CRYOSPARC:
             self.logger.info(f"Converting Relion -> CryoSparc for {current_stage} -> {next_stage}")
@@ -2020,14 +2323,16 @@ class TransitionAgent:
                 workspace_uid
             )
             # Merge converted outputs with original (converted takes precedence)
-            result = {**current_stage_outputs, **converted}
-            result["transition_info"] = {
+            merged_outputs = dict(current_stage_outputs)
+            merged_outputs.update(converted)
+            transition_info = {
                 "from_agent": "relion",
                 "to_agent": "cryosparc",
                 "stage": current_stage,
                 "converted": list(converted.keys())
             }
-            return result
+            merged_outputs["transition_info"] = transition_info
+            return merged_outputs
         
         else:
             self.logger.warning(f"Unknown transition: {current_backend} -> {next_backend}")

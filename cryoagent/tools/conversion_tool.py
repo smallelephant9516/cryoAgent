@@ -136,7 +136,7 @@ class FileConversionTools:
             except Exception as exc:  # pragma: no cover - logging path
                 print(f"Warning: Could not load passthrough file {passthrough_path}: {exc}")
 
-        particles, optics = self._build_relion_tables(df_raw)
+        particles, optics = self._build_relion_tables(df_raw, job_directory=job_directory)
         particles.attrs["optics"] = optics
         star_path = Path(star_path)
         star_path.parent.mkdir(parents=True, exist_ok=True)
@@ -340,11 +340,37 @@ class FileConversionTools:
         return star_path
     
     def _merge_location_data(self, df_main: pd.DataFrame, df_passthrough: pd.DataFrame) -> pd.DataFrame:
-        df_merged = df_main.copy()
-        # Placeholder for potential merges (kept for future extension)
-        return df_merged
+        if df_passthrough is None or df_passthrough.empty:
+            return df_main
 
-    def _build_relion_tables(self, df_raw: pd.DataFrame) -> Tuple[pd.DataFrame, pd.DataFrame]:
+        if "uid" not in df_main.columns or "uid" not in df_passthrough.columns:
+            return df_main
+
+        df_main_idx = df_main.set_index("uid", drop=False)
+        df_pass_idx = df_passthrough.set_index("uid", drop=False)
+
+        # Decode byte columns that are known to contain paths/strings
+        for column in ("location/micrograph_path",):
+            if column in df_pass_idx.columns:
+                df_pass_idx[column] = df_pass_idx[column].apply(self._decode_bytes)
+
+        merged = df_main_idx.copy()
+        for column in df_pass_idx.columns:
+            if column == "uid":
+                continue
+            series = df_pass_idx[column]
+            if column not in merged.columns:
+                merged[column] = series
+            else:
+                merged[column] = merged[column].combine_first(series)
+
+        return merged.reset_index(drop=True)
+
+    def _build_relion_tables(
+        self,
+        df_raw: pd.DataFrame,
+        job_directory: Optional[Union[str, Path]] = None,
+    ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         n_particles = len(df_raw)
         image_paths = df_raw.get("blob/path")
         if image_paths is None:
@@ -357,8 +383,20 @@ class FileConversionTools:
         else:
             image_indices = pd.to_numeric(image_indices, errors="coerce").fillna(0).astype(int)
 
-        image_names = [f"{i:08d}@{path}" for i, path in zip(image_indices + 1, image_paths)]
-        micrograph_names = [PurePath(path).name for path in image_paths]
+        image_names: List[str] = []
+        micrograph_names: List[str] = []
+
+        micrograph_paths_series = df_raw.get("location/micrograph_path")
+        if micrograph_paths_series is not None:
+            micrograph_paths_series = micrograph_paths_series.apply(self._decode_bytes)
+        else:
+            micrograph_paths_series = pd.Series([None] * n_particles)
+
+        for idx, (particle_path, micro_path) in enumerate(zip(image_paths, micrograph_paths_series), start=1):
+            resolved_particle = self._resolve_particle_path(particle_path, job_directory)
+            resolved_micro = self._resolve_micrograph_path(micro_path, resolved_particle, job_directory)
+            image_names.append(f"{idx:08d}@{resolved_particle}")
+            micrograph_names.append(resolved_micro)
 
         pixel_series = df_raw.get("blob/psize_A")
         pixel_size = pd.to_numeric(pixel_series, errors="coerce") if pixel_series is not None else pd.Series([np.nan] * n_particles)
@@ -587,6 +625,66 @@ class FileConversionTools:
         if isinstance(value, np.bytes_):
             return value.decode("utf-8", errors="ignore")
         return str(value)
+
+    @staticmethod
+    def _candidate_paths(job_directory: Optional[Union[str, Path]]) -> List[Path]:
+        candidates: List[Path] = []
+        if job_directory:
+            job_dir = Path(job_directory)
+            candidates.extend([
+                job_dir,
+                job_dir.parent,
+                job_dir.parent.parent,
+            ])
+        return [c for c in candidates if c.exists()]
+
+    def _resolve_particle_path(self, path_str: str, job_directory: Optional[Union[str, Path]]) -> str:
+        if not path_str:
+            return str(path_str)
+        path_obj = Path(self._decode_bytes(path_str))
+        if path_obj.is_absolute():
+            return str(path_obj.resolve())
+
+        candidates = self._candidate_paths(job_directory)
+        for base in candidates:
+            candidate = (base / path_obj).resolve()
+            if candidate.parent.exists():
+                return str(candidate)
+
+        # Try relative to current working directory as a fallback
+        cwd_candidate = (Path.cwd() / path_obj).resolve()
+        if cwd_candidate.exists():
+            return str(cwd_candidate)
+
+        # As a last resort return the path relative to the first candidate or CWD
+        for base in candidates:
+            candidate = (base / path_obj).resolve()
+            if candidate.parent.exists():
+                return str(candidate)
+        return str((candidates[0] / path_obj).resolve()) if candidates else str(cwd_candidate)
+
+    def _resolve_micrograph_path(
+        self,
+        micrograph_path: Optional[str],
+        particle_path: str,
+        job_directory: Optional[Union[str, Path]],
+    ) -> str:
+        if micrograph_path:
+            resolved = self._resolve_particle_path(micrograph_path, job_directory)
+            return resolved
+
+        # Fallback: try to derive from particle path (older CryoSPARC versions store extract stacks)
+        particle_obj = Path(particle_path)
+        parent = particle_obj.parent
+        if parent.name.lower() == "extract":
+            try:
+                prefix = particle_obj.stem.split("_particles")[0]
+                candidate = parent.parent / "micrographs" / f"{prefix}.mrc"
+                if candidate.exists():
+                    return str(candidate.resolve())
+            except Exception:
+                pass
+        return particle_path
 
     @staticmethod
     def _extract_shape_dim(shape: Any, axis: int = 0) -> float:

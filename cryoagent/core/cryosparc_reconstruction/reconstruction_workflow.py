@@ -44,10 +44,17 @@ class ReconstructionWorkflow:
         self.results: List[ReconstructionResult] = []
         self.current_job_uids: Dict[ReconstructionStep, str] = {}
         self.workflow_state: Dict[str, Any] = {}
+        self.dynamic_defaults: Dict[str, Any] = {}
         
         # Load stage-specific configuration
         self.stage_config = self._load_stage_config(stage_config_path)
         self.workflow_params = self._parse_workflow_params()
+        if hasattr(self.agent, "update_workflow_defaults"):
+            try:
+                self.agent.update_workflow_defaults(self.workflow_params)
+            except Exception:
+                # Non-fatal; agent may decline to store defaults
+                pass
     
     def _load_stage_config(self, config_path: Optional[str]) -> Dict[str, Any]:
         """Load stage-specific configuration from JSON file."""
@@ -137,8 +144,15 @@ class ReconstructionWorkflow:
             "completed_steps": [],
             "failed_steps": [],
             "active_jobs": {},
-            "workflow_status": "starting"
+            "workflow_status": "starting",
+            "input_particles_job_uid": particles_job_uid
         }
+        self.dynamic_defaults = {
+            "particles_job_uid": particles_job_uid,
+            "refinement_resolution": self.workflow_params.get("refinement_resolution"),
+            "refinement_symmetry": self.workflow_params.get("refinement_symmetry"),
+        }
+        self._refresh_agent_defaults()
         
         workflow_input = self._create_workflow_input(particles_job_uid, run_refinement)
         
@@ -403,6 +417,8 @@ Begin by executing step 1 ({tool_name}){"and proceed to refinement after complet
         
         if success and job_uid:
             self.current_job_uids[step] = job_uid
+            self._update_dynamic_defaults(step, job_uid)
+            self._refresh_agent_defaults()
     
     def get_workflow_summary(self) -> Dict[str, Any]:
         """Get a summary of the 3D reconstruction workflow execution."""
@@ -442,4 +458,31 @@ Begin by executing step 1 ({tool_name}){"and proceed to refinement after complet
             "workflow_status": "reset"
         }
         self.agent.clear_reasoning_history()
+        self.dynamic_defaults = {}
+        self._refresh_agent_defaults()
+
+    def _update_dynamic_defaults(self, step: ReconstructionStep, job_uid: Optional[str]) -> None:
+        if not job_uid:
+            return
+        if step == ReconstructionStep.AB_INITIO:
+            self.dynamic_defaults["ab_init_job_uid"] = job_uid
+            self.dynamic_defaults["last_volume_job_uid"] = job_uid
+        elif step == ReconstructionStep.HOMOGENEOUS_RECONSTRUCTION:
+            self.dynamic_defaults["homogeneous_reconstruction_job_uid"] = job_uid
+            self.dynamic_defaults["last_volume_job_uid"] = job_uid
+        elif step == ReconstructionStep.HOMOGENEOUS_REFINEMENT:
+            self.dynamic_defaults["homogeneous_refinement_job_uid"] = job_uid
+            self.dynamic_defaults["last_volume_job_uid"] = job_uid
+        elif step == ReconstructionStep.HETEROGENEOUS_REFINEMENT:
+            self.dynamic_defaults["heterogeneous_refinement_job_uid"] = job_uid
+            self.dynamic_defaults["last_volume_job_uid"] = job_uid
+
+    def _refresh_agent_defaults(self) -> None:
+        if hasattr(self.agent, "update_workflow_defaults"):
+            combined = dict(self.workflow_params)
+            combined.update(self.dynamic_defaults)
+            try:
+                self.agent.update_workflow_defaults(combined)
+            except Exception:
+                pass
 
