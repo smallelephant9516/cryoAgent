@@ -326,6 +326,17 @@ class CryoSPARCPickingParser:
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         status = "completed" if success else "failed"
+
+        micrographs_star = (
+            stage_outputs.get("micrographs_star")
+            or stage_outputs.get("selected_micrographs_star")
+        )
+        micrograph_location: Optional[Dict[str, Any]] = None
+        if micrographs_star:
+            micrograph_location = {
+                "micrographs_star": micrographs_star,
+                "source": "cryosparc_particle_picking",
+            }
         
         picking_results = {
             "stage": "particle_picking",
@@ -335,6 +346,9 @@ class CryoSPARCPickingParser:
             "workspace_uid": context.workspace_uid,
             "input_micrographs_job_uid": stage_outputs.get("micrographs_job_uid"),
             "particle_diameter": stage_outputs.get("particle_diameter"),
+            "micrographs_star": micrographs_star,
+            "selected_micrographs_star": micrographs_star,
+            "micrograph_location": micrograph_location,
             "job_uids": {
                 "blob_picker": stage_outputs.get("blob_picker_job_uid"),
                 "particle_extraction": stage_outputs.get("extraction_job_uid"),
@@ -352,7 +366,9 @@ class CryoSPARCPickingParser:
                 "selected_particles_location": stage_outputs.get("selected_particles_location"),
                 "final_particles_absolute_path": stage_outputs.get("final_particles_absolute_path"),
                 "final_particles_cs_file": stage_outputs.get("final_particles_cs_file"),
-                "final_particles_passthrough_file": stage_outputs.get("final_particles_passthrough_file")
+                "final_particles_passthrough_file": stage_outputs.get("final_particles_passthrough_file"),
+                "micrographs_star": micrographs_star,
+                "selected_micrographs_star": micrographs_star,
             },
             "usage_notes": {
                 "next_stage": "3d_reconstruction",

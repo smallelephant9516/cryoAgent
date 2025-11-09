@@ -136,10 +136,14 @@ class FileConversionTools:
             except Exception as exc:  # pragma: no cover - logging path
                 print(f"Warning: Could not load passthrough file {passthrough_path}: {exc}")
 
-        particles, optics = self._build_relion_tables(df_raw, job_directory=job_directory)
-        particles.attrs["optics"] = optics
         star_path = Path(star_path)
         star_path.parent.mkdir(parents=True, exist_ok=True)
+        particles, optics = self._build_relion_tables(
+            df_raw,
+            job_directory=job_directory,
+            output_directory=star_path.parent,
+        )
+        particles.attrs["optics"] = optics
         self._dataframe_to_star(particles, star_path, format="v3")
         return star_path
 
@@ -370,6 +374,7 @@ class FileConversionTools:
         self,
         df_raw: pd.DataFrame,
         job_directory: Optional[Union[str, Path]] = None,
+        output_directory: Optional[Union[str, Path]] = None,
     ) -> Tuple[pd.DataFrame, pd.DataFrame]:
         n_particles = len(df_raw)
         image_paths = df_raw.get("blob/path")
@@ -392,10 +397,20 @@ class FileConversionTools:
         else:
             micrograph_paths_series = pd.Series([None] * n_particles)
 
+        symlink_cache: Dict[str, str] = {}
+        output_dir_path = Path(output_directory) if output_directory else None
+
         for idx, (particle_path, micro_path) in enumerate(zip(image_paths, micrograph_paths_series), start=1):
-            resolved_particle = self._resolve_particle_path(particle_path, job_directory)
-            resolved_micro = self._resolve_micrograph_path(micro_path, resolved_particle, job_directory)
-            image_names.append(f"{idx:08d}@{resolved_particle}")
+            resolved_particle_original = self._resolve_particle_path(particle_path, job_directory)
+            resolved_particle_for_image = resolved_particle_original
+            if output_dir_path is not None:
+                resolved_particle_for_image = self._ensure_mrcs_symlink(
+                    resolved_particle_original,
+                    output_dir_path,
+                    symlink_cache,
+                )
+            resolved_micro = self._resolve_micrograph_path(micro_path, resolved_particle_original, job_directory)
+            image_names.append(f"{idx:08d}@{resolved_particle_for_image}")
             micrograph_names.append(resolved_micro)
 
         pixel_series = df_raw.get("blob/psize_A")
@@ -662,6 +677,59 @@ class FileConversionTools:
             if candidate.parent.exists():
                 return str(candidate)
         return str((candidates[0] / path_obj).resolve()) if candidates else str(cwd_candidate)
+
+    def _ensure_mrcs_symlink(
+        self,
+        particle_path: str,
+        output_dir: Path,
+        cache: Dict[str, str],
+    ) -> str:
+        if not particle_path:
+            return particle_path
+
+        cached = cache.get(particle_path)
+        if cached:
+            return cached
+
+        particle_obj = Path(particle_path)
+        suffix = particle_obj.suffix.lower()
+        if suffix == ".mrcs" or suffix == ".mrcs.gz":
+            cache[particle_path] = particle_path
+            return particle_path
+        if suffix != ".mrc":
+            cache[particle_path] = particle_path
+            return particle_path
+
+        link_name = particle_obj.with_suffix(".mrcs").name
+        link_path = output_dir / link_name
+        target = particle_obj.resolve()
+
+        if link_path.exists() or link_path.is_symlink():
+            try:
+                if link_path.is_symlink() and link_path.resolve() == target:
+                    result = str(link_path)
+                    cache[particle_path] = result
+                    return result
+            except OSError:
+                pass
+            try:
+                link_path.unlink()
+            except FileNotFoundError:
+                pass
+            except OSError:
+                pass
+
+        try:
+            link_path.symlink_to(target)
+        except FileExistsError:
+            pass
+        except OSError:
+            cache[particle_path] = particle_path
+            return particle_path
+
+        result = str(link_path)
+        cache[particle_path] = result
+        return result
 
     def _resolve_micrograph_path(
         self,

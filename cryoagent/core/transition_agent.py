@@ -13,6 +13,8 @@ import glob
 import time
 import datetime
 import shutil
+import subprocess
+import shlex
 from pathlib import Path
 from typing import Dict, Any, Optional, Tuple, List
 from enum import Enum
@@ -289,13 +291,12 @@ class TransitionWorkflow:
             star_file_name = "micrographs.star"
             star_file_path = relion_job_dir_path / star_file_name
             
-            # Convert using passthrough file if available
-            # Pass job_directory to help resolve micrograph paths to absolute paths
-            self.transition_agent.conversion_tools.convert_cs_to_star(
+            # Convert using configured method (Helicon by default) with passthrough support
+            micrograph_conversion = self._convert_micrographs_cs_to_star(
                 micrographs_cs,
                 star_file_path,
-                passthrough_path=str(passthrough_file) if passthrough_file else None,
-                job_directory=str(job_dir)
+                passthrough_file if passthrough_file else None,
+                job_dir,
             )
             
             # Generate JSON config file in Relion directory
@@ -317,7 +318,14 @@ class TransitionWorkflow:
                 },
                 "conversion_metadata": {
                     "source_file": str(micrographs_cs),
-                    "converter": "FileConversionTools",
+                    "passthrough_file": str(passthrough_file) if passthrough_file else None,
+                    "converter": micrograph_conversion.get("converter"),
+                    "conversion_method_requested": micrograph_conversion.get("method_requested"),
+                    "conversion_command": micrograph_conversion.get("command"),
+                    "conversion_stdout": micrograph_conversion.get("stdout"),
+                    "conversion_stderr": micrograph_conversion.get("stderr"),
+                    "conversion_returncode": micrograph_conversion.get("returncode"),
+                    "fallback_reason": micrograph_conversion.get("fallback_reason"),
                     "relion_dir": str(relion_dir)
                 }
             }
@@ -345,12 +353,14 @@ class TransitionWorkflow:
                     "selection_job_dir": relion_job_dir_relative,
                     "transition_config": str(config_file_path.absolute()),
                     "transition_config_transitions": str(transitions_config_file.absolute()),
-                    "transition_info": config_data.get("transition_info")
+                    "transition_info": config_data.get("transition_info"),
+                    "conversion_info": micrograph_conversion,
                 },
                 "relion_job_dir": relion_job_dir_relative,
                 "star_file": str(star_file_path.absolute()),
                 "config_file": str(config_file_path.absolute()),
-                "transitions_config_file": str(transitions_config_file.absolute())
+                "transitions_config_file": str(transitions_config_file.absolute()),
+                "conversion_info": micrograph_conversion,
             }
             
         except Exception as e:
@@ -488,6 +498,7 @@ class TransitionWorkflow:
                     "passthrough_file": None,
                     "source_cs_file": None,
                     "created": True,
+                    "conversion_info": None,
                 }
             except Exception as exc:
                 self.logger.warning(f"Failed to reuse existing micrographs STAR file: {exc}")
@@ -505,6 +516,7 @@ class TransitionWorkflow:
                     "passthrough_file": None,
                     "source_cs_file": None,
                     "created": False,
+                    "conversion_info": None,
                 }
             return {
                 "success": False,
@@ -543,11 +555,11 @@ class TransitionWorkflow:
             }
 
         created_now = not star_file_path.exists()
-        self.transition_agent.conversion_tools.convert_cs_to_star(
+        conversion_info = self._convert_micrographs_cs_to_star(
             micrographs_cs,
             star_file_path,
-            passthrough_path=str(passthrough_file) if passthrough_file else None,
-            job_directory=str(job_dir)
+            passthrough_file if passthrough_file else None,
+            job_dir,
         )
 
         return {
@@ -561,7 +573,90 @@ class TransitionWorkflow:
             "passthrough_file": str(passthrough_file) if passthrough_file else None,
             "source_cs_file": str(micrographs_cs),
             "created": created_now,
+            "conversion_info": conversion_info,
         }
+
+    def _annotate_particle_picking_results_file(
+        self,
+        micrographs_star: Optional[str] = None,
+        final_star_file: Optional[str] = None,
+        additional_metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Update cached particle picking results JSON with micrographs STAR information."""
+        if not isinstance(self.stage_outputs, dict):
+            return
+
+        result_file = self.stage_outputs.get("result_file")
+        if not result_file:
+            return
+
+        result_path = Path(result_file)
+        if not result_path.exists():
+            return
+
+        try:
+            with open(result_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except Exception as exc:
+            self.logger.debug(f"Unable to read picking results file {result_path}: {exc}")
+            return
+
+        if not isinstance(data, dict):
+            return
+
+        changed = False
+
+        if final_star_file:
+            existing_final = data.get("final_star_file")
+            if not existing_final or existing_final != final_star_file:
+                data["final_star_file"] = final_star_file
+                changed = True
+
+        if micrographs_star:
+            if data.get("micrographs_star") != micrographs_star:
+                data["micrographs_star"] = micrographs_star
+                changed = True
+            if data.get("selected_micrographs_star") != micrographs_star:
+                data["selected_micrographs_star"] = micrographs_star
+                changed = True
+
+            existing_location = data.get("micrograph_location")
+            if isinstance(existing_location, dict):
+                location_dict = dict(existing_location)
+            elif isinstance(existing_location, str):
+                location_dict = {"path": existing_location}
+            else:
+                location_dict = {}
+
+            if location_dict.get("micrographs_star") != micrographs_star:
+                location_dict["micrographs_star"] = micrographs_star
+                changed = True
+
+            location_dict.setdefault("source", "transition_conversion")
+            data["micrograph_location"] = location_dict
+
+            outputs_section = data.get("outputs")
+            if isinstance(outputs_section, dict):
+                if outputs_section.get("micrographs_star") != micrographs_star:
+                    outputs_section["micrographs_star"] = micrographs_star
+                    changed = True
+                if outputs_section.get("selected_micrographs_star") != micrographs_star:
+                    outputs_section["selected_micrographs_star"] = micrographs_star
+                    changed = True
+
+        if additional_metadata:
+            transition_meta = data.setdefault("transition_metadata", {})
+            for key, value in additional_metadata.items():
+                if transition_meta.get(key) != value:
+                    transition_meta[key] = value
+                    changed = True
+
+        if changed:
+            try:
+                with open(result_path, "w", encoding="utf-8") as f:
+                    json.dump(data, f, indent=2)
+            except Exception as exc:
+                self.logger.warning(f"Failed to update picking results file {result_path}: {exc}")
 
     def _convert_particle_picking_outputs(self, relion_dir: Path) -> Dict[str, Any]:
         """Convert particle picking outputs (particles)."""
@@ -605,6 +700,12 @@ class TransitionWorkflow:
             else:
                 self.logger.info(f"Reusing micrographs STAR file: {micrographs_prep['micrographs_star']}")
 
+            micrographs_star_path = micrographs_prep.get("micrographs_star")
+            if micrographs_star_path:
+                if isinstance(self.stage_outputs, dict):
+                    self.stage_outputs["selected_micrographs_star"] = micrographs_star_path
+                    self.stage_outputs["micrographs_star"] = micrographs_star_path
+
             # Find particles.cs file
             particles_cs = job_dir / "particles_selected.cs"
             if not particles_cs.exists():
@@ -642,15 +743,94 @@ class TransitionWorkflow:
             star_file_name = "particles.star"
             star_file_path = transit_particles_dir / star_file_name
             
-            self.transition_agent.conversion_tools.convert_cs_to_star(
+            conversion_info = self._convert_particles_cs_to_star(
                 particles_cs,
                 star_file_path,
-                passthrough_path=passthrough_file if passthrough_file and passthrough_file.exists() else None,
-                job_directory=str(job_dir)
+                passthrough_file if passthrough_file and passthrough_file.exists() else None,
+                job_dir,
             )
+
+            converted_star_path = star_file_path
+            converted_star_abs = str(converted_star_path.resolve())
+            conversion_info["initial_star_file"] = converted_star_abs
+
+            reextraction_result = self._run_relion_particle_reextraction(
+                converted_star_path,
+                micrographs_prep.get("micrographs_star"),
+                relion_dir,
+            )
+
+            if reextraction_result.get("success"):
+                reextracted_star_abs = str(Path(reextraction_result["particles_star"]).resolve())
+                final_star_abs = reextracted_star_abs
+                final_job_dir_abs = reextraction_result.get("output_dir") or str(Path(reextracted_star_abs).parent)
+                final_job_dir_rel = reextraction_result.get("job_dir_relative")
+                if not final_job_dir_rel and final_job_dir_abs:
+                    try:
+                        final_job_dir_rel = os.path.relpath(final_job_dir_abs, relion_dir)
+                    except ValueError:
+                        final_job_dir_rel = final_job_dir_abs
+                reextraction_metadata: Dict[str, Any] = {
+                    "success": True,
+                    "particles_star": reextracted_star_abs,
+                    "pick_star": reextraction_result.get("pick_star"),
+                    "job_dir": final_job_dir_abs,
+                    "job_dir_relative": final_job_dir_rel,
+                    "command": reextraction_result.get("command"),
+                    "stdout": reextraction_result.get("stdout"),
+                    "stderr": reextraction_result.get("stderr"),
+                    "source_star": reextraction_result.get("source_star"),
+                    "micrographs_star": reextraction_result.get("micrographs_star"),
+                    "extract_size": reextraction_result.get("extract_size"),
+                }
+            else:
+                reextracted_star_abs = None
+                final_star_abs = converted_star_abs
+                final_job_dir_abs = str(transit_particles_dir)
+                final_job_dir_rel = transit_particles_rel
+                reextraction_metadata = {
+                    "success": False,
+                    "error": reextraction_result.get("error"),
+                    "particles_star": converted_star_abs,
+                    "job_dir": final_job_dir_abs,
+                    "job_dir_relative": final_job_dir_rel,
+                    "source_star": reextraction_result.get("source_star") or converted_star_abs,
+                    "micrographs_star": reextraction_result.get("micrographs_star") or micrographs_prep.get("micrographs_star"),
+                    "extract_size": 128,
+                }
+
+            conversion_info["reextraction"] = reextraction_metadata
+            conversion_info["reextracted_particles_star"] = reextracted_star_abs
+            conversion_info["final_star_file"] = final_star_abs
             
+            final_star_path = Path(final_star_abs)
+            final_star_rel_name = final_star_path.name
+            conversion_job_dir_abs = str(transit_particles_dir)
+            conversion_job_dir_rel = transit_particles_rel
+
+            if reextraction_metadata.get("success"):
+                self.logger.info(f"Re-extracted particles STAR: {reextraction_metadata.get('particles_star')}")
+            else:
+                self.logger.warning(
+                    f"Particle re-extraction failed or skipped: {reextraction_metadata.get('error')}"
+                )
+
             # Generate JSON config file in Relion directory
             config_file_path = transit_particles_dir / "transition_config.json"
+            transit_micrographs_dir = micrographs_prep.get("relion_job_dir_absolute") or micrographs_prep.get("relion_job_dir")
+            micrograph_location_dict = {
+                "micrographs_star": micrographs_prep.get("micrographs_star"),
+                "directory": transit_micrographs_dir,
+                "job_dir_relative": micrographs_prep.get("relion_job_dir_relative"),
+                "source_job_uid": micrographs_prep.get("source_job_uid"),
+            }
+
+            transit_particles_dict = {
+                "particles_star": final_star_abs,
+                "directory": final_job_dir_abs,
+                "job_dir_relative": final_job_dir_rel,
+            }
+
             config_data = {
                 "transition_info": {
                     "from_agent": "cryosparc",
@@ -660,33 +840,27 @@ class TransitionWorkflow:
                     "source_directory": str(job_dir),
                     "conversion_timestamp": datetime.datetime.now().isoformat()
                 },
-                "relion_job": {
-                    "job_dir": str(transit_particles_dir),
-                    "job_dir_relative": transit_particles_rel,
-                    "job_dir_absolute": str(transit_particles_dir),
-                    "star_file": str(star_file_path.absolute()),
-                    "star_file_relative": star_file_name,
-                    "star_file_absolute": str(star_file_path.absolute())
+                "source_particles": {
+                    "job_uid": job_uid,
+                    "directory": str(job_dir),
                 },
-                "micrographs_job": {
-                    "source_job_uid": micrographs_prep.get("source_job_uid"),
-                    "source_directory": micrographs_prep.get("source_directory"),
-                    "job_dir": micrographs_prep.get("relion_job_dir_relative") or micrographs_prep.get("relion_job_dir"),
-                    "job_dir_absolute": micrographs_prep.get("relion_job_dir_absolute") or micrographs_prep.get("relion_job_dir"),
-                    "star_file": micrographs_prep.get("micrographs_star"),
-                    "star_file_relative": "micrographs.star",
-                    "star_file_absolute": micrographs_prep.get("micrographs_star"),
-                    "passthrough_file": micrographs_prep.get("passthrough_file"),
-                    "created_during_transition": micrographs_prep.get("created", False)
+                "source_micrographs": {
+                    "job_uid": micrographs_prep.get("source_job_uid"),
+                    "directory": micrographs_prep.get("source_directory"),
                 },
+                "transit_particles": transit_particles_dict,
+                "transit_micrographs": micrograph_location_dict,
                 "conversion_metadata": {
-                    "source_file": str(particles_cs),
-                    "passthrough_file": str(passthrough_file) if passthrough_file else None,
-                    "micrographs_source_file": micrographs_prep.get("source_cs_file"),
-                    "converter": "FileConversionTools",
-                    "relion_dir": str(relion_dir)
-                }
+                    "conversion_particles_star": converted_star_abs,
+                    "conversion_job_dir": conversion_job_dir_abs,
+                    "micrographs_conversion": micrographs_prep.get("conversion_info"),
+                    "reextraction": reextraction_metadata,
+                },
             }
+            config_data["final_star_file"] = final_star_abs
+            config_data["particles_star"] = final_star_abs
+            config_data["micrographs_star"] = micrographs_prep.get("micrographs_star")
+            config_data["micrograph_location"] = micrograph_location_dict
             
             with open(config_file_path, 'w') as f:
                 json.dump(config_data, f, indent=2)
@@ -698,52 +872,52 @@ class TransitionWorkflow:
             transitions_config_file = transitions_dir / f"transition_particle_picking_{timestamp}.json"
             with open(transitions_config_file, 'w') as f:
                 json.dump(config_data, f, indent=2)
+
+            self._annotate_particle_picking_results_file(
+                micrographs_star=micrographs_star_path,
+                final_star_file=final_star_abs,
+                additional_metadata={
+                    "transition_config": str(config_file_path.resolve()),
+                    "transition_config_outputs": str(transitions_config_file.resolve()),
+                },
+            )
             
             self.logger.info(f"Created transit particles directory: {transit_particles_dir}")
-            self.logger.info(f"Converted STAR file: {star_file_path}")
+            self.logger.info(f"Converted STAR file: {converted_star_abs}")
+            self.logger.info(f"Final particles STAR for RELION: {final_star_abs}")
             self.logger.info(f"Created config file: {config_file_path}")
             self.logger.info(f"Saved transition config to transitions folder: {transitions_config_file}")
             
             return {
                 "success": True,
                 "converted_outputs": {
-                    "final_star_file": str(star_file_path.absolute()),
-                    "particles_star": str(star_file_path.absolute()),
-                    "particles_relion_job_dir": transit_particles_rel,
-                    "particles_relion_job_dir_absolute": str(transit_particles_dir),
+                    "final_star_file": final_star_abs,
+                    "particles_star": final_star_abs,
                     "micrographs_star": micrographs_prep.get("micrographs_star"),
                     "selected_micrographs_star": micrographs_prep.get("micrographs_star"),
-                    "micrographs_relion_job_dir_relative": micrographs_prep.get("relion_job_dir_relative") or micrographs_prep.get("relion_job_dir"),
-                    "micrographs_relion_job_dir": micrographs_prep.get("relion_job_dir_relative") or micrographs_prep.get("relion_job_dir"),
-                    "micrographs_relion_job_dir_absolute": micrographs_prep.get("relion_job_dir_absolute") or micrographs_prep.get("relion_job_dir"),
-                    "micrographs_source_job_uid": micrographs_prep.get("source_job_uid"),
-                    "micrograph_location": {
-                        "description": "Micrographs STAR generated for RELION transit",
-                        "micrographs_star": micrographs_prep.get("micrographs_star"),
-                        "job_dir": micrographs_prep.get("relion_job_dir_relative") or micrographs_prep.get("relion_job_dir"),
-                        "job_dir_absolute": micrographs_prep.get("relion_job_dir_absolute") or micrographs_prep.get("relion_job_dir"),
-                        "source_job_uid": micrographs_prep.get("source_job_uid"),
-                    },
                     "transition_config": str(config_file_path.absolute()),
-                    "transition_config_outputs": str(transitions_config_file.absolute())
+                    "transition_config_outputs": str(transitions_config_file.absolute()),
+                    "source_particles": {
+                        "job_uid": job_uid,
+                        "directory": str(job_dir),
+                    },
+                    "source_micrographs": {
+                        "job_uid": micrographs_prep.get("source_job_uid"),
+                        "directory": micrographs_prep.get("source_directory"),
+                    },
+                    "transit_particles": transit_particles_dict,
+                    "transit_micrographs": micrograph_location_dict,
+                    "transition_config": str(config_file_path.absolute()),
+                    "transition_config_outputs": str(transitions_config_file.absolute()),
                 },
-                "relion_job_dir": str(transit_particles_dir),
-                "relion_job_dir_relative": transit_particles_rel,
-                "star_file": str(star_file_path.absolute()),
-                "particles_star": str(star_file_path.absolute()),
+                "final_star_file": final_star_abs,
+                "particles_star": final_star_abs,
                 "micrographs_star": micrographs_prep.get("micrographs_star"),
-                "micrographs_relion_job_dir_relative": micrographs_prep.get("relion_job_dir_relative") or micrographs_prep.get("relion_job_dir"),
-                "micrographs_relion_job_dir": micrographs_prep.get("relion_job_dir_relative") or micrographs_prep.get("relion_job_dir"),
-                "micrographs_relion_job_dir_absolute": micrographs_prep.get("relion_job_dir_absolute") or micrographs_prep.get("relion_job_dir"),
-                "micrograph_location": {
-                    "description": "Micrographs STAR generated for RELION transit",
-                    "micrographs_star": micrographs_prep.get("micrographs_star"),
-                    "job_dir": micrographs_prep.get("relion_job_dir_relative") or micrographs_prep.get("relion_job_dir"),
-                    "job_dir_absolute": micrographs_prep.get("relion_job_dir_absolute") or micrographs_prep.get("relion_job_dir"),
-                    "source_job_uid": micrographs_prep.get("source_job_uid"),
-                },
-                "config_file": str(config_file_path.absolute()),
-                "outputs_config_file": str(transitions_config_file.absolute())
+                "selected_micrographs_star": micrographs_prep.get("micrographs_star"),
+                "transit_particles": transit_particles_dict,
+                "transit_micrographs": micrograph_location_dict,
+                "transition_config": str(config_file_path.absolute()),
+                "transition_config_outputs": str(transitions_config_file.absolute()),
             }
             
         except Exception as e:
@@ -754,6 +928,402 @@ class TransitionWorkflow:
                 "converted_outputs": {}
             }
     
+    def _get_micrograph_conversion_config(self) -> Dict[str, Any]:
+        """Return micrograph conversion configuration from master config."""
+        settings = getattr(self.transition_agent, "transition_settings", {}).get("micrograph_conversion", {})
+        return settings if isinstance(settings, dict) else {}
+
+    def _get_particle_conversion_config(self) -> Dict[str, Any]:
+        """Return particle conversion configuration from master config."""
+        settings = getattr(self.transition_agent, "transition_settings", {}).get("particle_conversion", {})
+        return settings if isinstance(settings, dict) else {}
+
+    def _convert_micrographs_cs_to_star(
+        self,
+        micrographs_cs: Path,
+        star_file_path: Path,
+        passthrough_file: Optional[Path],
+        job_directory: Path,
+    ) -> Dict[str, Any]:
+        """
+        Convert CryoSPARC micrograph outputs to RELION STAR file based on configuration.
+        """
+        conversion_settings = self._get_micrograph_conversion_config()
+        requested_method = str(conversion_settings.get("method", "helicon")).lower()
+        conversion_info: Dict[str, Any] = {"method_requested": requested_method}
+
+        star_file_path = Path(star_file_path)
+        star_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        passthrough_str = str(passthrough_file) if passthrough_file else None
+        job_dir_str = str(job_directory) if job_directory else None
+
+        if requested_method == "helicon":
+            helicon_settings = conversion_settings.get("helicon", {})
+            fallback_allowed = bool(conversion_settings.get("fallback_to_internal", True))
+            try:
+                helicon_info = self._convert_micrographs_with_helicon(
+                    micrographs_cs=micrographs_cs,
+                    star_file_path=star_file_path,
+                    helicon_settings=helicon_settings,
+                    passthrough_path=passthrough_str,
+                )
+                conversion_info.update(helicon_info)
+                conversion_info["converter"] = "HeliconCLI"
+                return conversion_info
+            except Exception as exc:
+                conversion_info["helicon_error"] = str(exc)
+                conversion_info["fallback_reason"] = str(exc)
+                self.logger.warning(
+                    "Helicon micrograph conversion failed (%s).%s",
+                    exc,
+                    " Falling back to internal converter." if fallback_allowed else "",
+                )
+                if not fallback_allowed:
+                    raise
+
+        self.transition_agent.conversion_tools.convert_cs_to_star(
+            micrographs_cs,
+            star_file_path,
+            passthrough_path=passthrough_str,
+            job_directory=job_dir_str,
+        )
+
+        conversion_info.setdefault("converter", "FileConversionTools")
+        if passthrough_str:
+            conversion_info["passthrough_file"] = passthrough_str
+
+        return conversion_info
+
+    def _convert_micrographs_with_helicon(
+        self,
+        micrographs_cs: Path,
+        star_file_path: Path,
+        helicon_settings: Dict[str, Any],
+        passthrough_path: Optional[str],
+    ) -> Dict[str, Any]:
+        """Run Helicon CLI to convert micrographs to STAR format."""
+        cs_path = Path(micrographs_cs).resolve()
+        star_path = Path(star_file_path).resolve()
+        star_path.parent.mkdir(parents=True, exist_ok=True)
+
+        command_executable = str(helicon_settings.get("command", "helicon"))
+        force_value = helicon_settings.get("force", 1)
+        extra_args = helicon_settings.get("extra_args", [])
+        if isinstance(extra_args, str):
+            extra_args = shlex.split(extra_args)
+        extra_args = [str(arg) for arg in extra_args]
+
+        base_cmd: List[str] = [
+            command_executable,
+            "images2star",
+            str(cs_path),
+            str(star_path),
+        ]
+        if passthrough_path:
+            base_cmd.extend(["--csparcPassthroughFiles", str(passthrough_path)])
+        if force_value is not None:
+            base_cmd.extend(["--force", str(force_value)])
+        base_cmd.extend(extra_args)
+
+        conda_env = helicon_settings.get("conda_env")
+        if conda_env:
+            command_list: List[str] = ["conda", "run", "-n", str(conda_env)] + base_cmd
+        else:
+            command_list = base_cmd
+
+        timeout_seconds = helicon_settings.get("timeout_seconds")
+        env = os.environ.copy()
+        extra_env = helicon_settings.get("env")
+        if isinstance(extra_env, dict):
+            env.update({str(k): str(v) for k, v in extra_env.items()})
+
+        command_string = " ".join(shlex.quote(str(part)) for part in command_list)
+        self.logger.info(f"Executing Helicon micrograph conversion: {command_string}")
+
+        result = subprocess.run(
+            command_list,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout_seconds,
+        )
+
+        if result.returncode != 0:
+            stdout_summary = result.stdout.strip()
+            stderr_summary = result.stderr.strip()
+            error_message = (
+                f"Helicon micrograph conversion failed with return code {result.returncode}. "
+                f"STDERR: {stderr_summary or 'N/A'}; STDOUT: {stdout_summary or 'N/A'}"
+            )
+            raise RuntimeError(error_message)
+
+        if not star_path.exists():
+            raise FileNotFoundError(
+                f"Helicon micrograph conversion completed but STAR file not found at {star_path}"
+            )
+
+        stdout_text = result.stdout.strip()
+        stderr_text = result.stderr.strip()
+
+        return {
+            "converter": "HeliconCLI",
+            "command": command_string,
+            "command_list": command_list,
+            "stdout": stdout_text if stdout_text else None,
+            "stderr": stderr_text if stderr_text else None,
+            "returncode": result.returncode,
+            "passthrough_file": passthrough_path,
+        }
+
+    def _convert_particles_cs_to_star(
+        self,
+        particles_cs: Path,
+        star_file_path: Path,
+        passthrough_file: Optional[Path],
+        job_directory: Path,
+    ) -> Dict[str, Any]:
+        """
+        Convert CryoSPARC particles to RELION STAR file based on configured method.
+        
+        Returns:
+            Dictionary describing the conversion method, command, and outputs.
+        """
+        conversion_settings = self._get_particle_conversion_config()
+        requested_method = str(conversion_settings.get("method", "helicon")).lower()
+        conversion_info: Dict[str, Any] = {"method_requested": requested_method}
+
+        star_file_path = Path(star_file_path)
+        star_file_path.parent.mkdir(parents=True, exist_ok=True)
+
+        passthrough_str = str(passthrough_file) if passthrough_file else None
+        job_dir_str = str(job_directory) if job_directory else None
+
+        if requested_method == "helicon":
+            helicon_settings = conversion_settings.get("helicon", {})
+            fallback_allowed = bool(conversion_settings.get("fallback_to_internal", True))
+            try:
+                helicon_info = self._convert_particles_with_helicon(
+                    particles_cs=particles_cs,
+                    star_file_path=star_file_path,
+                    helicon_settings=helicon_settings,
+                    passthrough_path=passthrough_str,
+                )
+                conversion_info.update(helicon_info)
+                conversion_info["converter"] = "HeliconCLI"
+                return conversion_info
+            except Exception as exc:
+                conversion_info["helicon_error"] = str(exc)
+                conversion_info["fallback_reason"] = str(exc)
+                self.logger.warning(
+                    "Helicon conversion failed (%s).%s",
+                    exc,
+                    " Falling back to internal converter." if fallback_allowed else "",
+                )
+                if not fallback_allowed:
+                    raise
+
+        # Default or fallback: use internal conversion tools
+        self.transition_agent.conversion_tools.convert_cs_to_star(
+            particles_cs,
+            star_file_path,
+            passthrough_path=passthrough_str,
+            job_directory=job_dir_str,
+        )
+
+        conversion_info.setdefault("converter", "FileConversionTools")
+        if passthrough_str:
+            conversion_info["passthrough_file"] = passthrough_str
+
+        return conversion_info
+
+    def _convert_particles_with_helicon(
+        self,
+        particles_cs: Path,
+        star_file_path: Path,
+        helicon_settings: Dict[str, Any],
+        passthrough_path: Optional[str],
+    ) -> Dict[str, Any]:
+        """Run Helicon CLI to convert particles to STAR format."""
+        cs_path = Path(particles_cs).resolve()
+        star_path = Path(star_file_path).resolve()
+        star_path.parent.mkdir(parents=True, exist_ok=True)
+
+        command_executable = str(helicon_settings.get("command", "helicon"))
+        force_value = helicon_settings.get("force", 1)
+        extra_args = helicon_settings.get("extra_args", [])
+        if isinstance(extra_args, str):
+            extra_args = shlex.split(extra_args)
+        extra_args = [str(arg) for arg in extra_args]
+
+        base_cmd: List[str] = [
+            command_executable,
+            "images2star",
+            str(cs_path),
+            str(star_path),
+        ]
+        if passthrough_path:
+            base_cmd.extend(["--csparcPassthroughFiles", str(passthrough_path)])
+        if force_value is not None:
+            base_cmd.extend(["--force", str(force_value)])
+        base_cmd.extend(extra_args)
+
+        conda_env = helicon_settings.get("conda_env")
+        if conda_env:
+            command_list: List[str] = ["conda", "run", "-n", str(conda_env)] + base_cmd
+        else:
+            command_list = base_cmd
+
+        timeout_seconds = helicon_settings.get("timeout_seconds")
+        env = os.environ.copy()
+        extra_env = helicon_settings.get("env")
+        if isinstance(extra_env, dict):
+            env.update({str(k): str(v) for k, v in extra_env.items()})
+
+        command_string = " ".join(shlex.quote(str(part)) for part in command_list)
+        self.logger.info(f"Executing Helicon conversion: {command_string}")
+
+        result = subprocess.run(
+            command_list,
+            check=False,
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=timeout_seconds,
+        )
+
+        if result.returncode != 0:
+            stdout_summary = result.stdout.strip()
+            stderr_summary = result.stderr.strip()
+            error_message = (
+                f"Helicon conversion failed with return code {result.returncode}. "
+                f"STDERR: {stderr_summary or 'N/A'}; STDOUT: {stdout_summary or 'N/A'}"
+            )
+            raise RuntimeError(error_message)
+
+        if not star_path.exists():
+            raise FileNotFoundError(
+                f"Helicon conversion completed but STAR file not found at {star_path}"
+            )
+
+        stdout_text = result.stdout.strip()
+        stderr_text = result.stderr.strip()
+
+        return {
+            "converter": "HeliconCLI",
+            "command": command_string,
+            "command_list": command_list,
+            "stdout": stdout_text if stdout_text else None,
+            "stderr": stderr_text if stderr_text else None,
+            "returncode": result.returncode,
+            "passthrough_file": passthrough_path,
+        }
+
+    def _run_relion_particle_reextraction(
+        self,
+        source_star: Path,
+        micrographs_star: Optional[str],
+        relion_dir: Path,
+    ) -> Dict[str, Any]:
+        """Run RELION particle re-extraction to generate scaled particle stacks."""
+        relion_tools = getattr(self.transition_agent, "relion_tools", None)
+        if relion_tools is None:
+            return {"success": False, "error": "RELION tools are not initialized."}
+
+        if not micrographs_star:
+            return {"success": False, "error": "Micrographs STAR path is not available for re-extraction."}
+
+        source_star_path = Path(source_star).resolve()
+        micrographs_star_path = Path(micrographs_star).resolve()
+
+        if not source_star_path.exists():
+            return {"success": False, "error": f"Source STAR file does not exist: {source_star_path}"}
+        if not micrographs_star_path.exists():
+            return {"success": False, "error": f"Micrographs STAR file does not exist: {micrographs_star_path}"}
+
+        params = self.transition_agent._load_particle_reextraction_params()
+
+        raw_extract_size = params.get("extract_size", 0)
+        try:
+            extract_size = int(raw_extract_size)
+        except (TypeError, ValueError):
+            extract_size = 0
+
+        raw_scale_size = params.get("scale_size", -1)
+        try:
+            scale_size = int(raw_scale_size)
+        except (TypeError, ValueError):
+            scale_size = -1
+
+        if extract_size <= 0:
+            fallback_size = scale_size if scale_size and scale_size > 0 else 128
+            if hasattr(self, "logger"):
+                self.logger.warning(
+                    "Particle re-extraction config missing valid extract_size; "
+                    "falling back to %s pixels.",
+                    fallback_size,
+                )
+            extract_size = fallback_size
+
+        if scale_size and scale_size > 0 and scale_size >= extract_size:
+            if hasattr(self, "logger"):
+                self.logger.warning(
+                    "scale_size (%s) is greater than or equal to extract_size (%s); "
+                    "disabling scaling.",
+                    scale_size,
+                    extract_size,
+                )
+            scale_size = -1
+
+        output_dir = params.get("output_dir", "ReExtract")
+
+        try:
+            job_info = relion_tools.reextract_particles_original_pixelsize(
+                reextract_data_star=str(source_star_path),
+                micrographs_star=str(micrographs_star_path),
+                output_dir=output_dir,
+                extract_size=extract_size,
+                scale_size=scale_size if scale_size and scale_size > 0 else -1,
+                norm=params.get("norm", True),
+                bg_radius=params.get("bg_radius", -1),
+                white_dust=params.get("white_dust", -1),
+                black_dust=params.get("black_dust", -1),
+                invert_contrast=params.get("invert_contrast", False),
+                only_do_unfinished=params.get("only_do_unfinished", False),
+                float16=params.get("float16", True),
+                timeout=params.get("timeout", 86400),
+                use_backend=params.get("use_backend", False),
+            )
+        except Exception as exc:
+            return {"success": False, "error": str(exc)}
+
+        output_dir_abs = job_info.get("output_dir")
+        particles_star = job_info.get("particles_star")
+        pick_star = job_info.get("pick_star")
+
+        job_dir_relative = None
+        if output_dir_abs:
+            try:
+                job_dir_relative = os.path.relpath(output_dir_abs, relion_dir)
+            except ValueError:
+                job_dir_relative = output_dir_abs
+
+        return {
+            "success": True,
+            "output_dir": output_dir_abs,
+            "job_dir_relative": job_dir_relative,
+            "particles_star": particles_star,
+            "pick_star": pick_star,
+            "command": job_info.get("command"),
+            "stdout": job_info.get("stdout"),
+            "stderr": job_info.get("stderr"),
+            "source_star": str(source_star_path),
+            "micrographs_star": str(micrographs_star_path),
+            "extract_size": extract_size,
+            "scale_size": scale_size if scale_size and scale_size > 0 else None,
+        }
+
     def _verify_conversion(self, conversion_result: Dict[str, Any], conversation_id: Optional[str] = None):
         """Use agentic workflow to verify the conversion."""
         try:
@@ -821,6 +1391,7 @@ class TransitionAgent:
         
         # Load master config
         self._load_master_config()
+        self.transition_settings = self.master_config.get("transition", {})
         
         # Initialize backend tools if needed (only if not provided)
         if not self.cryosparc_tools or not self.relion_tools:
@@ -906,6 +1477,7 @@ class TransitionAgent:
 
         params: Dict[str, Any] = {
             "extract_size": 0,
+            "scale_size": 128,
             "norm": True,
             "bg_radius": -1,
             "white_dust": -1,

@@ -3194,6 +3194,7 @@ class RELIONTools:
         micrographs_star: str,
         output_dir: str = "ReExtract",
         extract_size: int = -1,
+        scale_size: int = -1,
         norm: bool = True,
         bg_radius: float = -1,
         white_dust: float = -1,
@@ -3207,7 +3208,7 @@ class RELIONTools:
         **kwargs
     ) -> Dict[str, Any]:
         """
-        Re-extract particles from micrographs with original pixel size without scaling.
+        Re-extract particles from micrographs with original pixel size and optional scaling.
         
         This is typically done after ab initio reconstruction to re-extract particles
         at full resolution for refinement. The particles are extracted from the original
@@ -3221,6 +3222,7 @@ class RELIONTools:
             output_dir: Output directory for re-extracted particles (default: "ReExtract")
             extract_size: Size of particle box in pixels (REQUIRED for re-extraction, typically 440 or larger)
                 Should match or be larger than original extraction size
+            scale_size: If >0, re-scale extracted particles to this box size (in pixels)
             norm: Normalize background to average zero and stddev one
             bg_radius: Radius of circular mask for background area (if -1, uses extract_size*0.25/2)
             white_dust: Sigma threshold for white dust removal
@@ -3272,6 +3274,11 @@ class RELIONTools:
             # Always include extract_size if specified (required for re-extraction)
             if extract_size > 0:
                 cmd.extend(["--extract_size", str(extract_size)])
+            else:
+                raise ValueError("extract_size must be greater than 0 for re-extraction")
+
+            if scale_size and scale_size > 0:
+                cmd.extend(["--scale", str(scale_size)])
             
             # Calculate bg_radius if not specified
             if bg_radius < 0 and extract_size > 0:
@@ -3343,7 +3350,9 @@ class RELIONTools:
                     "pick_star": pick_star,
                     "command": self._format_command(cmd),
                     "process_id": process.pid,
-                    "started_at": time.time()
+                    "started_at": time.time(),
+                    "extract_size": extract_size,
+                    "scale_size": scale_size if scale_size and scale_size > 0 else None
                 }
                 self._job_cache[job_dir_relative] = job_info
                 print(f"🚀 Started backend particle re-extraction job (PID {process.pid}) in conda env '{conda_env}'")
@@ -3383,7 +3392,9 @@ class RELIONTools:
                 "pick_star": pick_star,
                 "command": self._format_command(cmd),
                 "stdout": result.stdout,
-                "stderr": result.stderr
+                "stderr": result.stderr,
+                "extract_size": extract_size,
+                "scale_size": scale_size if scale_size and scale_size > 0 else None
             }
             
             self._job_cache[job_dir_relative] = job_info

@@ -21,7 +21,7 @@
         "name": "reconstruction",
         "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
         "enabled": true,
-        "agent_group": "cryosparc",
+        "agent_group": "relion",
         "agent_class": "ReconstructionAgent"
       }
     ],
@@ -40,7 +40,7 @@
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
     "continue_job": true,
-    "relion_dir": "/home/daoyi/relion/relion_rcc",
+    "relion_dir": "/home/daoyi/relion/relion_rcr",
     "backend_execution": {
       "enabled": true,
       "default_timeout": 3600,
@@ -48,6 +48,30 @@
       "max_concurrent_jobs": 3,
       "auto_cleanup": true,
       "conda_env": "relion-5.0"
+    }
+  },
+  "transition": {
+    "micrograph_conversion": {
+      "method": "helicon",
+      "fallback_to_internal": true,
+      "helicon": {
+        "conda_env": "helicon",
+        "command": "helicon",
+        "force": 1,
+        "extra_args": [],
+        "timeout_seconds": 1800
+      }
+    },
+    "particle_conversion": {
+      "method": "helicon",
+      "fallback_to_internal": true,
+      "helicon": {
+        "conda_env": "helicon",
+        "command": "helicon",
+        "force": 1,
+        "extra_args": [],
+        "timeout_seconds": 1800
+      }
     }
   },
   "agent": {

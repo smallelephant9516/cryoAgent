@@ -733,6 +733,12 @@ class ReconstructionAgent(StageAgent):
             if not backend_type:
                 # Fallback: detect from config path
                 backend_type = "RELION" if "relion" in self.config_path.lower() else "CryoSPARC"
+
+            # Share upstream stage outputs with modular agent for context-aware auto-detection
+            if hasattr(self.modular_agent, "set_context_stage_outputs"):
+                self.modular_agent.set_context_stage_outputs(context.stage_outputs)
+            elif hasattr(self.modular_agent, "context_stage_outputs"):
+                self.modular_agent.context_stage_outputs = context.stage_outputs or {}
             
             if backend_type == "RELION":
                 # For RELION, get final_star_file from picking results

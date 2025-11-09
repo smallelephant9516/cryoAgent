@@ -70,6 +70,11 @@ class ReconstructionAgent(BaseReActAgent):
                 "refined_map": None
             }
         }
+        self.context_stage_outputs: Dict[Any, Any] = {}
+    def set_context_stage_outputs(self, stage_outputs: Dict[Any, Any]) -> None:
+        """Store upstream stage outputs for context-aware auto-detection."""
+        self.context_stage_outputs = stage_outputs or {}
+
     
     def _parse_boolean_param(self, value: Any) -> bool:
         """Parse boolean parameter that might be string or boolean."""
@@ -338,8 +343,139 @@ class ReconstructionAgent(BaseReActAgent):
             self._record_tool_execution("refinement_3d", context, error=str(e))
             return f"❌ Error running 3D refinement: {str(e)}"
     
+    def _resolve_micrographs_path(self, candidate: Optional[Any]) -> Optional[str]:
+        """Resolve micrographs STAR candidate path relative to RELION directory."""
+        if not candidate:
+            return None
+
+        if isinstance(candidate, Path):
+            cand_path = candidate
+        else:
+            try:
+                cand_path = Path(str(candidate)).expanduser()
+            except Exception:
+                return None
+
+        # If absolute path, ensure it exists
+        if cand_path.is_absolute() and cand_path.exists():
+            return str(cand_path.resolve())
+
+        relion_dir = Path(self.relion_tools.relion_dir)
+        rel_path = relion_dir / cand_path
+        if rel_path.exists():
+            return str(rel_path.resolve())
+
+        # Try resolving relative to current working directory
+        try:
+            resolved = cand_path.resolve()
+            if resolved.exists():
+                return str(resolved)
+        except Exception:
+            pass
+
+        return None
+
+    def _extract_micrographs_from_mapping(self, data: Any) -> Optional[str]:
+        """Search nested mappings for a micrographs STAR candidate."""
+        if hasattr(data, "stage_outputs"):
+            return self._extract_micrographs_from_mapping(getattr(data, "stage_outputs"))
+
+        if isinstance(data, dict):
+            for key in ("selected_micrographs_star", "micrographs_star"):
+                value = data.get(key)
+                if isinstance(value, (str, Path)):
+                    return str(value)
+
+            micro_loc = data.get("micrograph_location")
+            if isinstance(micro_loc, dict):
+                for key in ("micrographs_star", "selected_micrographs_star", "path", "path_absolute"):
+                    value = micro_loc.get(key)
+                    if isinstance(value, (str, Path)):
+                        return str(value)
+            elif isinstance(micro_loc, str):
+                if micro_loc.endswith(".star"):
+                    return micro_loc
+
+            for value in data.values():
+                candidate = self._extract_micrographs_from_mapping(value)
+                if candidate:
+                    return candidate
+
+        elif isinstance(data, list):
+            for item in data:
+                candidate = self._extract_micrographs_from_mapping(item)
+                if candidate:
+                    return candidate
+
+        elif isinstance(data, (str, Path)):
+            text = str(data)
+            if text.endswith("micrographs.star") or "micrographs.star" in text:
+                return text
+
+        return None
+
+    def _extract_transition_configs(self, data: Any) -> List[str]:
+        """Collect transition config file paths from nested mappings."""
+        configs: List[str] = []
+
+        if hasattr(data, "stage_outputs"):
+            configs.extend(self._extract_transition_configs(getattr(data, "stage_outputs")))
+            return configs
+
+        if isinstance(data, dict):
+            for key in ("transition_config", "transition_config_outputs", "transition_config_transitions"):
+                value = data.get(key)
+                if isinstance(value, (str, Path)):
+                    configs.append(str(value))
+            for value in data.values():
+                configs.extend(self._extract_transition_configs(value))
+        elif isinstance(data, list):
+            for item in data:
+                configs.extend(self._extract_transition_configs(item))
+
+        return configs
+
     def _find_micrographs_star(self) -> Optional[str]:
         """Helper method to find micrographs.star file from previous preprocessing stage."""
+        # Method 0: Inspect cached stage outputs provided by orchestrator (after transition)
+        if isinstance(self.context_stage_outputs, dict):
+            for outputs in self.context_stage_outputs.values():
+                candidate = self._extract_micrographs_from_mapping(outputs)
+                resolved = self._resolve_micrographs_path(candidate)
+                if resolved:
+                    return resolved
+
+            # Check transition config files referenced in context
+            for outputs in self.context_stage_outputs.values():
+                for config_path in self._extract_transition_configs(outputs):
+                    resolved_config = self._resolve_micrographs_path(config_path)
+                    if not resolved_config or not os.path.exists(resolved_config):
+                        continue
+                    try:
+                        with open(resolved_config, "r", encoding="utf-8") as f:
+                            config_data = json.load(f)
+                    except Exception:
+                        continue
+
+                    micrographs_job = config_data.get("micrographs_job", {})
+                    candidate = micrographs_job.get("star_file_absolute") or micrographs_job.get("star_file")
+                    resolved = self._resolve_micrographs_path(candidate)
+                    if resolved:
+                        return resolved
+
+                    micro_loc = config_data.get("micrograph_location")
+                    if isinstance(micro_loc, dict):
+                        candidate = micro_loc.get("micrographs_star") or micro_loc.get("path") or micro_loc.get("path_absolute")
+                        resolved = self._resolve_micrographs_path(candidate)
+                        if resolved:
+                            return resolved
+
+        # Method 0.5: Check transit micrograph directory created during transition
+        relion_dir = Path(self.relion_tools.relion_dir)
+        transit_micrographs = relion_dir / "transit_cs" / "Micrographs" / "micrographs.star"
+        if transit_micrographs.exists():
+            return str(transit_micrographs.resolve())
+
         # Method 1: Try to find from preprocessing results JSON file
         try:
             import glob

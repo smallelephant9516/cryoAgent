@@ -1079,6 +1079,8 @@ class PickingAgent(BaseReActAgent):
         # For RELION picking, we can extract outputs directly from workflow_state
         stage_outputs = {}
         
+        relion_dir = self.relion_tools.relion_dir
+
         # Extract outputs from each completed step
         for step_name, step_state in self.workflow_state.items():
             if step_state.get("completed", False):
@@ -1096,6 +1098,17 @@ class PickingAgent(BaseReActAgent):
             auto_select_output = self.workflow_state["auto_2d_selection"].get("output_file")
             if auto_select_output:
                 stage_outputs["selected_particles_star"] = auto_select_output
+
+        # Ensure selected_micrographs_star is propagated for downstream stages
+        micrographs_star = (
+            self.selected_micrographs_star
+            or getattr(self.workflow, "selected_micrographs_star", None)
+        )
+        if micrographs_star:
+            if not os.path.isabs(micrographs_star):
+                micrographs_star = os.path.abspath(os.path.join(relion_dir, micrographs_star))
+            stage_outputs["selected_micrographs_star"] = micrographs_star
+            stage_outputs.setdefault("micrographs_star", micrographs_star)
         
         return stage_outputs
     
@@ -1290,6 +1303,18 @@ class PickingAgent(BaseReActAgent):
                 relion_dir = self.relion_tools.relion_dir
                 micrograph_location = os.path.join(relion_dir, micrograph_location)
                 micrograph_location = os.path.abspath(micrograph_location)
+
+        # Update stage outputs to reflect resolved micrographs path for downstream consumers
+        if micrograph_location:
+            stage_outputs["selected_micrographs_star"] = micrograph_location
+            stage_outputs.setdefault("micrographs_star", micrograph_location)
+
+        micrograph_info = None
+        if micrograph_location:
+            micrograph_info = {
+                "micrographs_star": micrograph_location,
+                "source": "relion_particle_picking",
+            }
         
         # Build simplified picking results with final star file and micrograph location
         picking_results = {
@@ -1298,7 +1323,9 @@ class PickingAgent(BaseReActAgent):
             "stage": "particle_picking",
             "agent_type": "relion",
             "final_star_file": final_star_file,
-            "micrograph_location": micrograph_location,
+            "selected_micrographs_star": micrograph_location,
+            "micrographs_star": micrograph_location,
+            "micrograph_location": micrograph_info or micrograph_location,
             "metadata": {
                 "workflow_type": getattr(context, 'workflow_type', 'unknown'),
                 "start_time": getattr(context, 'start_time', None),
