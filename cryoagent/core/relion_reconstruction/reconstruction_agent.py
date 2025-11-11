@@ -47,6 +47,8 @@ class ReconstructionAgent(BaseReActAgent):
         super().__init__(None, config, llm)  # No CryoSPARC tools needed for RELION
         # Initialize logger for this agent
         self.logger = logging.getLogger("RelionReconstructionAgent")
+        # Cache microscope configuration for derived defaults
+        self.microscope_config = self._load_microscope_config()
         
         # Initialize workflow state tracking
         self.workflow_state = {
@@ -90,14 +92,45 @@ class ReconstructionAgent(BaseReActAgent):
         import json
         from pathlib import Path
         
+        def _load_json(path: Path) -> Dict[str, Any]:
+            if not path.exists():
+                return {}
+            try:
+                with open(path, "r", encoding="utf-8") as fp:
+                    return json.load(fp) or {}
+            except Exception:
+                return {}
+        
         config_path = Path(self.config_loader.config_path)
-        if not config_path.exists():
-            return {}
+        master_path = (
+            Path(self.config_loader.master_config_path)
+            if getattr(self.config_loader, "master_config_path", None)
+            else None
+        )
         
-        with open(config_path, 'r') as f:
-            config_data = json.load(f)
+        stage_config = _load_json(config_path)
+        master_config = _load_json(master_path) if master_path else {}
         
-        return config_data.get("workflow", {})
+        # Merge workflow sections with master overrides taking precedence
+        workflow_stage = stage_config.get("workflow", {}) or {}
+        workflow_master = master_config.get("workflow", {}) or {}
+        
+        def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+            merged: Dict[str, Any] = dict(base)
+            for key, value in overrides.items():
+                if (
+                    isinstance(value, dict)
+                    and isinstance(merged.get(key), dict)
+                ):
+                    merged[key] = _deep_merge(merged[key], value)
+                else:
+                    merged[key] = value
+            return merged
+        
+        if not workflow_master:
+            return workflow_stage
+        
+        return _deep_merge(workflow_stage, workflow_master)
     
     def _create_tools(self) -> List[Tool]:
         """Create reconstruction-specific tools."""
@@ -129,8 +162,27 @@ class ReconstructionAgent(BaseReActAgent):
             if not input_star:
                 return "❌ Error: input_star parameter is required"
             
-            particle_diameter = params.get("particle_diameter")
-            if not particle_diameter:
+            particle_diameter_param = params.get("particle_diameter")
+            scaled_diameter = self._get_scaled_particle_diameter(1.1)
+            if scaled_diameter is not None:
+                if particle_diameter_param is not None and abs(float(particle_diameter_param) - scaled_diameter) > 1e-6:
+                    self.logger.info(
+                        "Overriding provided particle_diameter=%s with microscope-derived value %.3f Å for ab initio reconstruction",
+                        particle_diameter_param,
+                        scaled_diameter,
+                    )
+                particle_diameter = float(scaled_diameter)
+            elif particle_diameter_param is not None:
+                particle_diameter = float(particle_diameter_param)
+            else:
+                particle_diameter = None
+                ab_initio_config = self._get_workflow_config().get("ab_initio_reconstruction", {})
+                if "particle_diameter" in ab_initio_config:
+                    try:
+                        particle_diameter = float(ab_initio_config["particle_diameter"])
+                    except (TypeError, ValueError):
+                        particle_diameter = None
+            if particle_diameter is None:
                 return "❌ Error: particle_diameter parameter is required"
             
             sym = params.get("sym", "C1")
@@ -252,14 +304,31 @@ class ReconstructionAgent(BaseReActAgent):
                 if not ref_mrc:
                     return "❌ Error: ref_mrc parameter is required and no initial model from ab initio reconstruction found"
             
-            particle_diameter = params.get("particle_diameter")
-            if not particle_diameter:
+            refinement_config = self._get_workflow_config().get("refinement_3d", {})
+
+            particle_diameter_param = params.get("particle_diameter")
+            scaled_diameter = self._get_scaled_particle_diameter(1.1)
+            if scaled_diameter is not None:
+                if particle_diameter_param is not None and abs(float(particle_diameter_param) - scaled_diameter) > 1e-6:
+                    self.logger.info(
+                        "Overriding provided particle_diameter=%s with microscope-derived value %.3f Å for 3D refinement",
+                        particle_diameter_param,
+                        scaled_diameter,
+                    )
+                particle_diameter = float(scaled_diameter)
+            elif particle_diameter_param is not None:
+                particle_diameter = float(particle_diameter_param)
+            else:
+                particle_diameter = None
+                if "particle_diameter" in refinement_config:
+                    try:
+                        particle_diameter = float(refinement_config["particle_diameter"])
+                    except (TypeError, ValueError):
+                        particle_diameter = None
+            if particle_diameter is None:
                 return "❌ Error: particle_diameter parameter is required"
             
             sym = params.get("sym", "C1")
-            
-            # Get refinement config from JSON file
-            refinement_config = self._get_workflow_config().get("refinement_3d", {})
             
             used_params = {
                 "input_star": input_star,
@@ -437,38 +506,47 @@ class ReconstructionAgent(BaseReActAgent):
 
     def _find_micrographs_star(self) -> Optional[str]:
         """Helper method to find micrographs.star file from previous preprocessing stage."""
+        # Prefer transition metadata before legacy locations
+        transition_configs: List[str] = []
+        if isinstance(self.context_stage_outputs, dict):
+            for outputs in self.context_stage_outputs.values():
+                transition_configs.extend(self._extract_transition_configs(outputs))
+
+        for config_path in transition_configs:
+            resolved_config = self._resolve_micrographs_path(config_path)
+            if not resolved_config or not os.path.exists(resolved_config):
+                continue
+            try:
+                with open(resolved_config, "r", encoding="utf-8") as f:
+                    config_data = json.load(f)
+            except Exception:
+                continue
+
+            transit_section = config_data.get("transit_micrographs", {})
+            candidate = (
+                transit_section.get("micrographs_star")
+                or config_data.get("micrographs_star")
+                or config_data.get("selected_micrographs_star")
+                or config_data.get("micrograph_location", {}).get("micrographs_star")
+            )
+            resolved = self._resolve_micrographs_path(candidate)
+            if resolved:
+                return resolved
+
         # Method 0: Inspect cached stage outputs provided by orchestrator (after transition)
+        candidates: List[str] = []
         if isinstance(self.context_stage_outputs, dict):
             for outputs in self.context_stage_outputs.values():
                 candidate = self._extract_micrographs_from_mapping(outputs)
                 resolved = self._resolve_micrographs_path(candidate)
                 if resolved:
-                    return resolved
+                    candidates.append(resolved)
 
-            # Check transition config files referenced in context
-            for outputs in self.context_stage_outputs.values():
-                for config_path in self._extract_transition_configs(outputs):
-                    resolved_config = self._resolve_micrographs_path(config_path)
-                    if not resolved_config or not os.path.exists(resolved_config):
-                        continue
-                    try:
-                        with open(resolved_config, "r", encoding="utf-8") as f:
-                            config_data = json.load(f)
-                    except Exception:
-                        continue
-
-                    micrographs_job = config_data.get("micrographs_job", {})
-                    candidate = micrographs_job.get("star_file_absolute") or micrographs_job.get("star_file")
-                    resolved = self._resolve_micrographs_path(candidate)
-                    if resolved:
-                        return resolved
-
-                    micro_loc = config_data.get("micrograph_location")
-                    if isinstance(micro_loc, dict):
-                        candidate = micro_loc.get("micrographs_star") or micro_loc.get("path") or micro_loc.get("path_absolute")
-                        resolved = self._resolve_micrographs_path(candidate)
-                        if resolved:
-                            return resolved
+        for candidate in candidates:
+            if candidate and "transit_cs" in candidate:
+                return candidate
+        if candidates:
+            return candidates[0]
 
         # Method 0.5: Check transit micrograph directory created during transition
         relion_dir = Path(self.relion_tools.relion_dir)

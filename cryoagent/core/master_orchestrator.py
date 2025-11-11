@@ -1402,6 +1402,66 @@ class MasterOrchestrator:
         else:
             # For other stages, return as-is
             return job_uids
+
+    def _reconstruct_stage_outputs_from_minimal_data(self, stage: WorkflowStage, data: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Reconstruct stage_outputs from simplified result files produced by the
+        updated parsers. Ensures downstream stages receive the identifiers they expect.
+        """
+        stage_outputs: Dict[str, Any] = {}
+
+        if stage == WorkflowStage.PREPROCESSING:
+            final_job_uid = data.get("final_micrographs_job_uid") or data.get("micrograph_selection_job_uid")
+            micrograph_dir = data.get("micrograph_directory") or data.get("micrographs_directory")
+            micrograph_location = data.get("micrograph_location")
+
+            if final_job_uid:
+                stage_outputs["micrograph_selection_job_uid"] = final_job_uid
+            if micrograph_dir:
+                stage_outputs["micrograph_directory"] = micrograph_dir
+                stage_outputs["selected_micrographs"] = micrograph_dir
+            if micrograph_location:
+                stage_outputs["micrograph_location"] = micrograph_location
+
+        elif stage == WorkflowStage.PARTICLE_PICKING:
+            final_selection_uid = data.get("final_selection_job_uid") or data.get("selected_particles_job_uid")
+            selected_dir = data.get("selected_particles_directory")
+            selected_file = data.get("selected_particles_file")
+            transition_metadata = data.get("transition_metadata", {})
+            transition_config = transition_metadata.get("transition_config") or data.get("transition_config")
+            transition_outputs = transition_metadata.get("transition_config_outputs")
+            transition_transitions = transition_metadata.get("transition_config_transitions")
+            transition_info = transition_metadata.get("transition_info")
+
+            if final_selection_uid:
+                stage_outputs["final_selection_job_uid"] = final_selection_uid
+                stage_outputs["selected_particles_job_uid"] = final_selection_uid
+            if selected_dir:
+                stage_outputs["selected_particles_location"] = selected_dir
+            if selected_file:
+                stage_outputs["final_particles_cs_file"] = selected_file
+            if transition_config:
+                stage_outputs["transition_config"] = transition_config
+            if transition_outputs:
+                stage_outputs["transition_config_outputs"] = transition_outputs
+            if transition_transitions:
+                stage_outputs["transition_config_transitions"] = transition_transitions
+            if transition_info:
+                stage_outputs["transition_info"] = transition_info
+
+        elif stage == WorkflowStage.RECONSTRUCTION:
+            final_volume_dir = data.get("final_volume_directory")
+            final_volume_uid = data.get("final_volume_job_uid")
+            final_star_file = data.get("final_star_file")
+
+            if final_volume_dir:
+                stage_outputs["final_volume_directory"] = final_volume_dir
+            if final_volume_uid:
+                stage_outputs["final_volume_job_uid"] = final_volume_uid
+            if final_star_file:
+                stage_outputs["final_star_file"] = final_star_file
+
+        return stage_outputs
     
     def execute_complete_workflow(self, conversation_id: Optional[str] = None) -> Dict[str, Any]:
         """
@@ -1475,7 +1535,7 @@ class MasterOrchestrator:
                 else:
                     # Fallback: try to use the data directly
                     self.logger.warning(f"No stage_outputs or job_uids found in {existing_output['file_path']}")
-                    stage_outputs = {}
+                    stage_outputs = self._reconstruct_stage_outputs_from_minimal_data(stage, data)
                     # Try to get project/workspace from data
                     if 'project_uid' in data:
                         stage_outputs['project_uid'] = data['project_uid']
@@ -1672,7 +1732,7 @@ class MasterOrchestrator:
                 else:
                     # Fallback: try to use the data directly
                     self.logger.warning(f"No stage_outputs or job_uids found in {existing_output['file_path']}")
-                    stage_outputs = {}
+                    stage_outputs = self._reconstruct_stage_outputs_from_minimal_data(stage, data)
                     # Try to get project/workspace from data
                     if 'project_uid' in data:
                         stage_outputs['project_uid'] = data['project_uid']

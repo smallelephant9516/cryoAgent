@@ -1,6 +1,7 @@
 """ReAct-based particle picking agent for CryoEM data processing."""
 
 import logging
+import math
 from typing import Dict, Any, List, Optional
 from langchain.tools import Tool
 from langchain_core.language_models import BaseLanguageModel
@@ -32,6 +33,8 @@ class PickingAgent(BaseReActAgent):
         super().__init__(cryosparc_tools, config, llm)
         # Initialize logger for this agent
         self.logger = logging.getLogger("PickingAgent")
+        # Cache microscope configuration for derived defaults
+        self.microscope_config = self._load_microscope_config()
     
     def _create_tools(self) -> List[Tool]:
         """Create particle picking-specific tools."""
@@ -163,33 +166,43 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
             
-            # Get particle diameter from params or config
-            particle_diameter = params.get("particle_diameter")
-            if not particle_diameter:
-                # Try to get from config if available
-                particle_diameter = getattr(self.config.workflow, "particle_diameter", None)
-            
-            if not particle_diameter:
-                return "❌ Error: particle_diameter parameter is required for blob picker"
+            # Resolve particle diameter from params or microscope configuration
+            particle_diameter_param = params.get("particle_diameter")
+            base_diameter = self._get_base_particle_diameter()
+            auto_min_diameter = base_diameter * 0.7 if base_diameter else None
+            auto_max_diameter = base_diameter * 1.3 if base_diameter else None
+
+            if particle_diameter_param is not None:
+                particle_diameter_value = float(particle_diameter_param)
+            elif auto_min_diameter is not None:
+                particle_diameter_value = float(auto_min_diameter)
+            else:
+                particle_diameter_value = getattr(self.config.workflow, "particle_diameter", None)
+                if particle_diameter_value is None:
+                    return "❌ Error: particle_diameter parameter is required for blob picker"
+                particle_diameter_value = float(particle_diameter_value)
             
             used_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
                 "micrographs_job_uid": params.get("micrographs_job_uid"),
-                "particle_diameter": float(particle_diameter),
+                "particle_diameter": float(particle_diameter_value),
                 "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
                 "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
                 "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
             }
             
-            # Add optional diameter_max if provided (default is 2x diameter in blob_picker method)
-            if params.get("diameter_max"):
-                used_params["diameter_max"] = float(params.get("diameter_max"))
+            # Determine diameter_max preference: user override > derived default > CryoSPARC fallback
+            diameter_max_param = params.get("diameter_max")
+            if diameter_max_param is not None:
+                used_params["diameter_max"] = float(diameter_max_param)
+            elif auto_max_diameter is not None:
+                used_params["diameter_max"] = float(auto_max_diameter)
 
             result = self.cryosparc_tools.blob_picker(**used_params)
             self._record_tool_execution("blob_picker", used_params, result=result)
             
-            diameter_range = f"{particle_diameter}-{used_params.get('diameter_max', particle_diameter*2.0)}"
+            diameter_range = f"{used_params['particle_diameter']}-{used_params.get('diameter_max', used_params['particle_diameter'] * 2.0)}"
             return f"✅ Successfully queued blob picker GPU job: {result['job_uid']} (diameter range: {diameter_range} Å)"
             
         except Exception as e:
@@ -206,12 +219,25 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
             
-            # Get box size from params or config
+            # Get box size from params or derived defaults
             box_size_pix = params.get("box_size_pix")
-            if not box_size_pix:
+            if box_size_pix is None:
                 box_size_pix = getattr(self.config.workflow, "box_size_pix", None)
-            
-            if not box_size_pix:
+
+            if box_size_pix is None:
+                base_diameter = self._get_base_particle_diameter()
+                pixel_size = self._get_microscope_parameter("pixel_size")
+                try:
+                    if base_diameter and pixel_size:
+                        pixel_size_val = float(pixel_size)
+                        if pixel_size_val > 0:
+                            computed_box = math.ceil(base_diameter / pixel_size_val) + 125
+                            normalized_box = self._normalize_box_size(computed_box)
+                            box_size_pix = normalized_box if normalized_box else int(computed_box)
+                except (TypeError, ValueError, ZeroDivisionError):
+                    box_size_pix = None
+
+            if box_size_pix is None:
                 return "❌ Error: box_size_pix parameter is required for particle extraction"
             
             # Get micrographs_job_uid

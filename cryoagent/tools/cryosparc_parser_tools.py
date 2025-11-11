@@ -76,46 +76,53 @@ class CryoSPARCPreprocessingParser:
                     stage_outputs["ctf_job_uid"] = result.job_uid
                 elif step_name == "micrograph_selection":
                     stage_outputs["micrograph_selection_job_uid"] = result.job_uid
-        
+
+        stage_outputs["project_uid"] = context.project_uid
+        stage_outputs["workspace_uid"] = context.workspace_uid
+
+        stage_outputs["project_uid"] = context.project_uid
+        stage_outputs["workspace_uid"] = context.workspace_uid
         return stage_outputs
     
     def validate_results(self, stage_outputs: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Validate that the preprocessing workflow actually completed successfully.
-        
-        Args:
-            stage_outputs: Dictionary of stage outputs to validate
-            
-        Returns:
-            Dictionary with 'success' boolean and 'error' message if failed
+        Validate the preprocessing workflow prioritizing the final micrograph selection output.
+        Falls back to detailed job analysis only when the final artifact cannot be confirmed.
         """
-        # Check if any jobs were executed
+        final_job_uid = stage_outputs.get("micrograph_selection_job_uid")
+        if final_job_uid:
+            try:
+                project_uid = stage_outputs.get("project_uid")
+                if project_uid:
+                    job_info = self.cryosparc_tools.get_job_output_directory(
+                        project_uid,
+                        final_job_uid
+                    )
+                else:
+                    job_info = None
+                job_dir = job_info.get("job_directory") if job_info else None
+                if job_dir and Path(job_dir).exists():
+                    return {"success": True, "error": None}
+            except Exception as exc:
+                self.logger.debug(f"Could not confirm final micrograph selection output: {exc}")
+        
+        # Fallback – ensure the full chain of jobs ran
         required_jobs = [
             ("import_movies", stage_outputs.get("movies_job_uid")),
             ("motion_correction", stage_outputs.get("motion_correction_job_uid")),
             ("ctf_estimation", stage_outputs.get("ctf_job_uid")),
-            ("micrograph_selection", stage_outputs.get("micrograph_selection_job_uid"))
+            ("micrograph_selection", final_job_uid)
         ]
-        
-        missing_jobs = []
-        for job_name, job_uid in required_jobs:
-            if job_uid is None:
-                missing_jobs.append(job_name)
-        
+        missing_jobs = [name for name, uid in required_jobs if not uid]
         if missing_jobs:
-            error_msg = f"Preprocessing workflow failed - the following jobs were not executed: {', '.join(missing_jobs)}. " \
-                       f"The agent may have completed without actually running the CryoSPARC jobs. " \
-                       f"Check the agent's reasoning and ensure all tools are being called correctly."
             return {
                 "success": False,
-                "error": error_msg
+                "error": (
+                    "Preprocessing workflow failed - the following jobs were not executed: "
+                    f"{', '.join(missing_jobs)}. Verify agent actions or rerun the missing steps."
+                )
             }
-        
-        # All required jobs have UIDs, validation passed
-        return {
-            "success": True,
-            "error": None
-        }
+        return {"success": True, "error": None}
     
     def save_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True) -> str:
         """
@@ -132,75 +139,44 @@ class CryoSPARCPreprocessingParser:
         from datetime import datetime
         
         try:
-            # Create output directory if it doesn't exist
             output_dir = Path("outputs")
             output_dir.mkdir(exist_ok=True)
-            
-            # Get the final selection job output directory
+            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+            status = "completed" if success else "failed"
+
             final_job_uid = stage_outputs.get("micrograph_selection_job_uid")
-            micrograph_output_directory = None
-            output_summary = None
-            
+            micrograph_path = None
             if final_job_uid:
                 try:
                     job_dir_info = self.cryosparc_tools.get_job_output_directory(
                         context.project_uid,
                         final_job_uid
                     )
-                    micrograph_output_directory = job_dir_info.get("job_directory")
-                    output_summary = job_dir_info.get("outputs", [])
-                    self.logger.info(f"Retrieved job directory for {final_job_uid}: {micrograph_output_directory}")
-                except Exception as e:
-                    self.logger.warning(f"Could not retrieve job output directory: {e}")
-                    micrograph_output_directory = None
-            
-            # Create preprocessing results dictionary
-            timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-            status = "completed" if success else "failed"
-            
+                    micrograph_path = job_dir_info.get("job_directory")
+                except Exception as exc:
+                    self.logger.debug(f"Unable to resolve micrograph directory for {final_job_uid}: {exc}")
+            if micrograph_path and not Path(micrograph_path).exists():
+                micrograph_path = None
+
             preprocessing_results = {
                 "stage": "preprocessing",
                 "status": status,
                 "timestamp": timestamp,
+                "agent_type": "cryosparc",
                 "project_uid": context.project_uid,
                 "workspace_uid": context.workspace_uid,
-                "micrograph_location": {
-                    "description": "Location of processed micrographs in CryoSPARC",
-                    "project_uid": context.project_uid,
-                    "workspace_uid": context.workspace_uid,
-                    "final_selection_job_uid": final_job_uid,
-                    "output_directory": micrograph_output_directory,
-                    "path_pattern": f"Project {context.project_uid}, Workspace {context.workspace_uid}, Job {final_job_uid}",
-                    "output_summary": output_summary
-                },
-                "job_uids": {
-                    "import_movies": stage_outputs.get("movies_job_uid"),
-                    "motion_correction": stage_outputs.get("motion_correction_job_uid"),
-                    "ctf_estimation": stage_outputs.get("ctf_job_uid"),
-                    "micrograph_selection": stage_outputs.get("micrograph_selection_job_uid")
-                },
-                "outputs": {
-                    "selected_micrographs": stage_outputs.get("selected_micrographs"),
-                    "ctf_parameters": stage_outputs.get("ctf_parameters")
-                },
-                "usage_notes": {
-                    "next_stage": "particle_picking",
-                    "final_selection_job_uid_usage": "Use the final_selection_job_uid as input for particle picking stage",
-                    "micrograph_location_usage": "This job UID contains the selected micrographs for further processing",
-                    "output_directory_usage": "The output_directory contains the filesystem path to the micrograph files"
-                }
+                "final_micrographs_job_uid": final_job_uid,
+                "micrograph_directory": micrograph_path
             }
-            
-            # Save to JSON file
+
             output_file = output_dir / f"preprocessing_results_cryosparc_{timestamp}.json"
-            with open(output_file, 'w') as f:
-                json.dump(preprocessing_results, f, indent=2)
-            
+            with open(output_file, "w") as handle:
+                json.dump(preprocessing_results, handle, indent=2)
+
             self.logger.info(f"Preprocessing results saved to {output_file}")
             return str(output_file)
-            
-        except Exception as e:
-            self.logger.error(f"Failed to save preprocessing results: {e}")
+        except Exception as exc:
+            self.logger.error(f"Failed to save preprocessing results: {exc}")
             return ""
 
 
@@ -290,32 +266,53 @@ class CryoSPARCPickingParser:
             except Exception as exc:
                 self.logger.warning(f"Failed to resolve selected particle job directory for {final_job_uid}: {exc}")
 
+        stage_outputs["project_uid"] = context.project_uid
+        stage_outputs["workspace_uid"] = context.workspace_uid
+
         return stage_outputs
     
     def validate_results(self, stage_outputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate that the complete particle picking workflow completed successfully."""
+        """Validate particle picking with emphasis on the final selected particles artifact."""
+        final_selection_uid = stage_outputs.get("final_selection_job_uid")
+        selected_particles_path = stage_outputs.get("final_particles_cs_file") or stage_outputs.get("selected_particles_location")
+
+        if final_selection_uid:
+            try:
+                project_uid = stage_outputs.get("project_uid")
+                if project_uid:
+                    job_info = self.cryosparc_tools.get_job_output_directory(
+                        project_uid,
+                        final_selection_uid
+                    )
+                else:
+                    job_info = None
+                job_dir = job_info.get("job_directory") if job_info else None
+                if job_dir and Path(job_dir).exists():
+                    particles_cs = Path(job_dir) / "particles_selected.cs"
+                    if particles_cs.exists():
+                        return {"success": True, "error": None}
+            except Exception as exc:
+                self.logger.debug(f"Could not confirm final selected particles output: {exc}")
+
+        if selected_particles_path and Path(selected_particles_path).exists():
+            return {"success": True, "error": None}
+
+        # Fallback – verify the entire job chain
         required_jobs = [
             ("blob_picker", stage_outputs.get("blob_picker_job_uid")),
             ("particle_extraction", stage_outputs.get("extraction_job_uid")),
             ("2d_classification", stage_outputs.get("classification_2d_job_uid"))
         ]
-        
-        missing_jobs = []
-        for job_name, job_uid in required_jobs:
-            if job_uid is None:
-                missing_jobs.append(job_name)
-        
+        missing_jobs = [name for name, uid in required_jobs if not uid]
         if missing_jobs:
-            error_msg = f"Particle picking workflow failed - the following jobs were not executed: {', '.join(missing_jobs)}"
             return {
                 "success": False,
-                "error": error_msg
+                "error": (
+                    "Particle picking workflow failed - the following jobs were not executed: "
+                    f"{', '.join(missing_jobs)}"
+                )
             }
-        
-        return {
-            "success": True,
-            "error": None
-        }
+        return {"success": True, "error": None}
     
     def save_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True) -> str:
         """Save particle picking results to a JSON file."""
@@ -327,57 +324,49 @@ class CryoSPARCPickingParser:
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         status = "completed" if success else "failed"
 
-        micrographs_star = (
-            stage_outputs.get("micrographs_star")
-            or stage_outputs.get("selected_micrographs_star")
-        )
-        micrograph_location: Optional[Dict[str, Any]] = None
-        if micrographs_star:
-            micrograph_location = {
-                "micrographs_star": micrographs_star,
-                "source": "cryosparc_particle_picking",
-            }
-        
+        selected_particles_directory = stage_outputs.get("selected_particles_location")
+        if selected_particles_directory:
+            directory_path = Path(selected_particles_directory)
+            if directory_path.exists():
+                selected_particles_directory = str(directory_path.resolve())
+
+        selected_particles_file = stage_outputs.get("final_particles_cs_file")
+        if selected_particles_file:
+            file_path = Path(selected_particles_file)
+            if file_path.exists():
+                selected_particles_file = str(file_path.resolve())
+
+        transition_metadata: Dict[str, Any] = {}
+        if isinstance(stage_outputs, dict):
+            transition_config = stage_outputs.get("transition_config")
+            transition_outputs = stage_outputs.get("transition_config_outputs")
+            transition_transitions = stage_outputs.get("transition_config_transitions")
+            transition_info = stage_outputs.get("transition_info")
+
+            if transition_config:
+                transition_metadata["transition_config"] = transition_config
+            if transition_outputs:
+                transition_metadata["transition_config_outputs"] = transition_outputs
+            if transition_transitions:
+                transition_metadata["transition_config_transitions"] = transition_transitions
+            if isinstance(transition_info, dict):
+                transition_metadata["transition_info"] = transition_info
+
         picking_results = {
             "stage": "particle_picking",
             "status": status,
             "timestamp": timestamp,
+            "agent_type": "cryosparc",
             "project_uid": context.project_uid,
             "workspace_uid": context.workspace_uid,
-            "input_micrographs_job_uid": stage_outputs.get("micrographs_job_uid"),
-            "particle_diameter": stage_outputs.get("particle_diameter"),
-            "micrographs_star": micrographs_star,
-            "selected_micrographs_star": micrographs_star,
-            "micrograph_location": micrograph_location,
-            "job_uids": {
-                "blob_picker": stage_outputs.get("blob_picker_job_uid"),
-                "particle_extraction": stage_outputs.get("extraction_job_uid"),
-                "2d_classification": stage_outputs.get("classification_2d_job_uid"),
-                "template_picker": stage_outputs.get("template_picker_job_uid"),
-                "particle_extraction_round2": stage_outputs.get("extraction_job_uid_round2"),
-                "2d_classification_round2": stage_outputs.get("classification_2d_job_uid_round2"),
-                "final_selection": stage_outputs.get("final_selection_job_uid")
-            },
-            "outputs": {
-                "picked_particles": stage_outputs.get("picked_particles"),
-                "extracted_particles": stage_outputs.get("extracted_particles"),
-                "classified_particles": stage_outputs.get("classified_particles"),
-                "selected_particles_job_uid": stage_outputs.get("final_selection_job_uid"),
-                "selected_particles_location": stage_outputs.get("selected_particles_location"),
-                "final_particles_absolute_path": stage_outputs.get("final_particles_absolute_path"),
-                "final_particles_cs_file": stage_outputs.get("final_particles_cs_file"),
-                "final_particles_passthrough_file": stage_outputs.get("final_particles_passthrough_file"),
-                "micrographs_star": micrographs_star,
-                "selected_micrographs_star": micrographs_star,
-            },
-            "usage_notes": {
-                "next_stage": "3d_reconstruction",
-                "classification_2d_job_uid_usage": "Use the 2d_classification job UID for 3D reconstruction or further refinement",
-                "particle_classes": "2D classes are stored in the classification job output and can be used for particle selection",
-                "final_particles_path": "The final_particles_absolute_path field contains the absolute path to the job directory with final selected particles",
-                "final_particles_files": "The final_particles_cs_file and final_particles_passthrough_file fields contain absolute paths to specific particle data files if they exist"
-            }
+            "micrograph_selection_job_uid": stage_outputs.get("micrographs_job_uid"),
+            "final_selection_job_uid": stage_outputs.get("final_selection_job_uid"),
+            "selected_particles_directory": selected_particles_directory,
+            "selected_particles_file": selected_particles_file
         }
+
+        if transition_metadata:
+            picking_results["transition_metadata"] = transition_metadata
         
         output_file = output_dir / f"particle_picking_results_cryosparc_{timestamp}.json"
         with open(output_file, 'w') as f:
@@ -455,19 +444,32 @@ class CryoSPARCReconstructionParser:
         return stage_outputs
     
     def validate_results(self, stage_outputs: Dict[str, Any]) -> Dict[str, Any]:
-        """Validate that the 3D reconstruction workflow completed successfully."""
+        """Validate reconstruction primarily by confirming the final volume output."""
+        final_volume_path = stage_outputs.get("final_volume_absolute_path")
+        if final_volume_path and Path(final_volume_path).exists():
+            return {"success": True, "error": None}
+
+        final_volume_job_uid = stage_outputs.get("final_volume_job_uid")
+        if final_volume_job_uid:
+            try:
+                project_uid = stage_outputs.get("project_uid")
+                job_info = (
+                    self.cryosparc_tools.get_job_output_directory(project_uid, final_volume_job_uid)
+                    if project_uid else None
+                )
+                job_dir = job_info.get("job_directory") if job_info else None
+                if job_dir and Path(job_dir).exists():
+                    return {"success": True, "error": None}
+            except Exception as exc:
+                self.logger.debug(f"Unable to confirm final reconstruction job directory: {exc}")
+
         ab_initio_job_uid = stage_outputs.get("ab_initio_job_uid")
-        
         if not ab_initio_job_uid:
             return {
                 "success": False,
                 "error": "Ab initio reconstruction did not complete successfully"
             }
-        
-        return {
-            "success": True,
-            "error": None
-        }
+        return {"success": True, "error": None}
     
     def save_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True) -> str:
         """Save 3D reconstruction results to a JSON file."""
@@ -483,27 +485,11 @@ class CryoSPARCReconstructionParser:
             "stage": "3d_reconstruction",
             "status": status,
             "timestamp": timestamp,
+            "agent_type": "cryosparc",
             "project_uid": context.project_uid,
             "workspace_uid": context.workspace_uid,
-            "input_particles_job_uid": context.metadata.get("input_particles_job_uid"),
-            "reconstruction_type": stage_outputs.get("reconstruction_type"),
-            "job_uids": {
-                "ab_initio": stage_outputs.get("ab_initio_job_uid"),
-                "homogeneous_reconstruction": stage_outputs.get("homogeneous_reconstruction_job_uid"),
-                "homogeneous_refinement": stage_outputs.get("homogeneous_refinement_job_uid"),
-                "heterogeneous_refinement": stage_outputs.get("heterogeneous_refinement_job_uid"),
-                "final_volume": stage_outputs.get("final_volume_job_uid")
-            },
-            "outputs": {
-                "final_volume_job_uid": stage_outputs.get("final_volume_job_uid"),
-                "volume_location": stage_outputs.get("volume_location"),
-                "final_volume_absolute_path": stage_outputs.get("final_volume_absolute_path")
-            },
-            "usage_notes": {
-                "next_stage": "refinement_or_analysis",
-                "volume_usage": "Use the final_volume_job_uid for further refinement or analysis",
-                "final_volume_path": "The final_volume_absolute_path field contains the absolute path to the job directory with the reconstructed volume"
-            }
+            "final_volume_job_uid": stage_outputs.get("final_volume_job_uid"),
+            "final_volume_directory": stage_outputs.get("final_volume_absolute_path") or stage_outputs.get("volume_location")
         }
         
         output_file = output_dir / f"reconstruction_results_cryosparc_{timestamp}.json"

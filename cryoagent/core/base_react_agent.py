@@ -1,7 +1,9 @@
 """Base ReAct (Reasoning + Acting) agent with common logic for all CryoEM agents."""
 
+import json
 import time
-from typing import Dict, Any, List, Optional, Callable
+from pathlib import Path
+from typing import Dict, Any, List, Optional, Callable, Sequence
 from abc import ABC, abstractmethod
 from langchain.agents import AgentExecutor, create_tool_calling_agent
 from langchain.tools import Tool
@@ -19,6 +21,16 @@ from ..utils.general_llm_logger import GeneralLLMLogger
 
 class BaseReActAgent(ABC):
     """Base class for ReAct-based CryoEM agents with common framework logic."""
+    
+    _ALLOWED_BOX_SIZES: Sequence[int] = (
+        16, 20, 24, 28, 32, 36, 40, 48, 56, 60, 64, 72, 80, 84, 96, 100, 108, 112,
+        120, 128, 140, 144, 160, 168, 180, 192, 196, 200, 216, 224, 240, 252, 256,
+        280, 288, 300, 320, 324, 336, 360, 384, 392, 400, 420, 432, 448, 480, 500,
+        504, 512, 540, 560, 576, 588, 600, 640, 648, 672, 700, 720, 756, 768, 784,
+        800, 840, 864, 896, 900, 960, 972, 980, 1000, 1008, 1024, 1080, 1120, 1152,
+        1176, 1200, 1260, 1280, 1296, 1344, 1372, 1400, 1440, 1500, 1512, 1536, 1568,
+        1600, 1620, 1680, 1728, 1764, 1792, 1800, 1920, 1944, 1960, 2000,
+    )
     
     def __init__(
         self,
@@ -45,6 +57,7 @@ class BaseReActAgent(ABC):
         self.agent_executor = self._create_agent_executor()
         self.reasoning_history: List[Dict[str, str]] = []
         self.tool_execution_log: List[Dict[str, Any]] = []
+        self._microscope_config_cache: Optional[Dict[str, Any]] = None
         
         # Memory control state
         self.conversation_count = 0
@@ -94,6 +107,140 @@ class BaseReActAgent(ABC):
             System prompt string
         """
         pass
+
+    def _load_microscope_config(self) -> Dict[str, Any]:
+        """
+        Load microscope configuration values defined in the project configuration.
+
+        Returns:
+            Dictionary of microscope parameters (may be empty if unavailable).
+        """
+        if self._microscope_config_cache is not None:
+            return self._microscope_config_cache
+
+        config_path_value = getattr(
+            self.config.workflow,
+            "microscope_config_path",
+            "configs/microscope_config.json",
+        )
+
+        search_roots = [
+            Path.cwd(),
+            Path(__file__).resolve().parents[2],  # project root (cryoagent/)
+        ]
+
+        raw_path = Path(str(config_path_value))
+        candidate_paths = []
+        if raw_path.is_absolute():
+            candidate_paths.append(raw_path)
+        else:
+            for root in search_roots:
+                candidate_paths.append(root / raw_path)
+
+        for candidate in candidate_paths:
+            try:
+                with open(candidate, "r", encoding="utf-8") as fp:
+                    config_data = json.load(fp) or {}
+                self._microscope_config_cache = (
+                    config_data.get("microscope_parameters", {}) or {}
+                )
+                return self._microscope_config_cache
+            except FileNotFoundError:
+                continue
+            except Exception as exc:
+                if getattr(self.config.agent, "verbose", False):
+                    print(f"Warning: Could not load microscope configuration {candidate}: {exc}")
+                continue
+
+        if getattr(self.config.agent, "verbose", False):
+            print(
+                "Warning: Could not resolve microscope configuration file "
+                f"for path '{config_path_value}'. Using empty defaults."
+            )
+        self._microscope_config_cache = {}
+
+        return self._microscope_config_cache
+
+    def _get_microscope_parameter(self, key: str, default: Any = None) -> Any:
+        """
+        Fetch a single microscope parameter.
+
+        Args:
+            key: Parameter name (e.g., 'pixel_size').
+            default: Value returned when parameter is unavailable.
+        """
+        config = self._load_microscope_config()
+        return config.get(key, default)
+
+    def _get_base_particle_diameter(self) -> Optional[float]:
+        """
+        Resolve the nominal particle diameter for the specimen.
+
+        Preference order:
+        1. microscope_config particle_diameter
+        2. workflow-level particle_diameter (legacy support)
+        """
+        raw_value = self._get_microscope_parameter("particle_diameter")
+        if raw_value is None:
+            raw_value = getattr(self.config.workflow, "particle_diameter", None)
+
+        try:
+            if raw_value is None:
+                return None
+            diameter = float(raw_value)
+            if diameter <= 0:
+                return None
+            return diameter
+        except (TypeError, ValueError):
+            return None
+
+    def _get_scaled_particle_diameter(self, scale: float) -> Optional[float]:
+        """
+        Resolve a particle diameter scaled from microscope settings.
+
+        Args:
+            scale: Multiplier applied when microscope particle diameter is available.
+
+        Returns:
+            Scaled particle diameter if microscope configuration specifies a value.
+            Returns None when unavailable so callers can fall back to config defaults.
+        """
+        raw_value = self._get_microscope_parameter("particle_diameter")
+        if raw_value is None:
+            return None
+        try:
+            diameter = float(raw_value)
+            if diameter <= 0:
+                return None
+            return diameter * float(scale)
+        except (TypeError, ValueError):
+            return None
+
+    def _normalize_box_size(self, value: Optional[float]) -> Optional[int]:
+        """
+        Map a computed box size to the closest allowed value.
+
+        Args:
+            value: Raw box size (pixels). If None, returns None.
+
+        Returns:
+            Closest allowed box size or None when input invalid.
+        """
+        if value is None:
+            return None
+        try:
+            numeric_value = float(value)
+        except (TypeError, ValueError):
+            return None
+        if numeric_value <= 0:
+            return None
+
+        allowed = self._ALLOWED_BOX_SIZES
+        closest = min(
+            allowed,
+            key=lambda candidate: (abs(candidate - numeric_value), candidate)
+        )
+        return int(closest)
     
     def _create_agent_executor(self) -> AgentExecutor:
         """Create the agent executor with ReAct-style prompt."""

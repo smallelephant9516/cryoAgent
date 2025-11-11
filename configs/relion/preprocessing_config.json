@@ -39,7 +39,7 @@
       "patch_y": 1,
       "eer_grouping": 32,
       "gain_rot": 0,
-      "gain_flip": 0,
+      "gain_flip": 1,
       "dose_weighting": true,
       "first_frame_sum": 1,
       "last_frame_sum": -1

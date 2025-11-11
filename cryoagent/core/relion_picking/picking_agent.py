@@ -1,6 +1,7 @@
 """ReAct-based particle picking agent for RELION CryoEM data processing."""
 
 import json
+import math
 import subprocess
 import os
 import time
@@ -49,6 +50,8 @@ class PickingAgent(BaseReActAgent):
         super().__init__(None, config, llm)  # No CryoSPARC tools needed for RELION
         # Initialize logger for this agent
         self.logger = logging.getLogger("RelionPickingAgent")
+        # Cache microscope configuration for derived defaults
+        self.microscope_config = self._load_microscope_config()
         
             # Initialize workflow state tracking for both rounds
         self.workflow_state = {
@@ -157,6 +160,18 @@ class PickingAgent(BaseReActAgent):
                 'use_backend': blob_picker_config.get('use_backend', self.relion_tools._backend_enabled),
                 'conda_env': blob_picker_config.get('conda_env', 'relion-5.0')
             }
+
+            base_diameter = self._get_base_particle_diameter()
+            if base_diameter:
+                config_params['particle_diameter'] = base_diameter
+                config_params['LoG_diam_min'] = base_diameter * 0.7
+                config_params['LoG_diam_max'] = base_diameter * 1.3
+                angpix_default = self._get_microscope_parameter("pixel_size")
+                try:
+                    if angpix_default:
+                        config_params['angpix'] = float(angpix_default)
+                except (TypeError, ValueError):
+                    pass
             
             # Update with params only if not None (like merge_parameters in test)
             for key, config_value in config_params.items():
@@ -296,6 +311,18 @@ class PickingAgent(BaseReActAgent):
                 'use_backend': extraction_config.get('use_backend', self.relion_tools._backend_enabled),
                 'conda_env': extraction_config.get('conda_env', 'relion-5.0')
             }
+
+            base_diameter = self._get_base_particle_diameter()
+            pixel_size = self._get_microscope_parameter("pixel_size")
+            if base_diameter and pixel_size:
+                try:
+                    pixel_size_val = float(pixel_size)
+                    if pixel_size_val > 0:
+                        computed_box = math.ceil(base_diameter / pixel_size_val) + 125
+                        normalized_box = self._normalize_box_size(computed_box)
+                        config_params['extract_size'] = normalized_box if normalized_box else int(computed_box)
+                except (TypeError, ValueError, ZeroDivisionError):
+                    pass
             
             # Update with params only if not None (like merge_parameters in test)
             for key, config_value in config_params.items():
@@ -430,6 +457,23 @@ class PickingAgent(BaseReActAgent):
                 'use_backend': classification_config.get('use_backend', self.relion_tools._backend_enabled),
                 'conda_env': classification_config.get('conda_env', 'relion-5.0')
             }
+
+            scaled_diameter = self._get_scaled_particle_diameter(1.1)
+            if scaled_diameter:
+                if 'particle_diameter' in params and abs(float(params['particle_diameter']) - scaled_diameter) > 1e-6:
+                    self.logger.info(
+                        "Overriding provided particle_diameter=%s with microscope-derived value %.3f Å for 2D classification",
+                        params['particle_diameter'],
+                        scaled_diameter,
+                    )
+                config_params['particle_diameter'] = scaled_diameter
+
+            pixel_size = self._get_microscope_parameter("pixel_size")
+            try:
+                if pixel_size:
+                    config_params['angpix'] = float(pixel_size)
+            except (TypeError, ValueError):
+                pass
             
             # Update with params only if not None (like merge_parameters in test)
             for key, config_value in config_params.items():
@@ -1190,7 +1234,17 @@ class PickingAgent(BaseReActAgent):
                     missing_steps.append(step)
                 # If completed_flag is True but we can't verify, trust the flag
         
-        # Determine overall success
+        final_star = stage_outputs.get("selected_particles_star")
+        if final_star:
+            if not os.path.isabs(final_star):
+                relion_dir = self.relion_tools.relion_dir
+                final_star_candidate = os.path.join(relion_dir, final_star)
+                if os.path.exists(final_star_candidate):
+                    return {"success": True, "error": None}
+            elif os.path.exists(final_star):
+                return {"success": True, "error": None}
+
+        # Determine overall success via detailed job inspection when the final artifact is missing
         if failed_steps:
             return {
                 "success": False,
@@ -1316,21 +1370,16 @@ class PickingAgent(BaseReActAgent):
                 "source": "relion_particle_picking",
             }
         
-        # Build simplified picking results with final star file and micrograph location
+        relion_dir = self.relion_tools.relion_dir
+
         picking_results = {
             "timestamp": timestamp,
             "status": status,
             "stage": "particle_picking",
             "agent_type": "relion",
+            "relion_dir": relion_dir,
             "final_star_file": final_star_file,
-            "selected_micrographs_star": micrograph_location,
-            "micrographs_star": micrograph_location,
-            "micrograph_location": micrograph_info or micrograph_location,
-            "metadata": {
-                "workflow_type": getattr(context, 'workflow_type', 'unknown'),
-                "start_time": getattr(context, 'start_time', None),
-                "conversation_id": getattr(context, 'conversation_id', None)
-            }
+            "selected_micrographs_star": micrograph_location
         }
         
         # Save to JSON file

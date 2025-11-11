@@ -465,18 +465,25 @@ class TransitionWorkflow:
             if candidate_path.exists():
                 candidate_paths.append(candidate_path)
 
+        outputs_section = self.stage_outputs.get("outputs", {}) if isinstance(self.stage_outputs, dict) else {}
         micrographs_job_uid = (
             self.stage_outputs.get("micrographs_job_uid")
             or self.stage_outputs.get("micrograph_selection_job_uid")
             or self.stage_outputs.get("input_micrographs_job_uid")
             or self.stage_outputs.get("job_uids", {}).get("micrograph_selection")
+            or outputs_section.get("micrographs_job_uid")
+            or outputs_section.get("micrograph_selection_job_uid")
         )
         if not micrographs_job_uid:
             cached_picking = self._load_cached_cryosparc_picking_results()
             if cached_picking:
                 micrographs_job_uid = (
-                    cached_picking.get("input_micrographs_job_uid")
+                    cached_picking.get("micrographs_job_uid")
+                    or cached_picking.get("micrograph_selection_job_uid")
+                    or cached_picking.get("input_micrographs_job_uid")
                     or cached_picking.get("job_uids", {}).get("micrograph_selection")
+                    or cached_picking.get("outputs", {}).get("micrographs_job_uid")
+                    or cached_picking.get("outputs", {}).get("micrograph_selection_job_uid")
                 )
 
         if not micrographs_job_uid and candidate_paths:

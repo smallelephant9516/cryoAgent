@@ -79,6 +79,7 @@ class WorkflowSettings(BaseModel):
     microscope_config_path: str = Field(default="configs/microscope_config.json", description="Path to microscope configuration file")
     project_uid: str = Field(default="P1", description="CryoSPARC project UID")
     workspace_uid: str = Field(default="W1", description="CryoSPARC workspace UID")
+    particle_diameter: Optional[float] = Field(default=None, description="Global particle diameter override (Å)")
     
     class Config:
         """Pydantic configuration."""
@@ -368,6 +369,7 @@ class ConfigLoader:
             "microscope_config_path": workflow_data.get("import_movies", {}).get("microscope_config_path", "configs/microscope_config.json"),
             "project_uid": workflow_data.get("project_uid", "P1"),
             "workspace_uid": workflow_data.get("workspace_uid", "W1"),
+            "particle_diameter": workflow_data.get("particle_diameter"),
         }
         
         workflow_settings = WorkflowSettings(**workflow_params)

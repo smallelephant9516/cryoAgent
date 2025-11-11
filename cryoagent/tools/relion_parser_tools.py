@@ -97,28 +97,48 @@ class RelionPreprocessingParser:
             Dictionary with 'success' boolean and 'error' message if failed
         """
         try:
-            # Check that all required output files exist
+            selected_micrographs_star = stage_outputs.get("selected_micrographs_star")
+            if selected_micrographs_star:
+                star_path = Path(selected_micrographs_star)
+                if not star_path.is_absolute():
+                    selection_dir = stage_outputs.get("selection_job_dir")
+                    if selection_dir:
+                        base_dir = Path(selection_dir).resolve()
+                        if base_dir.is_dir():
+                            candidate = (base_dir / star_path).resolve()
+                            if candidate.exists():
+                                return {"success": True, "error": None}
+                    relion_dir = stage_outputs.get("relion_dir")
+                    if relion_dir:
+                        candidate = (Path(relion_dir).resolve() / star_path).resolve()
+                        if candidate.exists():
+                            return {"success": True, "error": None}
+                elif star_path.exists():
+                    return {"success": True, "error": None}
+
             required_files = [
                 stage_outputs.get("movies_star_file"),
                 stage_outputs.get("corrected_micrographs_star"),
                 stage_outputs.get("ctf_star_file"),
                 stage_outputs.get("selected_micrographs_star")
             ]
-            
-            missing_files = [f for f in required_files if not f or not Path(f).exists()]
-            
+
+            missing_files = [
+                f for f in required_files
+                if not f or not Path(f).exists()
+            ]
             if missing_files:
                 return {
                     "success": False,
                     "error": f"Missing output files: {missing_files}"
                 }
-            
+
             return {"success": True, "error": None}
-            
-        except Exception as e:
+
+        except Exception as exc:
             return {
                 "success": False,
-                "error": f"Validation error: {str(e)}"
+                "error": f"Validation error: {str(exc)}"
             }
     
     def save_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True) -> str:
@@ -136,33 +156,47 @@ class RelionPreprocessingParser:
         import time
         
         try:
-            # Create outputs directory
             outputs_dir = Path("outputs")
             outputs_dir.mkdir(exist_ok=True)
-            
-            # Generate timestamp for unique filename
+
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             result_file = outputs_dir / f"preprocessing_results_relion_{timestamp}.json"
-            
-            # Prepare results data
+
+            selection_job_dir = stage_outputs.get("selection_job_dir")
+            relion_dir = stage_outputs.get("relion_dir")
+            if not relion_dir and selection_job_dir:
+                selection_path = Path(selection_job_dir).resolve()
+                if selection_path.is_dir():
+                    relion_dir = str(selection_path.parent.parent)
+
+            selected_star = stage_outputs.get("selected_micrographs_star")
+            if selected_star:
+                star_path = Path(selected_star)
+                if not star_path.is_absolute() and relion_dir:
+                    candidate = (Path(relion_dir) / star_path).resolve()
+                    if candidate.exists():
+                        selected_star = str(candidate)
+                elif star_path.exists():
+                    selected_star = str(star_path.resolve())
+
             results_data = {
                 "timestamp": timestamp,
                 "status": "completed" if success else "failed",
                 "stage": "preprocessing",
                 "agent_type": "relion",
-                "stage_outputs": stage_outputs,
-                "metadata": context.metadata
+                "relion_dir": relion_dir,
+                "selected_micrographs_star": selected_star,
+                "micrograph_selection_job_dir": selection_job_dir
             }
-            
-            # Save to JSON file
-            with open(result_file, 'w') as f:
-                json.dump(results_data, f, indent=2)
-            
+
+            with open(result_file, "w") as handle:
+                json.dump(results_data, handle, indent=2)
+
             self.logger.info(f"RELION preprocessing results saved to {result_file}")
             return str(result_file)
-            
-        except Exception as e:
-            self.logger.error(f"Failed to save RELION preprocessing results: {e}")
+
+        except Exception as exc:
+            self.logger.error(f"Failed to save RELION preprocessing results: {exc}")
             return ""
 
 
