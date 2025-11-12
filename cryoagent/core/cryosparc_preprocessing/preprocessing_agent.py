@@ -69,7 +69,9 @@ class PreprocessingAgent(BaseReActAgent):
                 "pixel_size": 0.6575,
                 "voltage": 300.0,
                 "cs_mm": 2.7,
-                "dose": 53.0
+                "dose": 53.0,
+                "gain_rot": 0,
+                "gain_flip": 0
             }
     
     def _load_preprocessing_config(self) -> Dict[str, Any]:
@@ -118,6 +120,47 @@ class PreprocessingAgent(BaseReActAgent):
                 }
             }
     
+    def _parse_boolean_param(self, value: Any, default: bool = False) -> bool:
+        """Parse boolean parameter that might be string, number, or boolean."""
+        if value is None or value == "":
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {'true', '1', 'yes', 'on'}:
+                return True
+            if lowered in {'false', '0', 'no', 'off'}:
+                return False
+        return bool(value)
+
+    def _parse_int_param(self, value: Any, default: int = 0, param_name: str = "value") -> int:
+        """Parse integer parameter that might be string/number/bool."""
+        if value is None or value == "":
+            return default
+        try:
+            if isinstance(value, bool):
+                return int(value)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, float):
+                return int(value)
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped == "":
+                    return default
+                lowered = stripped.lower()
+                if lowered in {'true', 'yes', 'on'}:
+                    return 1
+                if lowered in {'false', 'no', 'off'}:
+                    return 0
+                return int(float(stripped))
+        except (TypeError, ValueError):
+            self.logger.warning("Invalid %s value '%s'; defaulting to %s", param_name, value, default)
+        return default
+
     def _create_tools(self) -> List[Tool]:
         """Create preprocessing-specific tools."""
         return [
@@ -217,7 +260,32 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             # Safely get microscope config values, handling case where it might not be set yet
             microscope_config = getattr(self, 'microscope_config', {})
             
-            used_params = {
+            gain_rot_value = params.get("gain_rot", microscope_config.get("gain_rot"))
+            gain_rot = self._parse_int_param(gain_rot_value, default=0, param_name="gain_rot") % 4
+
+            gain_flip_value = params.get("gain_flip", microscope_config.get("gain_flip"))
+            relion_gain_flip = self._parse_int_param(gain_flip_value, default=0, param_name="gain_flip")
+
+            relion_flip_y = bool(relion_gain_flip & 0b01)
+            relion_flip_x = bool(relion_gain_flip & 0b10)
+
+            # CryoSPARC uses the opposite convention for Y flips compared to RELION,
+            # but the X flip matches, so only invert Y by default.
+            default_flip_y = not relion_flip_y
+            default_flip_x = relion_flip_x
+
+            gainref_flip_y = self._parse_boolean_param(params.get("gainref_flip_y"), default=default_flip_y)
+            gainref_flip_x = self._parse_boolean_param(params.get("gainref_flip_x"), default=default_flip_x)
+            gainref_rotate_num = self._parse_int_param(
+                params.get("gainref_rotate_num", gain_rot),
+                default=gain_rot,
+                param_name="gainref_rotate_num"
+            ) % 4
+
+
+            print(gainref_flip_y)
+
+            tool_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
                 "movies_path": params.get("movies_path", microscope_config.get("movies_path", "/path/to/movies/*.tif")),
@@ -226,12 +294,18 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 "voltage": float(params.get("voltage", microscope_config.get("voltage", 300.0))),
                 "cs_mm": float(params.get("cs_mm", microscope_config.get("cs_mm", 2.7))),
                 "dose": float(params.get("dose", microscope_config.get("dose", 53.0))),
+                "gainref_flip_x": gainref_flip_x,
+                "gainref_flip_y": gainref_flip_y,
+                "gainref_rotate_num": gainref_rotate_num,
                 "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
                 "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
                 "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
             }
 
-            result = self.cryosparc_tools.import_movies(**used_params)
+            result = self.cryosparc_tools.import_movies(**tool_params)
+            used_params = dict(tool_params)
+            used_params["gain_rot"] = gain_rot
+            used_params["relion_gain_flip"] = relion_gain_flip
             self._record_tool_execution("import_movies", used_params, result=result)
             return f"✅ Successfully queued import movies job: {result['job_uid']}"
             

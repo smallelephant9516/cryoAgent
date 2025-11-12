@@ -9,9 +9,12 @@
     "voltage": 300.0,
     "cs_mm": 2.7,
     "dose": 53.0,
-    "particle_diameter": 190.0,
-    "movies_path": "/home/daoyi/cryoEM_dataset/10025_subset/agent_test/*.tif",
-    "gain_ref_path": "/home/daoyi/cryoEM_dataset/10025_subset/agent_test/norm-amibox05-0.mrc"
+    "particle_diameter": 120,
+    "symmetry": "D2",
+    "movies_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/*.tiff",
+    "gain_ref_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/gain.mrc",
+    "gain_rot": 0,
+    "gain_flip": 0
   },
   "parameter_descriptions": {
     "pixel_size": "Physical pixel size in Angstroms",
@@ -19,7 +22,10 @@
     "cs_mm": "Spherical aberration coefficient in mm",
     "dose": "Electron dose per frame in e-/Å²",
     "particle_diameter": "Nominal particle diameter in Angstroms used to auto-derive picking and reconstruction defaults",
+    "symmetry": "Default point-group symmetry for reconstruction and refinement stages (e.g., C1, D7)",
     "movies_path": "Path to movie files (supports wildcards like *.tif)",
-    "gain_ref_path": "Path to gain reference file (.mrc format)"
+    "gain_ref_path": "Path to gain reference file (.mrc format)",
+    "gain_rot": "Clockwise rotation to apply to gain reference before use (units: 90° increments, values 0-3)",
+    "gain_flip": "RELION gain flip code (0 = none, 1 = flip Y, 2 = flip X). CryoSPARC flip flags are derived automatically."
   }
 }

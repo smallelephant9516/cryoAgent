@@ -14,7 +14,7 @@
         "name": "particle_picking",
         "description": "Particle picking stage: Detect and extract particles from micrographs",
         "enabled": true,
-        "agent_group": "relion",
+        "agent_group": "cryosparc",
         "agent_class": "ParticlePickingAgent"
       },
       {
@@ -40,7 +40,7 @@
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
     "continue_job": true,
-    "relion_dir": "/home/daoyi/relion/relion_test",
+    "relion_dir": "/home/daoyi/scratch/relion/relion_tutorial/ccc",
     "backend_execution": {
       "enabled": true,
       "default_timeout": 3600,
@@ -117,7 +117,7 @@
     }
   },
   "workflow": {
-    "project_uid": "P1",
+    "project_uid": "P2",
     "workspace_uid": "W1",
     "particle_diameter": 180.0
   },

@@ -15,7 +15,8 @@ class PreprocessingTools:
             description="Import movie files into CryoSPARC for processing. "
                        "Required parameters: None (all loaded from microscope_config.json). "
                        "Optional parameters: project_uid, workspace_uid, wait_for_completion, timeout, check_interval. "
-                       "All microscope parameters (movies_path, gain_ref_path, pixel_size, voltage, cs_mm, dose) are automatically loaded from microscope_config.json.",
+                       "All microscope parameters (movies_path, gain_ref_path, pixel_size, voltage, cs_mm, dose) are automatically loaded from microscope_config.json. "
+                       "Gain reference orientation (gainref_flip_x, gainref_flip_y, gainref_rotate_num) is auto-derived from the same configuration.",
             func=agent._import_movies_tool
         )
     

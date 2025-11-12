@@ -131,6 +131,9 @@ class CryoSPARCTools:
         voltage: float = 300.0,
         cs_mm: float = 2.7,
         dose: float = 1.0,
+        gainref_flip_x: Optional[bool] = None,
+        gainref_flip_y: Optional[bool] = None,
+        gainref_rotate_num: Optional[int] = None,
         wait_for_completion: bool = False,
         timeout: int = 3600,
         check_interval: int = 30,
@@ -148,6 +151,9 @@ class CryoSPARCTools:
             voltage: Acceleration voltage in kV
             cs_mm: Spherical aberration in mm
             dose: Electron dose per frame in e-/Å²
+            gainref_flip_x: Whether to flip gain reference in X (CryoSPARC convention)
+            gainref_flip_y: Whether to flip gain reference in Y (CryoSPARC convention)
+            gainref_rotate_num: Number of 90° clockwise rotations to apply to gain reference
             wait_for_completion: Whether to wait for job completion
             timeout: Maximum time to wait for completion in seconds
             **kwargs: Additional parameters
@@ -167,11 +173,22 @@ class CryoSPARCTools:
                 "accel_kv": voltage,
                 "cs_mm": cs_mm,
                 "total_dose_e_per_A2": dose,
-                **kwargs
             }
             
             if gain_ref_path:
                 job_params["gainref_path"] = gain_ref_path
+            if gainref_flip_x is not None:
+                job_params["gainref_flip_x"] = bool(gainref_flip_x)
+            if gainref_flip_y is not None:
+                job_params["gainref_flip_y"] = bool(gainref_flip_y)
+            if gainref_rotate_num is not None:
+                try:
+                    job_params["gainref_rotate_num"] = int(gainref_rotate_num) % 4
+                except (TypeError, ValueError):
+                    print(f"Warning: Invalid gainref_rotate_num '{gainref_rotate_num}', skipping.")
+            
+            if kwargs:
+                job_params.update(kwargs)
             
             # Create job using workspace.create_job()
             job = workspace.create_job("import_movies", params=job_params)

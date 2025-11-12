@@ -75,6 +75,36 @@ class RELIONTools:
                 quoted_args.append(shlex.quote(arg_str))
         return " ".join(quoted_args)
 
+    def _write_command_note(
+        self,
+        output_dir: str,
+        cmd: List[Any],
+        launcher_cmd: Optional[List[Any]] = None
+    ) -> None:
+        """
+        Write a note.txt file capturing the command executed for a RELION job.
+
+        Args:
+            output_dir: Absolute path to the RELION job directory.
+            cmd: Command list that will be executed for the job.
+            launcher_cmd: Optional wrapper command (e.g., conda run invocation).
+        """
+        try:
+            note_path = Path(output_dir) / "note.txt"
+            note_lines = [
+                "Command:",
+                self._format_command(cmd)
+            ]
+            if launcher_cmd:
+                note_lines.extend([
+                    "",
+                    "Launcher:",
+                    self._format_command(launcher_cmd)
+                ])
+            note_path.write_text("\n".join(note_lines) + "\n", encoding="utf-8")
+        except Exception as exc:
+            print(f"Warning: Failed to write note.txt in {output_dir}: {exc}")
+
     def _convert_to_relative_path(self, absolute_path: str) -> str:
         """
         Convert an absolute path to a relative path within the RELION working directory.
@@ -343,6 +373,8 @@ class RELIONTools:
                     f"cd {shlex.quote(self.relion_dir)} && {cmd_str}"
                 ]
 
+                self._write_command_note(full_output_dir, cmd, launcher_cmd=conda_cmd)
+
                 process = subprocess.Popen(
                     conda_cmd,
                     stdout=subprocess.PIPE,
@@ -372,6 +404,8 @@ class RELIONTools:
             env['QT_QPA_PLATFORM'] = 'offscreen'
             env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
             env['QT_SCALE_FACTOR'] = '1'
+
+            self._write_command_note(full_output_dir, cmd)
             
             # Run the command from the RELION directory
             result = subprocess.run(
@@ -538,6 +572,8 @@ class RELIONTools:
                     "bash", "-c",
                     f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
+
+                self._write_command_note(full_output_dir, cmd, launcher_cmd=conda_cmd)
                 process = subprocess.Popen(
                     conda_cmd,
                     stdout=subprocess.PIPE,
@@ -569,6 +605,8 @@ class RELIONTools:
             env['QT_QPA_PLATFORM'] = 'offscreen'
             env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
             env['QT_SCALE_FACTOR'] = '1'
+
+            self._write_command_note(full_output_dir, cmd)
             
             # Run the command from the RELION directory
             result = subprocess.run(
@@ -713,6 +751,7 @@ class RELIONTools:
                     "bash", "-c",
                     f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
+                self._write_command_note(full_output_dir, cmd, launcher_cmd=conda_cmd)
                 process = subprocess.Popen(
                     conda_cmd,
                     stdout=subprocess.PIPE,
@@ -744,6 +783,8 @@ class RELIONTools:
             env['QT_QPA_PLATFORM'] = 'offscreen'
             env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
             env['QT_SCALE_FACTOR'] = '1'
+
+            self._write_command_note(full_output_dir, cmd)
             
             # Run the command from the RELION directory
             result = subprocess.run(
@@ -863,6 +904,8 @@ class RELIONTools:
             env['QT_QPA_PLATFORM'] = 'offscreen'
             env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
             env['QT_SCALE_FACTOR'] = '1'
+
+            self._write_command_note(full_output_dir, cmd)
             
             # Run the command from the RELION directory
             result = subprocess.run(
@@ -1918,6 +1961,8 @@ class RELIONTools:
                     "bash", "-c",
                     f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
+
+                self._write_command_note(full_output_dir, cmd, launcher_cmd=conda_cmd)
                 
                 process = subprocess.Popen(
                     conda_cmd,
@@ -1948,6 +1993,8 @@ class RELIONTools:
             env['QT_QPA_PLATFORM'] = 'offscreen'
             env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
             env['QT_SCALE_FACTOR'] = '1'
+
+            self._write_command_note(full_output_dir, cmd)
             
             result = subprocess.run(
                 cmd,
@@ -2096,6 +2143,8 @@ class RELIONTools:
                     "bash", "-c",
                     f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
+
+                self._write_command_note(full_output_dir, cmd, launcher_cmd=conda_cmd)
                 
                 process = subprocess.Popen(
                     conda_cmd,
@@ -2127,6 +2176,8 @@ class RELIONTools:
             env['QT_QPA_PLATFORM'] = 'offscreen'
             env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
             env['QT_SCALE_FACTOR'] = '1'
+
+            self._write_command_note(full_output_dir, cmd)
             
             result = subprocess.run(
                 cmd,
@@ -2277,6 +2328,8 @@ class RELIONTools:
                     "bash", "-c",
                     f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
+
+                self._write_command_note(full_output_dir, cmd, launcher_cmd=conda_cmd)
                 
                 process = subprocess.Popen(
                     conda_cmd,
@@ -2307,6 +2360,8 @@ class RELIONTools:
             env['QT_QPA_PLATFORM'] = 'offscreen'
             env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
             env['QT_SCALE_FACTOR'] = '1'
+
+            self._write_command_note(full_output_dir, cmd)
             
             result = subprocess.run(
                 cmd,
@@ -2478,6 +2533,8 @@ class RELIONTools:
                     "bash", "-c",
                     f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
+
+                self._write_command_note(full_output_dir, cmd, launcher_cmd=conda_cmd)
                 
                 process = subprocess.Popen(
                     conda_cmd,
@@ -2510,6 +2567,8 @@ class RELIONTools:
             env['QT_QPA_PLATFORM'] = 'offscreen'
             env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
             env['QT_SCALE_FACTOR'] = '1'
+
+            self._write_command_note(full_output_dir, cmd)
             
             result = subprocess.run(
                 cmd,
@@ -2641,6 +2700,8 @@ class RELIONTools:
                     "bash", "-c",
                     f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
+
+                self._write_command_note(full_output_dir, cmd, launcher_cmd=conda_cmd)
                 
                 process = subprocess.Popen(
                     conda_cmd,
@@ -2677,7 +2738,9 @@ class RELIONTools:
         output_dir: str = "InitialModel",
         iter: int = 200,
         K: int = 1,
-        sym: str = "C1",
+        sym: Optional[str] = None,
+        refine_sym: Optional[str] = None,
+        align_sym: Optional[str] = None,
         particle_diameter: float = 200.0,
         oversampling: int = 1,
         healpix_order: int = 1,
@@ -2713,7 +2776,9 @@ class RELIONTools:
             output_dir: Output directory for the job (default: "InitialModel")
             iter: Number of iterations (default: 200)
             K: Number of classes (default: 1)
-            sym: Symmetry group (default: "C1")
+            sym: Backward-compatible symmetry value applied to both stages if stage-specific values are not provided
+            refine_sym: Symmetry group for the refinement stage (defaults to `sym` or "C1")
+            align_sym: Symmetry group for the symmetry-alignment stage (defaults to `refine_sym`)
             particle_diameter: Diameter of particles in Angstroms
             oversampling: Adaptive oversampling order
             healpix_order: Healpix order for angular sampling
@@ -2743,6 +2808,18 @@ class RELIONTools:
             Dictionary containing job information
         """
         try:
+            # Resolve symmetry parameters (backward compatible)
+            if sym is not None:
+                if refine_sym is None:
+                    refine_sym = sym
+                if align_sym is None:
+                    align_sym = sym
+
+            if refine_sym is None:
+                refine_sym = "C1"
+            if align_sym is None:
+                align_sym = refine_sym
+
             # Find the next job number for the output directory
             full_output_dir = self._get_next_job_directory(output_dir)
             
@@ -2767,7 +2844,7 @@ class RELIONTools:
                 "--iter", str(iter),
                 "--i", input_star,
                 "--K", str(K),
-                "--sym", sym,
+                "--sym", refine_sym,
                 "--particle_diameter", str(particle_diameter),
                 "--oversampling", str(oversampling),
                 "--healpix_order", str(healpix_order),
@@ -2832,7 +2909,7 @@ class RELIONTools:
                 align_symmetry_path,
                 "--i", model_star,
                 "--o", initial_model,
-                "--sym", sym,
+                "--sym", align_sym,
                 "--apply_sym",
                 "--select_largest_class",
                 "--pipeline_control", full_output_dir + "/"
@@ -2856,6 +2933,15 @@ class RELIONTools:
                     "bash", "-c",
                     f"cd {shlex.quote(self.relion_dir)} && {combined_cmd}"
                 ]
+
+                self._write_command_note(full_output_dir, cmd, launcher_cmd=conda_cmd)
+                try:
+                    note_path = Path(full_output_dir) / "note.txt"
+                    with note_path.open("a", encoding="utf-8") as note_file:
+                        note_file.write("\nFollow-up Command:\n")
+                        note_file.write(self._format_command(align_cmd) + "\n")
+                except Exception as exc:
+                    print(f"Warning: Failed to append align command to note.txt in {full_output_dir}: {exc}")
                 
                 process = subprocess.Popen(
                     conda_cmd,
@@ -2875,6 +2961,8 @@ class RELIONTools:
                     "initial_model": initial_model,
                     "model_star": model_star,
                     "command": combined_cmd,
+                    "refine_sym": refine_sym,
+                    "align_sym": align_sym,
                     "process_id": process.pid,
                     "started_at": time.time()
                 }
@@ -2888,6 +2976,15 @@ class RELIONTools:
             env['QT_QPA_PLATFORM'] = 'offscreen'
             env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
             env['QT_SCALE_FACTOR'] = '1'
+
+            self._write_command_note(full_output_dir, cmd)
+            try:
+                note_path = Path(full_output_dir) / "note.txt"
+                with note_path.open("a", encoding="utf-8") as note_file:
+                    note_file.write("\nFollow-up Command:\n")
+                    note_file.write(self._format_command(align_cmd) + "\n")
+            except Exception as exc:
+                print(f"Warning: Failed to append align command to note.txt in {full_output_dir}: {exc}")
             
             # Run refinement
             result = subprocess.run(
@@ -2932,6 +3029,8 @@ class RELIONTools:
                 "initial_model": initial_model,
                 "model_star": model_star,
                 "command": self._format_command(cmd) + " && " + self._format_command(align_cmd),
+                "refine_sym": refine_sym,
+                "align_sym": align_sym,
                 "stdout": result.stdout + "\n" + result2.stdout,
                 "stderr": result.stderr + "\n" + result2.stderr
             }
@@ -3123,6 +3222,8 @@ class RELIONTools:
                     "bash", "-c",
                     f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
+
+                self._write_command_note(full_output_dir, cmd, launcher_cmd=conda_cmd)
                 
                 process = subprocess.Popen(
                     conda_cmd,
@@ -3154,6 +3255,8 @@ class RELIONTools:
             env['QT_QPA_PLATFORM'] = 'offscreen'
             env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
             env['QT_SCALE_FACTOR'] = '1'
+
+            self._write_command_note(full_output_dir, cmd)
             
             result = subprocess.run(
                 cmd,
@@ -3329,6 +3432,8 @@ class RELIONTools:
                     "bash", "-c",
                     f"cd {shlex.quote(self.relion_dir)} && {self._format_command(cmd)}"
                 ]
+
+                self._write_command_note(full_output_dir, cmd, launcher_cmd=conda_cmd)
                 
                 process = subprocess.Popen(
                     conda_cmd,
@@ -3364,6 +3469,8 @@ class RELIONTools:
             env['QT_QPA_PLATFORM'] = 'offscreen'
             env['QT_AUTO_SCREEN_SCALE_FACTOR'] = '0'
             env['QT_SCALE_FACTOR'] = '1'
+
+            self._write_command_note(full_output_dir, cmd)
             
             result = subprocess.run(
                 cmd,

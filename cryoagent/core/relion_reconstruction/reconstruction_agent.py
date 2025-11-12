@@ -162,6 +162,9 @@ class ReconstructionAgent(BaseReActAgent):
             if not input_star:
                 return "❌ Error: input_star parameter is required"
             
+            workflow_config = self._get_workflow_config()
+            ab_initio_config = workflow_config.get("ab_initio_reconstruction", {})
+
             particle_diameter_param = params.get("particle_diameter")
             scaled_diameter = self._get_scaled_particle_diameter(1.1)
             if scaled_diameter is not None:
@@ -176,7 +179,6 @@ class ReconstructionAgent(BaseReActAgent):
                 particle_diameter = float(particle_diameter_param)
             else:
                 particle_diameter = None
-                ab_initio_config = self._get_workflow_config().get("ab_initio_reconstruction", {})
                 if "particle_diameter" in ab_initio_config:
                     try:
                         particle_diameter = float(ab_initio_config["particle_diameter"])
@@ -184,18 +186,41 @@ class ReconstructionAgent(BaseReActAgent):
                         particle_diameter = None
             if particle_diameter is None:
                 return "❌ Error: particle_diameter parameter is required"
+            def _extract_symmetry_value(*candidates: Any) -> Optional[str]:
+                for value in candidates:
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+                    if value not in (None, ""):
+                        return str(value)
+                return None
+
+            microscope_sym = self._get_microscope_parameter("symmetry")
+
+            sym_value = _extract_symmetry_value(
+                params.get("sym"),
+                ab_initio_config.get("sym") if isinstance(ab_initio_config, dict) else None,
+                microscope_sym,
+            ) or "C1"
+
+            align_sym = _extract_symmetry_value(
+                params.get("align_sym"),
+                params.get("sym"),
+                ab_initio_config.get("align_sym") if isinstance(ab_initio_config, dict) else None,
+                ab_initio_config.get("sym") if isinstance(ab_initio_config, dict) else None,
+                microscope_sym,
+            ) or sym_value
             
-            sym = params.get("sym", "C1")
-            
-            # Get ab initio reconstruction config from JSON file
-            ab_initio_config = self._get_workflow_config().get("ab_initio_reconstruction", {})
+            # Ensure configs are dictionaries for subsequent lookups
+            if not isinstance(ab_initio_config, dict):
+                ab_initio_config = {}
             
             used_params = {
                 "input_star": input_star,
                 "output_dir": "InitialModel",
                 "iter": int(params.get("iter") or ab_initio_config.get("iter", 200)),
                 "K": int(params.get("K") or ab_initio_config.get("K", 1)),
-                "sym": sym,
+                "sym": sym_value,
+                "align_sym": align_sym,
                 "particle_diameter": float(particle_diameter),
                 "oversampling": int(params.get("oversampling") or ab_initio_config.get("oversampling", 1)),
                 "healpix_order": int(params.get("healpix_order") or ab_initio_config.get("healpix_order", 1)),
@@ -328,7 +353,19 @@ class ReconstructionAgent(BaseReActAgent):
             if particle_diameter is None:
                 return "❌ Error: particle_diameter parameter is required"
             
-            sym = params.get("sym", "C1")
+            def _extract_symmetry_value(*candidates: Any) -> Optional[str]:
+                for value in candidates:
+                    if isinstance(value, str) and value.strip():
+                        return value.strip()
+                    if value not in (None, ""):
+                        return str(value)
+                return None
+
+            sym = _extract_symmetry_value(
+                params.get("sym"),
+                refinement_config.get("sym") if isinstance(refinement_config, dict) else None,
+                self._get_microscope_parameter("symmetry"),
+            ) or "C1"
             
             used_params = {
                 "input_star": input_star,

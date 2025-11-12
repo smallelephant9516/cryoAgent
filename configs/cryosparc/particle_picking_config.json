@@ -47,7 +47,7 @@
       "selection_mode_description": "Strategy for selecting 2D classes: 'top_n' uses particle counts, 'cryosift' runs CryoSift scores.",
       "top_n_classes": 7,
       "top_n_classes_description": "Number of top classes to select based on particle count. Used for BOTH selections (first and final) when selection_mode is 'top_n'.",
-      "cryosift_threshold": 4.7,
+      "cryosift_threshold": 3,
       "cryosift_threshold_description": "CryoSift confidence threshold (1-5). Classes scoring BELOW this value are selected when using selection_mode='cryosift' Usually keep as 3.",
       "cryosift_env": "magellon2DAssess",
       "cryosift_env_description": "Conda environment used to run CryoSift evaluation (passed to conda run -n <env>).",

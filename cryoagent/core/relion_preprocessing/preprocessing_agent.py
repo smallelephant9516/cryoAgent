@@ -66,6 +66,31 @@ class PreprocessingAgent(BaseReActAgent):
             return value.lower() in ['true', '1', 'yes', 'on']
         else:
             return bool(value)
+
+    def _parse_int_param(self, value: Any, default: int = 0, param_name: str = "value") -> int:
+        """Parse integer-like parameter."""
+        if value is None or value == "":
+            return default
+        try:
+            if isinstance(value, bool):
+                return int(value)
+            if isinstance(value, int):
+                return value
+            if isinstance(value, float):
+                return int(value)
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped == "":
+                    return default
+                lowered = stripped.lower()
+                if lowered in {'true', 'yes', 'on'}:
+                    return 1
+                if lowered in {'false', 'no', 'off'}:
+                    return 0
+                return int(float(stripped))
+        except (TypeError, ValueError):
+            self.logger.warning("Invalid %s value '%s'; defaulting to %s", param_name, value, default)
+        return default
     
     def _get_workflow_config(self) -> Dict[str, Any]:
         """Get workflow configuration from JSON file."""
@@ -112,7 +137,9 @@ class PreprocessingAgent(BaseReActAgent):
                 "cs_mm": 2.7,
                 "q0": 0.1,
                 "beamtilt_x": 0,
-                "beamtilt_y": 0
+                "beamtilt_y": 0,
+                "gain_rot": 0,
+                "gain_flip": 0
             }
     
     def _create_tools(self) -> List[Tool]:
@@ -248,6 +275,23 @@ class PreprocessingAgent(BaseReActAgent):
             
             # Get MotionCor2 executable path from config if not provided
             motioncor2_exe = params.get("motioncor2_exe") or motion_correction_config.get("motioncor2_exe", None)
+
+            # Determine gain reference rotation and flip values. These default to microscope configuration.
+            gain_rot_value = params.get("gain_rot", None)
+            if gain_rot_value is None or gain_rot_value == "":
+                gain_rot_value = self.microscope_config.get(
+                    "gain_rot",
+                    self.microscope_config.get(
+                        "gain_ref_rotation",
+                        self.microscope_config.get("gain_ref_rotation_deg")
+                    )
+                )
+            gain_rot = self._parse_int_param(gain_rot_value, default=0, param_name="gain_rot") % 4
+
+            gain_flip_value = params.get("gain_flip", None)
+            if gain_flip_value is None or gain_flip_value == "":
+                gain_flip_value = self.microscope_config.get("gain_flip", self.microscope_config.get("gain_ref_flip"))
+            gain_flip = self._parse_int_param(gain_flip_value, default=0, param_name="gain_flip")
             
             used_params = {
                 "input_star": input_star,
@@ -266,8 +310,8 @@ class PreprocessingAgent(BaseReActAgent):
                 "patch_y": int(params.get("patch_y") or motion_correction_config.get("patch_y", 1)),
                 "eer_grouping": int(params.get("eer_grouping") or motion_correction_config.get("eer_grouping", 32)),
                 "gainref": gain_ref_path,
-                "gain_rot": int(params.get("gain_rot") or motion_correction_config.get("gain_rot", 0)),
-                "gain_flip": int(params.get("gain_flip") or motion_correction_config.get("gain_flip", 0)),
+                "gain_rot": gain_rot,
+                "gain_flip": gain_flip,
                 "dose_weighting": self._parse_boolean_param(params.get("dose_weighting") or motion_correction_config.get("dose_weighting", True)),
                 "grouping_for_ps": int(params.get("grouping_for_ps") or 3),
                 "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion", "true")),

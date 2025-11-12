@@ -21,6 +21,7 @@
       "iter": 200,
       "K": 1,
       "sym": "C1",
+      "align_sym": "D7",
       "particle_diameter": 200.0,
       "oversampling": 1,
       "healpix_order": 1,
@@ -86,6 +87,8 @@
           "sym"
         ],
         "optional_params": [
+          "refine_sym",
+          "align_sym",
           "iter",
           "K",
           "oversampling",

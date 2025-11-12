@@ -279,7 +279,10 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             initial_resolution = params.get("initial_resolution", 20.0)
             final_resolution = params.get("final_resolution", 10.0)
             max_iterations = params.get("max_iterations", 50)
-            symmetry = params.get("symmetry", "C1")
+            symmetry = params.get("symmetry")
+            if not symmetry:
+                symmetry = self._get_microscope_parameter("symmetry") or "C1"
+            params["symmetry"] = symmetry
             
             # Job control parameters
             wait_for_completion = params.get("wait_for_completion", "false").lower() == "true"
@@ -332,7 +335,10 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             # Extract optional parameters
             initial_resolution = params.get("initial_resolution", 20.0)
             final_resolution = params.get("final_resolution", 8.0)
-            symmetry = params.get("symmetry", "C1")
+            symmetry = params.get("symmetry")
+            if not symmetry:
+                symmetry = self._get_microscope_parameter("symmetry") or "C1"
+            params["symmetry"] = symmetry
             
             # Job control parameters
             wait_for_completion = params.get("wait_for_completion", "false").lower() == "true"
@@ -455,7 +461,11 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 refinement_resolution = defaults.get("refinement_resolution")
             symmetry = params.get("symmetry")
             if not symmetry:
-                symmetry = defaults.get("refinement_symmetry", "C1")
+                symmetry = defaults.get("refinement_symmetry")
+            if not symmetry:
+                symmetry = self._get_microscope_parameter("symmetry")
+            if not symmetry:
+                symmetry = "C1"
             params["symmetry"] = symmetry
             if refinement_resolution is not None:
                 params["refinement_resolution"] = refinement_resolution
