@@ -217,7 +217,7 @@ def _update_relion_picking(config_data: Dict[str, Any], overrides: MicroscopePar
     if diameter is not None:
         log_min = _round_sig(diameter * 0.7)
         log_max = _round_sig(diameter * 1.3)
-        class_diameter = _round_sig(diameter * 1.2)
+        class_diameter = _scale_value(diameter, 1.2)
         updates_made |= _bulk_update(
             config_data,
             [
@@ -302,7 +302,7 @@ def _update_relion_reconstruction(config_data: Dict[str, Any], overrides: Micros
         )
 
     if overrides.particle_diameter is not None:
-        scaled_diameter = _round_sig(overrides.particle_diameter * 1.2)
+        scaled_diameter = _scale_value(overrides.particle_diameter, 1.2)
         updates_made |= _bulk_update(
             config_data,
             [
@@ -341,7 +341,7 @@ def _update_cryosparc_reconstruction(config_data: Dict[str, Any], overrides: Mic
         )
 
     if overrides.particle_diameter is not None:
-        scaled_diameter = _round_sig(overrides.particle_diameter * 1.2)
+        scaled_diameter = _scale_value(overrides.particle_diameter, 1.2)
         updates_made |= _bulk_update(
             config_data,
             [
@@ -403,5 +403,12 @@ def _round_sig(value: float, digits: int = 3) -> float:
     if rounded.is_integer():
         return int(rounded)
     return rounded
+
+
+def _scale_value(value: Optional[float], factor: float) -> Optional[float]:
+    """Scale a microscope parameter (e.g., diameter) by a given factor with rounding."""
+    if value is None:
+        return None
+    return _round_sig(value * factor)
 
 

@@ -20,7 +20,7 @@
     "dose": 38.8,
     "gain_rot": 0,
     "gain_flip": 0,
-    "particle_diameter": 120,
+    "particle_diameter": 180.0,
     "symmetry": "D2"
   },
   "outputs": [

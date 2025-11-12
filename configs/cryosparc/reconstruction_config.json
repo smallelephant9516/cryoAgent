@@ -14,7 +14,7 @@
     "reconstruction_job_uid"
   ],
   "microscope_parameters": {
-    "particle_diameter": 120,
+    "particle_diameter": 180.0,
     "symmetry": "D2",
     "pixel_size": 0.88,
     "voltage": 200,
@@ -35,13 +35,13 @@
       "final_resolution": 10.0,
       "max_iterations": 50,
       "symmetry": "D2",
-      "particle_diameter": 144
+      "particle_diameter": 216
     },
     "refinement": {
       "type": "homogeneous",
       "resolution": null,
       "symmetry": "D2",
-      "particle_diameter": 144
+      "particle_diameter": 216
     }
   },
   "react_workflow": {

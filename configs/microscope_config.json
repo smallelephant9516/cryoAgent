@@ -10,7 +10,7 @@
     "voltage": 200,
     "cs_mm": 1.4,
     "dose": 38.8,
-    "particle_diameter": 120,
+    "particle_diameter": 180,
     "symmetry": "D2",
     "movies_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/*.tiff",
     "gain_ref_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/gain.mrc",
