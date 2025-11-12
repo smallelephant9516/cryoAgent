@@ -4,11 +4,40 @@
     "description": "Pre-processing stage: Import movies, motion correction, CTF estimation, and micrograph selection",
     "version": "1.0.0"
   },
-  "required_inputs": ["movies_path", "pixel_size", "voltage", "cs_mm", "dose"],
-  "outputs": ["selected_micrographs", "ctf_parameters", "micrograph_job_uid"],
+  "required_inputs": [
+    "movies_path",
+    "pixel_size",
+    "voltage",
+    "cs_mm",
+    "dose"
+  ],
+  "microscope_parameters": {
+    "movies_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/*.tiff",
+    "gain_ref_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/gain.mrc",
+    "pixel_size": 0.88,
+    "voltage": 200,
+    "cs_mm": 1.4,
+    "dose": 38.8,
+    "gain_rot": 0,
+    "gain_flip": 0,
+    "particle_diameter": 120,
+    "symmetry": "D2"
+  },
+  "outputs": [
+    "selected_micrographs",
+    "ctf_parameters",
+    "micrograph_job_uid"
+  ],
   "workflow": {
     "import_movies": {
-      "microscope_config_path": "configs/microscope_config.json"
+      "movies_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/*.tiff",
+      "gain_ref_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/gain.mrc",
+      "pixel_size": 0.88,
+      "voltage": 200,
+      "cs_mm": 1.4,
+      "dose": 38.8,
+      "gain_rot": 0,
+      "gain_flip": 0
     },
     "motion_correction": {
       "binning": 1,
@@ -19,7 +48,10 @@
     "ctf_estimation": {
       "min_res": 30.0,
       "max_res": 4.0,
-      "defocus_range": [0.5, 4.0],
+      "defocus_range": [
+        0.5,
+        4.0
+      ],
       "astigmatism_tolerance": 100.0
     },
     "micrograph_selection": {
@@ -32,30 +64,63 @@
       {
         "name": "import_movies",
         "description": "Import movie files into CryoSPARC",
-        "required_params": ["microscope_config_path"],
-        "optional_params": [],
+        "required_params": [
+          "movies_path",
+          "gain_ref_path",
+          "pixel_size",
+          "voltage",
+          "cs_mm",
+          "dose"
+        ],
+        "optional_params": [
+          "gain_rot",
+          "gain_flip"
+        ],
         "depends_on": []
       },
       {
         "name": "motion_correction",
         "description": "Perform motion correction on imported movies",
-        "required_params": ["movies_job_uid"],
-        "optional_params": ["binning", "patch_size", "max_shift"],
-        "depends_on": ["import_movies"]
+        "required_params": [
+          "movies_job_uid"
+        ],
+        "optional_params": [
+          "binning",
+          "patch_size",
+          "max_shift"
+        ],
+        "depends_on": [
+          "import_movies"
+        ]
       },
       {
         "name": "ctf_estimation",
         "description": "Estimate CTF parameters for micrographs",
-        "required_params": ["micrographs_job_uid"],
-        "optional_params": ["min_res", "max_res", "defocus_range"],
-        "depends_on": ["motion_correction"]
+        "required_params": [
+          "micrographs_job_uid"
+        ],
+        "optional_params": [
+          "min_res",
+          "max_res",
+          "defocus_range"
+        ],
+        "depends_on": [
+          "motion_correction"
+        ]
       },
       {
         "name": "micrograph_selection",
         "description": "Select micrographs with resolution better than specified threshold",
-        "required_params": ["ctf_job_uid"],
-        "optional_params": ["min_resolution", "quality_threshold"],
-        "depends_on": ["ctf_estimation"]
+        "required_params": [
+          "ctf_job_uid"
+        ],
+        "optional_params": [
+          "min_resolution",
+          "quality_threshold"
+        ],
+        "depends_on": [
+          "ctf_estimation"
+        ]
       }
     ]
   }

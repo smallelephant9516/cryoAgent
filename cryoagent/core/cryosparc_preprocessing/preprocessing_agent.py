@@ -35,44 +35,21 @@ class PreprocessingAgent(BaseReActAgent):
         super().__init__(cryosparc_tools, config, llm)
         # Initialize logger for this agent
         self.logger = logging.getLogger("PreprocessingAgent")
-        # Load microscope configuration
-        self.microscope_config = self._load_microscope_config()
-        # Load preprocessing workflow configuration
+        # Load preprocessing workflow configuration (stage config)
         self.preprocessing_config = self._load_preprocessing_config()
-    
-    def _load_microscope_config(self) -> Dict[str, Any]:
-        """Load microscope configuration from separate config file."""
-        try:
-            # Get the microscope config path from the workflow configuration
-            microscope_config_path = getattr(self.config.workflow, 'microscope_config_path', 'configs/microscope_config.json')
-            
-            # If it's a relative path, make it relative to the project root
-            if not Path(microscope_config_path).is_absolute():
-                # Assume the config is relative to the project root
-                microscope_config_path = Path.cwd() / microscope_config_path
-            
-            config_path = Path(microscope_config_path)
-            
-            if not config_path.exists():
-                raise FileNotFoundError(f"Microscope configuration file not found: {config_path}")
-            
-            with open(config_path, 'r') as f:
-                microscope_data = json.load(f)
-            
-            # Return the microscope parameters
-            return microscope_data.get('microscope_parameters', {})
-            
-        except Exception as e:
-            print(f"Warning: Could not load microscope configuration: {e}")
-            # Return default values if loading fails
-            return {
-                "pixel_size": 0.6575,
-                "voltage": 300.0,
-                "cs_mm": 2.7,
-                "dose": 53.0,
-                "gain_rot": 0,
-                "gain_flip": 0
-            }
+        self.stage_config = self.preprocessing_config
+        self.stage_workflow = self.stage_config.get("workflow", {})
+        # Extract microscope-related defaults from stage config and apply global overrides when requested
+        stage_defaults: Dict[str, Any] = {}
+        stage_defaults.update(self.stage_config.get("microscope_parameters", {}) or {})
+        import_defaults = (
+            self.preprocessing_config
+            .get("workflow", {})
+            .get("import_movies", {})
+        )
+        if isinstance(import_defaults, dict):
+            stage_defaults.update(import_defaults)
+        self.microscope_config = self._resolve_microscope_defaults(stage_defaults, update_cache=True)
     
     def _load_preprocessing_config(self) -> Dict[str, Any]:
         """Load preprocessing workflow configuration from separate config file."""
@@ -103,8 +80,8 @@ class PreprocessingAgent(BaseReActAgent):
             with open(config_path, 'r') as f:
                 preprocessing_data = json.load(f)
             
-            # Return the workflow parameters
-            return preprocessing_data.get('workflow', {})
+            # Return the full preprocessing configuration
+            return preprocessing_data
             
         except Exception as e:
             print(f"Warning: Could not load preprocessing configuration: {e}")
@@ -239,7 +216,6 @@ For each step, you MUST follow this pattern:
 ## Current Configuration:
 - Project UID: {self.config.workflow.project_uid}
 - Workspace UID: {self.config.workflow.workspace_uid}
-- Microscope Config: {getattr(self.config.workflow, 'microscope_config_path', 'configs/microscope_config.json')}
 - Movies Path: {microscope_config.get('movies_path', 'N/A')}
 - Gain Ref Path: {microscope_config.get('gain_ref_path', 'N/A')}
 - Pixel Size: {microscope_config.get('pixel_size', 'N/A')} Å
@@ -283,8 +259,6 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             ) % 4
 
 
-            print(gainref_flip_y)
-
             tool_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
@@ -324,7 +298,7 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
             
             # Safely get preprocessing config values, handling case where it might not be set yet
-            preprocessing_config = getattr(self, 'preprocessing_config', {})
+            preprocessing_config = getattr(self, 'preprocessing_config', {}).get('workflow', {})
             motion_correction_config = preprocessing_config.get('motion_correction', {})
             
             used_params = {
@@ -357,7 +331,7 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
             
             # Safely get preprocessing config values, handling case where it might not be set yet
-            preprocessing_config = getattr(self, 'preprocessing_config', {})
+            preprocessing_config = getattr(self, 'preprocessing_config', {}).get('workflow', {})
             ctf_config = preprocessing_config.get('ctf_estimation', {})
             
             used_params = {

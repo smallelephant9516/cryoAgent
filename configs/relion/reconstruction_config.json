@@ -16,13 +16,17 @@
     "refined_optimiser",
     "fsc_data"
   ],
+  "microscope_parameters": {
+    "particle_diameter": 120.0,
+    "symmetry": "D2"
+  },
   "workflow": {
     "ab_initio_reconstruction": {
       "iter": 200,
       "K": 1,
       "sym": "C1",
-      "align_sym": "D7",
-      "particle_diameter": 200.0,
+      "align_sym": "D2",
+      "particle_diameter": 144,
       "oversampling": 1,
       "healpix_order": 1,
       "offset_range": 6.0,
@@ -51,8 +55,8 @@
       "only_do_unfinished": false
     },
     "refinement_3d": {
-      "sym": "D7",
-      "particle_diameter": 260.0,
+      "sym": "D2",
+      "particle_diameter": 144,
       "oversampling": 1,
       "healpix_order": 2,
       "auto_local_healpix_order": 4,
@@ -197,4 +201,3 @@
     ]
   }
 }
-

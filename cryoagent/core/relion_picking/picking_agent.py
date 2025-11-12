@@ -46,12 +46,15 @@ class PickingAgent(BaseReActAgent):
         
         # Enable backend execution for RELION tools
         self.relion_tools.enable_backend_execution(True)
+        self.stage_config = self._load_stage_config()
+        self.stage_workflow = self.stage_config.get("workflow", {})
         
         super().__init__(None, config, llm)  # No CryoSPARC tools needed for RELION
         # Initialize logger for this agent
         self.logger = logging.getLogger("RelionPickingAgent")
-        # Cache microscope configuration for derived defaults
-        self.microscope_config = self._load_microscope_config()
+        # Cache microscope configuration for derived defaults (respecting microscope_config overrides)
+        stage_defaults = self.stage_config.get("microscope_parameters", {})
+        self.microscope_config = self._resolve_microscope_defaults(stage_defaults, update_cache=True)
         
             # Initialize workflow state tracking for both rounds
         self.workflow_state = {
@@ -80,19 +83,22 @@ class PickingAgent(BaseReActAgent):
             return bool(value)
     
     
-    def _get_workflow_config(self) -> Dict[str, Any]:
-        """Get workflow configuration from JSON file."""
-        import json
-        from pathlib import Path
-        
+    def _load_stage_config(self) -> Dict[str, Any]:
+        """Load RELION particle picking stage configuration."""
         config_path = Path(self.config_loader.config_path)
-        if not config_path.exists():
+        if not config_path.is_absolute():
+            config_path = Path.cwd() / config_path
+        try:
+            with open(config_path, "r", encoding="utf-8") as fp:
+                return json.load(fp) or {}
+        except FileNotFoundError:
             return {}
-        
-        with open(config_path, 'r') as f:
-            config_data = json.load(f)
-        
-        return config_data.get("workflow", {})
+        except json.JSONDecodeError:
+            return {}
+    
+    def _get_workflow_config(self) -> Dict[str, Any]:
+        """Get workflow configuration from stage config."""
+        return self.stage_workflow
     
     def _create_tools(self) -> List[Tool]:
         """Create tools for particle picking operations."""
@@ -318,9 +324,12 @@ class PickingAgent(BaseReActAgent):
                 try:
                     pixel_size_val = float(pixel_size)
                     if pixel_size_val > 0:
-                        computed_box = math.ceil(base_diameter / pixel_size_val) + 125
+                        computed_box = (base_diameter / pixel_size_val) + 125
                         normalized_box = self._normalize_box_size(computed_box)
-                        config_params['extract_size'] = normalized_box if normalized_box else int(computed_box)
+                        if normalized_box is not None:
+                            config_params['extract_size'] = normalized_box
+                        else:
+                            config_params['extract_size'] = int(round(computed_box))
                 except (TypeError, ValueError, ZeroDivisionError):
                     pass
             
@@ -458,7 +467,7 @@ class PickingAgent(BaseReActAgent):
                 'conda_env': classification_config.get('conda_env', 'relion-5.0')
             }
 
-            scaled_diameter = self._get_scaled_particle_diameter(1.1)
+            scaled_diameter = self._get_scaled_particle_diameter(1.2)
             if scaled_diameter:
                 if 'particle_diameter' in params and abs(float(params['particle_diameter']) - scaled_diameter) > 1e-6:
                     self.logger.info(

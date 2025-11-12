@@ -1,9 +1,10 @@
 """ReAct-based 3D reconstruction agent for CryoEM data processing."""
 
+import json
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 from langchain.tools import Tool
 from langchain_core.language_models import BaseLanguageModel
-import json
 
 from ..base_react_agent import BaseReActAgent
 from .reconstruction_tools import ReconstructionTools
@@ -30,6 +31,10 @@ class ReconstructionAgent(BaseReActAgent):
         """
         super().__init__(cryosparc_tools, config, llm)
         self.workflow_defaults: Dict[str, Any] = {}
+        self.stage_config = self._load_stage_config()
+        self.stage_workflow = self.stage_config.get("workflow", {})
+        stage_defaults = self.stage_config.get("microscope_parameters", {})
+        self.microscope_config = self._resolve_microscope_defaults(stage_defaults, update_cache=True)
     
     def update_workflow_defaults(self, defaults: Dict[str, Any]) -> None:
         """Store workflow-level default parameters for later tool invocations."""
@@ -50,6 +55,23 @@ class ReconstructionAgent(BaseReActAgent):
             ReconstructionTools.create_get_job_log_tool(self),
             ReconstructionTools.create_reason_about_workflow_tool(self)
         ]
+    
+    def _load_stage_config(self) -> Dict[str, Any]:
+        """Load reconstruction stage configuration."""
+        config_path = Path("configs/cryosparc/reconstruction_config.json")
+        if not config_path.is_absolute():
+            config_path = Path.cwd() / config_path
+        try:
+            with open(config_path, "r", encoding="utf-8") as fp:
+                return json.load(fp) or {}
+        except FileNotFoundError:
+            return {}
+        except json.JSONDecodeError:
+            return {}
+    
+    def _get_stage_param(self, section: str, key: str, default: Optional[Any] = None) -> Optional[Any]:
+        """Fetch a parameter from the stage workflow configuration."""
+        return self.stage_workflow.get(section, {}).get(key, default)
     
     def _get_react_system_prompt(self) -> str:
         """Get the 3D reconstruction-specific ReAct system prompt."""
@@ -274,15 +296,22 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
             
-            # Extract optional parameters
-            num_classes = params.get("num_classes", 1)
-            initial_resolution = params.get("initial_resolution", 20.0)
-            final_resolution = params.get("final_resolution", 10.0)
-            max_iterations = params.get("max_iterations", 50)
+            # Extract optional parameters (stage config defaults first)
+            ab_initio_defaults = self.stage_workflow.get("ab_initio", {})
+            num_classes = params.get("num_classes", ab_initio_defaults.get("num_classes", 1))
+            initial_resolution = params.get("initial_resolution", ab_initio_defaults.get("initial_resolution", 20.0))
+            final_resolution = params.get("final_resolution", ab_initio_defaults.get("final_resolution", 10.0))
+            max_iterations = params.get("max_iterations", ab_initio_defaults.get("max_iterations", 50))
             symmetry = params.get("symmetry")
             if not symmetry:
-                symmetry = self._get_microscope_parameter("symmetry") or "C1"
+                symmetry = self._get_microscope_parameter("symmetry") or ab_initio_defaults.get("symmetry") or "C1"
             params["symmetry"] = symmetry
+
+            scaled_diameter = self._get_scaled_particle_diameter(1.2)
+            if scaled_diameter:
+                params["particle_diameter_angstroms"] = float(scaled_diameter)
+                if hasattr(self, "workflow_defaults") and isinstance(self.workflow_defaults, dict):
+                    self.workflow_defaults["ab_initio_particle_diameter"] = float(scaled_diameter)
             
             # Job control parameters
             wait_for_completion = params.get("wait_for_completion", "false").lower() == "true"
@@ -333,11 +362,12 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
             
             # Extract optional parameters
-            initial_resolution = params.get("initial_resolution", 20.0)
-            final_resolution = params.get("final_resolution", 8.0)
+            refinement_defaults = self.stage_workflow.get("refinement", {})
+            initial_resolution = params.get("initial_resolution", refinement_defaults.get("initial_resolution", 20.0))
+            final_resolution = params.get("final_resolution", refinement_defaults.get("final_resolution", 8.0))
             symmetry = params.get("symmetry")
             if not symmetry:
-                symmetry = self._get_microscope_parameter("symmetry") or "C1"
+                symmetry = self._get_microscope_parameter("symmetry") or refinement_defaults.get("symmetry") or "C1"
             params["symmetry"] = symmetry
             
             # Job control parameters
@@ -461,9 +491,9 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 refinement_resolution = defaults.get("refinement_resolution")
             symmetry = params.get("symmetry")
             if not symmetry:
-                symmetry = defaults.get("refinement_symmetry")
-            if not symmetry:
                 symmetry = self._get_microscope_parameter("symmetry")
+            if not symmetry:
+                symmetry = defaults.get("refinement_symmetry")
             if not symmetry:
                 symmetry = "C1"
             params["symmetry"] = symmetry

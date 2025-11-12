@@ -43,12 +43,15 @@ class ReconstructionAgent(BaseReActAgent):
         
         # Enable backend execution for RELION tools
         self.relion_tools.enable_backend_execution(True)
+        self.stage_config = self._load_stage_config()
+        self.stage_workflow = self.stage_config.get("workflow", {})
         
         super().__init__(None, config, llm)  # No CryoSPARC tools needed for RELION
         # Initialize logger for this agent
         self.logger = logging.getLogger("RelionReconstructionAgent")
-        # Cache microscope configuration for derived defaults
-        self.microscope_config = self._load_microscope_config()
+        # Cache microscope configuration for derived defaults (respecting microscope_config overrides)
+        stage_defaults = self.stage_config.get("microscope_parameters", {})
+        self.microscope_config = self._resolve_microscope_defaults(stage_defaults, update_cache=True)
         
         # Initialize workflow state tracking
         self.workflow_state = {
@@ -87,50 +90,22 @@ class ReconstructionAgent(BaseReActAgent):
         else:
             return bool(value)
     
-    def _get_workflow_config(self) -> Dict[str, Any]:
-        """Get workflow configuration from JSON file."""
-        import json
-        from pathlib import Path
-        
-        def _load_json(path: Path) -> Dict[str, Any]:
-            if not path.exists():
-                return {}
-            try:
-                with open(path, "r", encoding="utf-8") as fp:
-                    return json.load(fp) or {}
-            except Exception:
-                return {}
-        
+    def _load_stage_config(self) -> Dict[str, Any]:
+        """Load RELION reconstruction stage configuration."""
         config_path = Path(self.config_loader.config_path)
-        master_path = (
-            Path(self.config_loader.master_config_path)
-            if getattr(self.config_loader, "master_config_path", None)
-            else None
-        )
-        
-        stage_config = _load_json(config_path)
-        master_config = _load_json(master_path) if master_path else {}
-        
-        # Merge workflow sections with master overrides taking precedence
-        workflow_stage = stage_config.get("workflow", {}) or {}
-        workflow_master = master_config.get("workflow", {}) or {}
-        
-        def _deep_merge(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
-            merged: Dict[str, Any] = dict(base)
-            for key, value in overrides.items():
-                if (
-                    isinstance(value, dict)
-                    and isinstance(merged.get(key), dict)
-                ):
-                    merged[key] = _deep_merge(merged[key], value)
-                else:
-                    merged[key] = value
-            return merged
-        
-        if not workflow_master:
-            return workflow_stage
-        
-        return _deep_merge(workflow_stage, workflow_master)
+        if not config_path.is_absolute():
+            config_path = Path.cwd() / config_path
+        try:
+            with open(config_path, "r", encoding="utf-8") as fp:
+                return json.load(fp) or {}
+        except FileNotFoundError:
+            return {}
+        except json.JSONDecodeError:
+            return {}
+    
+    def _get_workflow_config(self) -> Dict[str, Any]:
+        """Get workflow configuration from stage config."""
+        return self.stage_workflow
     
     def _create_tools(self) -> List[Tool]:
         """Create reconstruction-specific tools."""
@@ -166,7 +141,7 @@ class ReconstructionAgent(BaseReActAgent):
             ab_initio_config = workflow_config.get("ab_initio_reconstruction", {})
 
             particle_diameter_param = params.get("particle_diameter")
-            scaled_diameter = self._get_scaled_particle_diameter(1.1)
+            scaled_diameter = self._get_scaled_particle_diameter(1.2)
             if scaled_diameter is not None:
                 if particle_diameter_param is not None and abs(float(particle_diameter_param) - scaled_diameter) > 1e-6:
                     self.logger.info(
@@ -332,7 +307,7 @@ class ReconstructionAgent(BaseReActAgent):
             refinement_config = self._get_workflow_config().get("refinement_3d", {})
 
             particle_diameter_param = params.get("particle_diameter")
-            scaled_diameter = self._get_scaled_particle_diameter(1.1)
+            scaled_diameter = self._get_scaled_particle_diameter(1.2)
             if scaled_diameter is not None:
                 if particle_diameter_param is not None and abs(float(particle_diameter_param) - scaled_diameter) > 1e-6:
                     self.logger.info(

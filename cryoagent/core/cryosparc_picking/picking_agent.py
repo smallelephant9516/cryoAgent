@@ -1,7 +1,9 @@
 """ReAct-based particle picking agent for CryoEM data processing."""
 
+import json
 import logging
 import math
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 from langchain.tools import Tool
 from langchain_core.language_models import BaseLanguageModel
@@ -33,8 +35,12 @@ class PickingAgent(BaseReActAgent):
         super().__init__(cryosparc_tools, config, llm)
         # Initialize logger for this agent
         self.logger = logging.getLogger("PickingAgent")
-        # Cache microscope configuration for derived defaults
-        self.microscope_config = self._load_microscope_config()
+        # Load stage configuration for picking (agent-specific parameters)
+        self.stage_config = self._load_stage_config()
+        self.stage_workflow = self.stage_config.get("workflow", {})
+        # Cache microscope configuration for derived defaults, respecting microscope_config overrides
+        stage_defaults = self.stage_config.get("microscope_parameters", {})
+        self.microscope_config = self._resolve_microscope_defaults(stage_defaults, update_cache=True)
     
     def _create_tools(self) -> List[Tool]:
         """Create particle picking-specific tools."""
@@ -49,6 +55,24 @@ class PickingAgent(BaseReActAgent):
             PickingTools.create_get_job_log_tool(self),
             PickingTools.create_reason_about_workflow_tool(self)
         ]
+    
+    def _load_stage_config(self) -> Dict[str, Any]:
+        """Load particle picking stage configuration."""
+        config_path = Path("configs/cryosparc/particle_picking_config.json")
+        if not config_path.is_absolute():
+            config_path = Path.cwd() / config_path
+        try:
+            with open(config_path, "r", encoding="utf-8") as fp:
+                return json.load(fp) or {}
+        except FileNotFoundError:
+            self.logger.warning("Particle picking configuration not found at %s; using defaults.", config_path)
+        except json.JSONDecodeError as exc:
+            self.logger.warning("Invalid JSON in particle picking configuration %s: %s", config_path, exc)
+        return {}
+    
+    def _get_stage_param(self, section: str, key: str, default: Optional[Any] = None) -> Optional[Any]:
+        """Convenience helper to read a parameter from the stage workflow config."""
+        return self.stage_workflow.get(section, {}).get(key, default)
     
     def _get_react_system_prompt(self) -> str:
         """Get the particle picking-specific ReAct system prompt."""
@@ -166,18 +190,26 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
             
-            # Resolve particle diameter from params or microscope configuration
+            # Resolve particle diameter from params or stage configuration
             particle_diameter_param = params.get("particle_diameter")
             base_diameter = self._get_base_particle_diameter()
+            if base_diameter is None:
+                stage_default = self._get_stage_param("blob_picker", "particle_diameter")
+                try:
+                    base_diameter = float(stage_default) if stage_default is not None else None
+                except (TypeError, ValueError):
+                    base_diameter = None
             auto_min_diameter = base_diameter * 0.7 if base_diameter else None
             auto_max_diameter = base_diameter * 1.3 if base_diameter else None
 
             if particle_diameter_param is not None:
                 particle_diameter_value = float(particle_diameter_param)
-            elif auto_min_diameter is not None:
-                particle_diameter_value = float(auto_min_diameter)
+            elif base_diameter is not None:
+                particle_diameter_value = float(base_diameter)
             else:
-                particle_diameter_value = getattr(self.config.workflow, "particle_diameter", None)
+                particle_diameter_value = self._get_stage_param("blob_picker", "particle_diameter")
+                if particle_diameter_value is None:
+                    particle_diameter_value = self.microscope_config.get("particle_diameter")
                 if particle_diameter_value is None:
                     return "❌ Error: particle_diameter parameter is required for blob picker"
                 particle_diameter_value = float(particle_diameter_value)
@@ -198,6 +230,10 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 used_params["diameter_max"] = float(diameter_max_param)
             elif auto_max_diameter is not None:
                 used_params["diameter_max"] = float(auto_max_diameter)
+            else:
+                stage_diameter_max = self._get_stage_param("blob_picker", "diameter_max")
+                if stage_diameter_max is not None:
+                    used_params["diameter_max"] = float(stage_diameter_max)
 
             result = self.cryosparc_tools.blob_picker(**used_params)
             self._record_tool_execution("blob_picker", used_params, result=result)
@@ -222,7 +258,7 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             # Get box size from params or derived defaults
             box_size_pix = params.get("box_size_pix")
             if box_size_pix is None:
-                box_size_pix = getattr(self.config.workflow, "box_size_pix", None)
+                box_size_pix = self._get_stage_param("particle_extraction", "box_size_pix")
 
             if box_size_pix is None:
                 base_diameter = self._get_base_particle_diameter()
@@ -231,9 +267,12 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                     if base_diameter and pixel_size:
                         pixel_size_val = float(pixel_size)
                         if pixel_size_val > 0:
-                            computed_box = math.ceil(base_diameter / pixel_size_val) + 125
+                            computed_box = (base_diameter / pixel_size_val) + 125
                             normalized_box = self._normalize_box_size(computed_box)
-                            box_size_pix = normalized_box if normalized_box else int(computed_box)
+                            if normalized_box is not None:
+                                box_size_pix = normalized_box
+                            else:
+                                box_size_pix = int(round(computed_box))
                 except (TypeError, ValueError, ZeroDivisionError):
                     box_size_pix = None
 
@@ -278,7 +317,7 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             # Get num_classes from params or config (default 20)
             num_classes = params.get("num_classes")
             if not num_classes:
-                num_classes = getattr(self.config.workflow, "num_classes", 20)
+                num_classes = self._get_stage_param("2d_classification", "num_classes", 20)
             
             used_params = {
                 "project_uid": project_uid,
@@ -314,7 +353,7 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
 
             top_n_classes = params.get("top_n_classes")
             if top_n_classes is None and selection_mode != "cryosift":
-                top_n_classes = getattr(self.config.workflow, "top_n_classes", 5)
+                top_n_classes = self._get_stage_param("select_2d_classes", "top_n_classes", 5)
 
             cryosift_threshold = params.get("cryosift_threshold")
             cryosift_env = params.get("cryosift_env")
@@ -395,9 +434,13 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 return "❌ Error: micrographs_job_uid parameter is required for template picker"
             
             # Resolve template picker parameters (fall back to recorded blob picker values if needed)
-            lowpass_resolution = params.get("lowpass_resolution") or getattr(self.config.workflow, "lowpass_resolution", 20.0)
+            lowpass_resolution = params.get("lowpass_resolution") or self._get_stage_param("template_picker", "lowpass_resolution", 20.0)
 
-            particle_diameter = params.get("particle_diameter") or getattr(self.config.workflow, "particle_diameter", None)
+            particle_diameter = params.get("particle_diameter")
+            if particle_diameter is None:
+                particle_diameter = self._get_stage_param("blob_picker", "particle_diameter")
+            if particle_diameter is None:
+                particle_diameter = self.microscope_config.get("particle_diameter")
             angular_spacing_deg = params.get("angular_spacing_deg") or params.get("angle_search_range")
             blob_picker_job_uid = params.get("blob_picker_job_uid")
 

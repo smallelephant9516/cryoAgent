@@ -1,14 +1,15 @@
 {
+  "overwrite": true,
   "microscope_info": {
     "name": "microscope_parameters",
     "description": "Basic microscope parameters for cryoEM data collection",
     "version": "1.0.0"
   },
   "microscope_parameters": {
-    "pixel_size": 0.6575,
-    "voltage": 300.0,
-    "cs_mm": 2.7,
-    "dose": 53.0,
+    "pixel_size": 0.88,
+    "voltage": 200,
+    "cs_mm": 1.4,
+    "dose": 38.8,
     "particle_diameter": 120,
     "symmetry": "D2",
     "movies_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/*.tiff",

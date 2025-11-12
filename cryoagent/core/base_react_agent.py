@@ -58,6 +58,9 @@ class BaseReActAgent(ABC):
         self.reasoning_history: List[Dict[str, str]] = []
         self.tool_execution_log: List[Dict[str, Any]] = []
         self._microscope_config_cache: Optional[Dict[str, Any]] = None
+        self._microscope_override_cache: Optional[Dict[str, Any]] = None
+        self._microscope_override_enabled: Optional[bool] = None
+        self._microscope_override_path: Optional[Path] = None
         
         # Memory control state
         self.conversation_count = 0
@@ -108,69 +111,104 @@ class BaseReActAgent(ABC):
         """
         pass
 
-    def _load_microscope_config(self) -> Dict[str, Any]:
-        """
-        Load microscope configuration values defined in the project configuration.
-
-        Returns:
-            Dictionary of microscope parameters (may be empty if unavailable).
-        """
-        if self._microscope_config_cache is not None:
-            return self._microscope_config_cache
-
-        config_path_value = getattr(
-            self.config.workflow,
-            "microscope_config_path",
-            "configs/microscope_config.json",
-        )
-
-        search_roots = [
-            Path.cwd(),
-            Path(__file__).resolve().parents[2],  # project root (cryoagent/)
-        ]
-
-        raw_path = Path(str(config_path_value))
-        candidate_paths = []
-        if raw_path.is_absolute():
-            candidate_paths.append(raw_path)
-        else:
-            for root in search_roots:
-                candidate_paths.append(root / raw_path)
-
-        for candidate in candidate_paths:
-            try:
-                with open(candidate, "r", encoding="utf-8") as fp:
-                    config_data = json.load(fp) or {}
-                self._microscope_config_cache = (
-                    config_data.get("microscope_parameters", {}) or {}
-                )
-                return self._microscope_config_cache
-            except FileNotFoundError:
-                continue
-            except Exception as exc:
-                if getattr(self.config.agent, "verbose", False):
-                    print(f"Warning: Could not load microscope configuration {candidate}: {exc}")
-                continue
-
-        if getattr(self.config.agent, "verbose", False):
-            print(
-                "Warning: Could not resolve microscope configuration file "
-                f"for path '{config_path_value}'. Using empty defaults."
-            )
-        self._microscope_config_cache = {}
-
-        return self._microscope_config_cache
-
     def _get_microscope_parameter(self, key: str, default: Any = None) -> Any:
         """
-        Fetch a single microscope parameter.
+        Fetch a single microscope parameter from stage config's microscope_parameters section.
 
         Args:
             key: Parameter name (e.g., 'pixel_size').
             default: Value returned when parameter is unavailable.
         """
-        config = self._load_microscope_config()
-        return config.get(key, default)
+        # Use cached microscope config from stage config (set by subclasses)
+        if self._microscope_config_cache is not None:
+            return self._microscope_config_cache.get(key, default)
+
+        # If cache not populated yet, try to resolve from the stage configuration,
+        # applying microscope_config.json overrides when requested.
+        stage_config = getattr(self, "stage_config", None)
+        if isinstance(stage_config, dict):
+            stage_params = stage_config.get("microscope_parameters") or {}
+            if stage_params:
+                resolved = self._resolve_microscope_defaults(stage_params, update_cache=True)
+                return resolved.get(key, default)
+        
+        return default
+
+    def _ensure_microscope_overrides_loaded(self) -> None:
+        """
+        Lazily load microscope overrides from configs/microscope_config.json when available.
+        """
+        if self._microscope_override_enabled is not None:
+            return
+
+        config_path = Path("configs/microscope_config.json")
+        if not config_path.is_absolute():
+            config_path = Path.cwd() / config_path
+        self._microscope_override_path = config_path
+
+        try:
+            with open(config_path, "r", encoding="utf-8") as fp:
+                microscope_data = json.load(fp) or {}
+        except (FileNotFoundError, json.JSONDecodeError):
+            self._microscope_override_enabled = False
+            self._microscope_override_cache = {}
+            return
+
+        overwrite_flag = microscope_data.get("overwrite", False)
+        self._microscope_override_enabled = bool(overwrite_flag)
+
+        overrides = microscope_data.get("microscope_parameters")
+        if not isinstance(overrides, dict):
+            overrides = {}
+
+        # Only cache overrides when overwrite flag is true
+        self._microscope_override_cache = overrides if self._microscope_override_enabled else {}
+
+    def _microscope_overrides_active(self) -> bool:
+        """
+        Determine whether microscope_config.json overrides should be applied.
+        """
+        self._ensure_microscope_overrides_loaded()
+        return bool(self._microscope_override_enabled and self._microscope_override_cache)
+
+    def _get_microscope_overrides(self) -> Dict[str, Any]:
+        """
+        Retrieve microscope override parameters when overwrite is enabled.
+        """
+        self._ensure_microscope_overrides_loaded()
+        return dict(self._microscope_override_cache or {})
+
+    def _resolve_microscope_defaults(
+        self,
+        stage_defaults: Optional[Dict[str, Any]] = None,
+        *,
+        update_cache: bool = False
+    ) -> Dict[str, Any]:
+        """
+        Merge stage configuration microscope defaults with overrides from microscope_config.json.
+
+        Args:
+            stage_defaults: Baseline microscope parameters sourced from the stage config.
+            update_cache: When True, update the shared microscope configuration cache so
+                helper methods (e.g. _get_microscope_parameter) use the merged values.
+
+        Returns:
+            Dictionary containing the effective microscope parameters.
+        """
+        effective: Dict[str, Any] = {}
+        if isinstance(stage_defaults, dict):
+            effective.update(stage_defaults)
+
+        overrides = self._get_microscope_overrides()
+        if overrides:
+            for key, value in overrides.items():
+                if value is not None:
+                    effective[key] = value
+
+        if update_cache:
+            self._microscope_config_cache = dict(effective)
+
+        return effective
 
     def _get_base_particle_diameter(self) -> Optional[float]:
         """

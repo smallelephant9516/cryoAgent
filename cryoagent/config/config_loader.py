@@ -313,6 +313,9 @@ class ConfigLoader:
         
         if not config_path.exists():
             raise FileNotFoundError(f"Configuration file not found: {config_path}")
+
+        # Optionally propagate microscope overrides into the stage config before loading
+        self._apply_microscope_overrides_if_needed(config_path)
         
         with open(config_path, 'r') as f:
             config_data = json.load(f)
@@ -331,6 +334,71 @@ class ConfigLoader:
         config_data = resolve_env_vars(config_data)
         
         return self._parse_config(config_data)
+
+    def _apply_microscope_overrides_if_needed(self, stage_config_path: Path) -> None:
+        """
+        If microscope_config.json requests overwrite, propagate its parameters into the stage config.
+        """
+        try:
+            microscope_path = Path("configs/microscope_config.json")
+            if not microscope_path.is_absolute():
+                microscope_path = Path.cwd() / microscope_path
+            if not microscope_path.exists():
+                return
+
+            with open(microscope_path, "r", encoding="utf-8") as fp:
+                microscope_data = json.load(fp) or {}
+
+            if not microscope_data.get("overwrite", False):
+                return
+
+            overrides = microscope_data.get("microscope_parameters", {}) or {}
+            if not overrides:
+                return
+
+            if not stage_config_path.exists():
+                return
+
+            with open(stage_config_path, "r", encoding="utf-8") as fp:
+                stage_data = json.load(fp) or {}
+
+            updated = False
+            microscope_section = stage_data.setdefault("microscope_parameters", {})
+            for key, value in overrides.items():
+                if value is None:
+                    continue
+                if microscope_section.get(key) != value:
+                    microscope_section[key] = value
+                    updated = True
+                if self._apply_override_recursive(stage_data, key, value):
+                    updated = True
+
+            if updated:
+                with open(stage_config_path, "w", encoding="utf-8") as fp:
+                    json.dump(stage_data, fp, indent=2, ensure_ascii=False)
+        except Exception:
+            # Fail silently; configuration loading will continue with existing stage config.
+            return
+
+    def _apply_override_recursive(self, data: Any, key: str, value: Any) -> bool:
+        """
+        Recursively apply override values to matching keys within a stage configuration.
+        """
+        updated = False
+        if isinstance(data, dict):
+            for existing_key, existing_value in data.items():
+                if existing_key == key:
+                    if data[existing_key] != value:
+                        data[existing_key] = value
+                        updated = True
+                else:
+                    if self._apply_override_recursive(existing_value, key, value):
+                        updated = True
+        elif isinstance(data, list):
+            for item in data:
+                if self._apply_override_recursive(item, key, value):
+                    updated = True
+        return updated
     
     def _merge_configs(self, master_config: Dict[str, Any], stage_config: Dict[str, Any]) -> Dict[str, Any]:
         """Merge master configuration with stage-specific configuration."""

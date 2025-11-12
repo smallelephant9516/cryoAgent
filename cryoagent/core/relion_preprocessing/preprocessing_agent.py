@@ -45,12 +45,15 @@ class PreprocessingAgent(BaseReActAgent):
         
         # Enable backend execution for RELION tools
         self.relion_tools.enable_backend_execution(True)
+        self.stage_config = self._load_stage_config()
+        self.stage_workflow = self.stage_config.get("workflow", {})
         
         super().__init__(None, config, llm)  # No CryoSPARC tools needed for RELION
         # Initialize logger for this agent
         self.logger = logging.getLogger("RelionPreprocessingAgent")
-        # Load microscope configuration
-        self.microscope_config = self._load_microscope_config()
+        # Load microscope configuration from stage config, applying microscope_config overrides when requested
+        stage_defaults = self.stage_config.get("microscope_parameters", {})
+        self.microscope_config = self._resolve_microscope_defaults(stage_defaults, update_cache=True)
         self.workflow_state = {
             "import_movies": {"completed": False, "job_dir": None, "output_file": None},
             "motion_correction": {"completed": False, "job_dir": None, "output_file": None},
@@ -92,55 +95,22 @@ class PreprocessingAgent(BaseReActAgent):
             self.logger.warning("Invalid %s value '%s'; defaulting to %s", param_name, value, default)
         return default
     
-    def _get_workflow_config(self) -> Dict[str, Any]:
-        """Get workflow configuration from JSON file."""
-        import json
-        from pathlib import Path
-        
+    def _load_stage_config(self) -> Dict[str, Any]:
+        """Load RELION preprocessing stage configuration."""
         config_path = Path(self.config_loader.config_path)
-        if not config_path.exists():
-            return {}
-        
-        with open(config_path, 'r') as f:
-            config_data = json.load(f)
-        
-        return config_data.get("workflow", {})
-    
-    def _load_microscope_config(self) -> Dict[str, Any]:
-        """Load microscope configuration from separate config file."""
+        if not config_path.is_absolute():
+            config_path = Path.cwd() / config_path
         try:
-            # Get the microscope config path from the workflow configuration
-            microscope_config_path = getattr(self.config.workflow, 'microscope_config_path', 'configs/microscope_config.json')
-            
-            # If it's a relative path, make it relative to the project root
-            if not Path(microscope_config_path).is_absolute():
-                # Assume the config is relative to the project root
-                microscope_config_path = Path.cwd() / microscope_config_path
-            
-            config_path = Path(microscope_config_path)
-            
-            if not config_path.exists():
-                raise FileNotFoundError(f"Microscope configuration file not found: {config_path}")
-            
-            with open(config_path, 'r') as f:
-                microscope_data = json.load(f)
-            
-            # Return the microscope parameters
-            return microscope_data.get('microscope_parameters', {})
-            
-        except Exception as e:
-            print(f"Warning: Could not load microscope configuration: {e}")
-            # Return default values if loading fails
-            return {
-                "pixel_size": 0.6575,
-                "voltage": 300.0,
-                "cs_mm": 2.7,
-                "q0": 0.1,
-                "beamtilt_x": 0,
-                "beamtilt_y": 0,
-                "gain_rot": 0,
-                "gain_flip": 0
-            }
+            with open(config_path, "r", encoding="utf-8") as fp:
+                return json.load(fp) or {}
+        except FileNotFoundError:
+            return {}
+        except json.JSONDecodeError:
+            return {}
+    
+    def _get_workflow_config(self) -> Dict[str, Any]:
+        """Get workflow configuration from stage config."""
+        return self.stage_workflow
     
     def _create_tools(self) -> List[Tool]:
         """Create preprocessing-specific tools."""

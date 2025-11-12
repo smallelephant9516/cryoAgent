@@ -16,6 +16,10 @@
     "class_averages",
     "selected_particles_star"
   ],
+  "microscope_parameters": {
+    "pixel_size": 0.88,
+    "particle_diameter": 120.0
+  },
   "workflow": {
     "blob_picker": {
       "pick_name": "autopick",
@@ -23,8 +27,8 @@
       "lowpass": 20,
       "min_distance": -1,
       "LoG": true,
-      "LoG_diam_min": 180.0,
-      "LoG_diam_max": 360.0
+      "LoG_diam_min": 84,
+      "LoG_diam_max": 156
     },
     "template_picker": {
       "pickname": "autopick",
@@ -41,7 +45,7 @@
     },
     "particle_extraction": {
       "coord_suffix": "autopick.star",
-      "extract_size": 440,
+      "extract_size": 256,
       "float16": true,
       "scale": 128,
       "norm": true,
@@ -56,7 +60,7 @@
       "K": 50,
       "iter": 25,
       "tau2_fudge": 2.0,
-      "particle_diameter": 260.0, 
+      "particle_diameter": 144,
       "offset_range": 6.0,
       "offset_step": 2.0,
       "oversampling": 1,
@@ -69,7 +73,7 @@
       "scale": true,
       "pool": 1,
       "j": 1,
-      "gpu":true
+      "gpu": true
     },
     "auto_2d_selection": {
       "min_score": 0.4,
@@ -80,6 +84,12 @@
       "auto_select": true,
       "fn_sel_parts": "particles.star",
       "fn_sel_classavgs": "class_averages.star"
+    },
+    "classification_2d2": {
+      "particle_diameter": 144
+    },
+    "particle_extraction2": {
+      "extract_size": 256
     }
   },
   "react_workflow": {
