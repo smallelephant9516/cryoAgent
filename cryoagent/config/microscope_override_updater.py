@@ -311,6 +311,15 @@ def _update_relion_reconstruction(config_data: Dict[str, Any], overrides: Micros
             ],
         )
 
+    if overrides.is_complete:
+        box_size = _compute_nearest_box_size(overrides.particle_diameter, overrides.pixel_size)
+        updates_made |= _bulk_update(
+            config_data,
+            [
+                (["workflow", "particle_reextraction", "extract_size"], box_size),
+            ],
+        )
+
     return updates_made
 
 

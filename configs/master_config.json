@@ -21,7 +21,7 @@
         "name": "reconstruction",
         "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
         "enabled": true,
-        "agent_group": "cryosparc",
+        "agent_group": "relion",
         "agent_class": "ReconstructionAgent"
       }
     ],
@@ -40,7 +40,7 @@
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
     "continue_job": true,
-    "relion_dir": "/home/daoyi/scratch/relion/relion_tutorial/ccc",
+    "relion_dir": "/home/daoyi/scratch/relion/relion_tutorial/ccr",
     "backend_execution": {
       "enabled": true,
       "default_timeout": 3600,

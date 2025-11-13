@@ -2812,8 +2812,6 @@ class RELIONTools:
             if sym is not None:
                 if refine_sym is None:
                     refine_sym = sym
-                if align_sym is None:
-                    align_sym = sym
 
             if refine_sym is None:
                 refine_sym = "C1"

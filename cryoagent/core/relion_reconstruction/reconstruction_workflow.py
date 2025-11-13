@@ -67,6 +67,9 @@ class ReconstructionWorkflow:
             "workflow_status": "starting"
         }
         
+        if final_star_file:
+            self.agent.set_initial_particles_star(final_star_file)
+
         workflow_input = self._create_workflow_input(final_star_file)
         
         try:

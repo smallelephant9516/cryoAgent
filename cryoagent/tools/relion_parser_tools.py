@@ -169,15 +169,42 @@ class RelionPreprocessingParser:
                 if selection_path.is_dir():
                     relion_dir = str(selection_path.parent.parent)
 
+            relion_dir_path = Path(relion_dir) if relion_dir else None
+
+            def resolve_path(value: Optional[str]) -> Optional[str]:
+                if not value:
+                    return None
+                path_obj = Path(value)
+                try:
+                    if path_obj.is_absolute():
+                        return str(path_obj.resolve())
+                    if relion_dir_path:
+                        candidate = (relion_dir_path / path_obj).resolve()
+                        return str(candidate)
+                    return str(path_obj.resolve())
+                except Exception:
+                    if relion_dir_path:
+                        return str(relion_dir_path / path_obj)
+                    return str(path_obj)
+
             selected_star = stage_outputs.get("selected_micrographs_star")
             if selected_star:
-                star_path = Path(selected_star)
-                if not star_path.is_absolute() and relion_dir:
-                    candidate = (Path(relion_dir) / star_path).resolve()
-                    if candidate.exists():
-                        selected_star = str(candidate)
-                elif star_path.exists():
-                    selected_star = str(star_path.resolve())
+                selected_star = resolve_path(selected_star)
+
+            motion_correction_job_dir = resolve_path(stage_outputs.get("motion_correction_job_dir"))
+            selection_job_dir_resolved = resolve_path(selection_job_dir)
+
+            micrographs_folder = None
+            if motion_correction_job_dir:
+                motion_corr_path = Path(motion_correction_job_dir)
+                movies_dir = motion_corr_path / "Movies"
+                micrographs_dir = motion_corr_path / "Micrographs"
+                if movies_dir.exists():
+                    micrographs_folder = str(movies_dir)
+                elif micrographs_dir.exists():
+                    micrographs_folder = str(micrographs_dir)
+                else:
+                    micrographs_folder = str(micrographs_dir)
 
             results_data = {
                 "timestamp": timestamp,
@@ -186,8 +213,11 @@ class RelionPreprocessingParser:
                 "agent_type": "relion",
                 "relion_dir": relion_dir,
                 "selected_micrographs_star": selected_star,
-                "micrograph_selection_job_dir": selection_job_dir
+                "micrograph_selection_job_dir": selection_job_dir_resolved
             }
+
+            if micrographs_folder:
+                results_data["micrographs_folder"] = micrographs_folder
 
             with open(result_file, "w") as handle:
                 json.dump(results_data, handle, indent=2)

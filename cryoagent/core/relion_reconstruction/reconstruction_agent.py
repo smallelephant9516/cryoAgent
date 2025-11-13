@@ -76,9 +76,22 @@ class ReconstructionAgent(BaseReActAgent):
             }
         }
         self.context_stage_outputs: Dict[Any, Any] = {}
+        self.default_particles_star: Optional[str] = None
+        self.context_backend_hint: str = "unknown"
+
     def set_context_stage_outputs(self, stage_outputs: Dict[Any, Any]) -> None:
         """Store upstream stage outputs for context-aware auto-detection."""
         self.context_stage_outputs = stage_outputs or {}
+        self.context_backend_hint = self._detect_backend_hint(self.context_stage_outputs)
+        candidate = self._detect_particles_star_from_context(self.context_stage_outputs)
+        if candidate:
+            self.default_particles_star = candidate
+
+    def set_initial_particles_star(self, particles_star: Optional[str]) -> None:
+        """Explicitly set the default particles STAR file for reconstruction."""
+        resolved = self._resolve_particles_path(particles_star)
+        if resolved:
+            self.default_particles_star = resolved
 
     
     def _parse_boolean_param(self, value: Any) -> bool:
@@ -133,9 +146,38 @@ class ReconstructionAgent(BaseReActAgent):
             params = self._parse_tool_input(input_str)
             
             # Get required parameters
-            input_star = params.get("input_star")
-            if not input_star:
-                return "❌ Error: input_star parameter is required"
+            input_star_param = params.get("input_star")
+            resolved_input_star = self._resolve_particles_path(input_star_param)
+
+            # If the provided path resolves to micrographs, prefer detected particles.star
+            if resolved_input_star and "micrographs.star" in Path(resolved_input_star).name.lower():
+                if self.default_particles_star:
+                    self.logger.info(
+                        "Detected micrographs STAR (%s) for input_star; substituting particles STAR %s",
+                        resolved_input_star,
+                        self.default_particles_star,
+                    )
+                    resolved_input_star = self.default_particles_star
+                else:
+                    self.logger.warning(
+                        "Input star '%s' appears to be a micrographs STAR file and no particles STAR fallback is available.",
+                        resolved_input_star,
+                    )
+
+            if not resolved_input_star:
+                fallback_star = self.default_particles_star
+                if not fallback_star:
+                    fallback_star = self._detect_particles_star_from_context(self.context_stage_outputs)
+                    if fallback_star:
+                        self.default_particles_star = fallback_star
+
+                if not fallback_star:
+                    return "❌ Error: input_star parameter is required and no particles STAR file could be auto-detected."
+
+                resolved_input_star = fallback_star
+                self.logger.info(f"Using auto-detected particles STAR for ab initio: {resolved_input_star}")
+
+            input_star = resolved_input_star
             
             workflow_config = self._get_workflow_config()
             ab_initio_config = workflow_config.get("ab_initio_reconstruction", {})
@@ -424,6 +466,57 @@ class ReconstructionAgent(BaseReActAgent):
             self._record_tool_execution("refinement_3d", context, error=str(e))
             return f"❌ Error running 3D refinement: {str(e)}"
     
+    def _resolve_particles_path(self, candidate: Optional[Any]) -> Optional[str]:
+        """Resolve particles STAR candidate path relative to RELION directory."""
+        if candidate in (None, "", False):
+            return None
+
+        try:
+            cand_path = Path(str(candidate)).expanduser()
+        except Exception:
+            return None
+
+        candidates_to_check: List[Path] = []
+
+        if cand_path.is_absolute():
+            candidates_to_check.append(cand_path)
+        else:
+            relion_dir = Path(self.relion_tools.relion_dir)
+            candidates_to_check.append(relion_dir / cand_path)
+            candidates_to_check.append(Path.cwd() / cand_path)
+
+        for path_option in candidates_to_check:
+            if path_option.is_file():
+                if (
+                    path_option.suffix.lower() == ".star"
+                    and "micrographs" not in path_option.name.lower()
+                    and "movies" not in path_option.name.lower()
+                ):
+                    return str(path_option.resolve())
+            elif path_option.is_dir():
+                particles_star = path_option / "particles.star"
+                if particles_star.exists():
+                    return str(particles_star.resolve())
+
+        # As a final attempt, resolve symlinks/relative paths
+        try:
+            resolved = cand_path.resolve()
+            if (
+                resolved.is_file()
+                and resolved.suffix.lower() == ".star"
+                and "micrographs" not in resolved.name.lower()
+                and "movies" not in resolved.name.lower()
+            ):
+                return str(resolved)
+            if resolved.is_dir():
+                particles_star = resolved / "particles.star"
+                if particles_star.exists():
+                    return str(particles_star)
+        except Exception:
+            pass
+
+        return None
+
     def _resolve_micrographs_path(self, candidate: Optional[Any]) -> Optional[str]:
         """Resolve micrographs STAR candidate path relative to RELION directory."""
         if not candidate:
@@ -515,6 +608,171 @@ class ReconstructionAgent(BaseReActAgent):
                 configs.extend(self._extract_transition_configs(item))
 
         return configs
+
+    def _detect_backend_hint(self, data: Any) -> str:
+        """Infer whether upstream stage outputs originate from RELION or CryoSPARC."""
+        def _search(obj: Any) -> Optional[str]:
+            if hasattr(obj, "stage_outputs"):
+                return _search(getattr(obj, "stage_outputs"))
+
+            if isinstance(obj, dict):
+                backend = obj.get("agent_type") or obj.get("backend") or obj.get("from_agent")
+                if isinstance(backend, str):
+                    backend_lower = backend.lower()
+                    if "relion" in backend_lower:
+                        return "relion"
+                    if "cryosparc" in backend_lower or "cryoSPARC" in backend:
+                        return "cryosparc"
+
+                for value in obj.values():
+                    detected = _search(value)
+                    if detected:
+                        return detected
+            elif isinstance(obj, list):
+                for item in obj:
+                    detected = _search(item)
+                    if detected:
+                        return detected
+            return None
+
+        detected_backend = _search(data)
+        return detected_backend if detected_backend else "unknown"
+
+    def _extract_particles_from_mapping(self, data: Any) -> Optional[str]:
+        """Search nested mappings for a particles STAR candidate."""
+        if hasattr(data, "stage_outputs"):
+            return self._extract_particles_from_mapping(getattr(data, "stage_outputs"))
+
+        particle_keys = (
+            "final_star_file",
+            "particles_star",
+            "selected_particles_star",
+            "reextracted_particles_star",
+            "input_star",
+            "star_file",
+        )
+
+        if isinstance(data, dict):
+            for key in particle_keys:
+                value = data.get(key)
+                if isinstance(value, (str, Path)):
+                    return str(value)
+
+            particle_location = data.get("particle_location")
+            if isinstance(particle_location, dict):
+                for key in particle_keys:
+                    value = particle_location.get(key)
+                    if isinstance(value, (str, Path)):
+                        return str(value)
+
+            for value in data.values():
+                candidate = self._extract_particles_from_mapping(value)
+                if candidate:
+                    return candidate
+
+        elif isinstance(data, list):
+            for item in data:
+                candidate = self._extract_particles_from_mapping(item)
+                if candidate:
+                    return candidate
+
+        elif isinstance(data, (str, Path)):
+            text = str(data)
+            if text.endswith(".star") and "micrographs" not in text.lower():
+                return text
+
+        return None
+
+    def _detect_particles_star_from_context(self, data: Any) -> Optional[str]:
+        """Attempt to determine the particles STAR file from upstream context."""
+        candidate = self._extract_particles_from_mapping(data)
+        resolved = self._resolve_particles_path(candidate)
+        if resolved:
+            return resolved
+
+        # Prefer cached RELION picking results when available
+        try:
+            outputs_dir = Path("outputs")
+            if outputs_dir.exists():
+                result_files = sorted(
+                    outputs_dir.glob("particle_picking_results_relion_*.json"),
+                    key=lambda f: f.stat().st_mtime,
+                    reverse=True,
+                )
+                for result_file in result_files:
+                    with open(result_file, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+
+                    final_star = data.get("final_star_file")
+                    resolved_final = self._resolve_particles_path(final_star) if final_star else None
+
+                    particles_star = data.get("particles_star")
+                    resolved_particles = self._resolve_particles_path(particles_star) if particles_star else None
+
+                    # Prefer final_star_file if it resolves; otherwise fallback to particles_star
+                    for resolved in (resolved_final, resolved_particles):
+                        if resolved:
+                            return resolved
+        except Exception:
+            pass
+
+        # Fallback: search RELION directory for recent ReExtract or Select job outputs
+        relion_dir = Path(self.relion_tools.relion_dir)
+        reextract_pattern = relion_dir / "ReExtract" / "job*"
+        select_pattern = relion_dir / "Select" / "job*"
+
+        for pattern in (reextract_pattern, select_pattern):
+            try:
+                job_dirs = sorted(pattern.parent.glob(pattern.name), reverse=True)
+            except Exception:
+                job_dirs = []
+
+            for job_dir in job_dirs:
+                resolved = self._resolve_particles_path(job_dir)
+                if resolved:
+                    return resolved
+
+        # Only consider CryoSPARC→RELION transition metadata if upstream appears to be CryoSPARC
+        if self.context_backend_hint in ("cryosparc", "unknown"):
+            transition_configs: List[str] = []
+            if isinstance(data, dict):
+                for outputs in data.values():
+                    transition_configs.extend(self._extract_transition_configs(outputs))
+            else:
+                transition_configs.extend(self._extract_transition_configs(data))
+
+            for config_path in transition_configs:
+                try:
+                    config_candidate = Path(str(config_path)).expanduser()
+                except Exception:
+                    continue
+
+                if not config_candidate.is_absolute():
+                    relion_dir = Path(self.relion_tools.relion_dir)
+                    config_candidate = relion_dir / config_candidate
+
+                if not config_candidate.exists() or config_candidate.suffix.lower() != ".json":
+                    continue
+
+                try:
+                    with open(config_candidate, "r", encoding="utf-8") as f:
+                        config_data = json.load(f)
+                except Exception:
+                    continue
+
+                for key in ("final_star_file", "particles_star"):
+                    found = config_data.get(key)
+                    resolved = self._resolve_particles_path(found)
+                    if resolved:
+                        return resolved
+
+                transit_particles = config_data.get("transit_particles", {})
+                if isinstance(transit_particles, dict):
+                    resolved = self._resolve_particles_path(transit_particles.get("particles_star"))
+                    if resolved:
+                        return resolved
+
+        return None
 
     def _find_micrographs_star(self) -> Optional[str]:
         """Helper method to find micrographs.star file from previous preprocessing stage."""

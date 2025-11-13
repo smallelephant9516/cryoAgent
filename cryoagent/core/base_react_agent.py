@@ -328,12 +328,23 @@ class BaseReActAgent(ABC):
         if input_str.startswith("J") and len(input_str) <= 10:
             return {"job_uid": input_str}
         
-        # Case 3: Comma-separated key=value pairs
+        # Case 3: Key/value pairs, accepting both comma and whitespace separators
         params = {}
-        for pair in input_str.split(","):
-            if "=" in pair:
-                key, value = pair.strip().split("=", 1)
-                params[key.strip()] = value.strip()
+        normalized = input_str.replace("\n", " ").strip()
+        if normalized:
+            import shlex
+            segments = [seg for seg in (s.strip() for s in normalized.split(",")) if seg]
+            tokens: list[str] = []
+            for segment in segments:
+                try:
+                    tokens.extend(shlex.split(segment))
+                except ValueError:
+                    # Fallback to simple split on whitespace if shlex fails (e.g., unbalanced quotes)
+                    tokens.extend(segment.split())
+            for token in tokens:
+                if "=" in token:
+                    key, value = token.split("=", 1)
+                    params[key.strip()] = value.strip()
         
         # Case 4: If no parameters found and input looks like a single value
         if not params and input_str:

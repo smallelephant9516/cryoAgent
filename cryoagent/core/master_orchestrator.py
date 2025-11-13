@@ -1421,6 +1421,10 @@ class MasterOrchestrator:
             final_job_uid = data.get("final_micrographs_job_uid") or data.get("micrograph_selection_job_uid")
             micrograph_dir = data.get("micrograph_directory") or data.get("micrographs_directory")
             micrograph_location = data.get("micrograph_location")
+            micrographs_folder = data.get("micrographs_folder")
+            selected_micrographs_star = data.get("selected_micrographs_star")
+            micrograph_selection_job_dir = data.get("micrograph_selection_job_dir")
+            relion_dir = data.get("relion_dir")
 
             if final_job_uid:
                 stage_outputs["micrograph_selection_job_uid"] = final_job_uid
@@ -1429,6 +1433,20 @@ class MasterOrchestrator:
                 stage_outputs["selected_micrographs"] = micrograph_dir
             if micrograph_location:
                 stage_outputs["micrograph_location"] = micrograph_location
+            if micrographs_folder:
+                stage_outputs["micrograph_directory"] = micrographs_folder
+                stage_outputs["selected_micrographs"] = micrographs_folder
+                stage_outputs["micrograph_location"] = micrographs_folder
+                try:
+                    stage_outputs["motion_correction_job_dir"] = str(Path(micrographs_folder).resolve().parent)
+                except Exception:
+                    stage_outputs["motion_correction_job_dir"] = str(Path(micrographs_folder).parent)
+            if selected_micrographs_star:
+                stage_outputs["selected_micrographs_star"] = selected_micrographs_star
+            if micrograph_selection_job_dir:
+                stage_outputs["micrograph_selection_job_dir"] = micrograph_selection_job_dir
+            if relion_dir:
+                stage_outputs["relion_dir"] = relion_dir
 
         elif stage == WorkflowStage.PARTICLE_PICKING:
             final_selection_uid = data.get("final_selection_job_uid") or data.get("selected_particles_job_uid")
@@ -1494,6 +1512,23 @@ class MasterOrchestrator:
                 "conversation_id": conversation_id
             }
         )
+
+        # Update workflow context with actual project/workspace from master config if available
+        workflow_config = (self.master_config or {}).get("workflow", {})
+        if workflow_config:
+            self.workflow_context.project_uid = workflow_config.get("project_uid", self.workflow_context.project_uid)
+            self.workflow_context.workspace_uid = workflow_config.get("workspace_uid", self.workflow_context.workspace_uid)
+        else:
+            # Fallback to stage agent configs if master config missing workflow section
+            try:
+                default_agent = next(iter(self.stage_agents.values()), None)
+                if default_agent and hasattr(default_agent, "config") and default_agent.config:
+                    cfg_workflow = getattr(default_agent.config, "workflow", None)
+                    if cfg_workflow:
+                        self.workflow_context.project_uid = getattr(cfg_workflow, "project_uid", self.workflow_context.project_uid)
+                        self.workflow_context.workspace_uid = getattr(cfg_workflow, "workspace_uid", self.workflow_context.workspace_uid)
+            except Exception:
+                pass
         
         self.logger.info("Starting complete cryoEM workflow")
         print("🚀 Starting Complete CryoEM Workflow")
@@ -1696,6 +1731,21 @@ class MasterOrchestrator:
                 "conversation_id": conversation_id
             }
         )
+
+        workflow_config = (self.master_config or {}).get("workflow", {})
+        if workflow_config:
+            self.workflow_context.project_uid = workflow_config.get("project_uid", self.workflow_context.project_uid)
+            self.workflow_context.workspace_uid = workflow_config.get("workspace_uid", self.workflow_context.workspace_uid)
+        else:
+            try:
+                default_agent = next(iter(self.stage_agents.values()), None)
+                if default_agent and hasattr(default_agent, "config") and default_agent.config:
+                    cfg_workflow = getattr(default_agent.config, "workflow", None)
+                    if cfg_workflow:
+                        self.workflow_context.project_uid = getattr(cfg_workflow, "project_uid", self.workflow_context.project_uid)
+                        self.workflow_context.workspace_uid = getattr(cfg_workflow, "workspace_uid", self.workflow_context.workspace_uid)
+            except Exception:
+                pass
         
         self.logger.info(f"Starting partial workflow: {[s.value for s in stages]}")
         print(f"🚀 Starting Partial CryoEM Workflow")
