@@ -153,3 +153,4 @@ outputs
 # meta files of cryoEM processes
 .star
 .cs
+.helicon.txt
