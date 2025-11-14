@@ -221,8 +221,8 @@ class ReconstructionAgent(BaseReActAgent):
 
             align_sym = _extract_symmetry_value(
                 params.get("align_sym"),
-                params.get("sym"),
                 ab_initio_config.get("align_sym") if isinstance(ab_initio_config, dict) else None,
+                params.get("sym"),
                 ab_initio_config.get("sym") if isinstance(ab_initio_config, dict) else None,
                 microscope_sym,
             ) or sym_value

@@ -7,21 +7,21 @@
         "name": "preprocessing",
         "description": "Pre-processing stage: Import movies, motion correction, CTF estimation, and micrograph selection",
         "enabled": true,
-        "agent_group": "cryosparc",
+        "agent_group": "relion",
         "agent_class": "PreprocessingAgent"
       },
       {
         "name": "particle_picking",
         "description": "Particle picking stage: Detect and extract particles from micrographs",
         "enabled": true,
-        "agent_group": "cryosparc",
+        "agent_group": "relion",
         "agent_class": "ParticlePickingAgent"
       },
       {
         "name": "reconstruction",
         "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
         "enabled": true,
-        "agent_group": "relion",
+        "agent_group": "cryosparc",
         "agent_class": "ReconstructionAgent"
       }
     ],
@@ -40,7 +40,7 @@
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
     "continue_job": true,
-    "relion_dir": "/home/daoyi/scratch/relion/relion_tutorial/ccr",
+    "relion_dir": "/home/daoyi/scratch/relion/relion_tutorial/rrr",
     "backend_execution": {
       "enabled": true,
       "default_timeout": 3600,
