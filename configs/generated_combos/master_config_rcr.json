@@ -14,14 +14,14 @@
         "name": "particle_picking",
         "description": "Particle picking stage: Detect and extract particles from micrographs",
         "enabled": true,
-        "agent_group": "relion",
+        "agent_group": "cryosparc",
         "agent_class": "ParticlePickingAgent"
       },
       {
         "name": "reconstruction",
         "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
         "enabled": true,
-        "agent_group": "cryosparc",
+        "agent_group": "relion",
         "agent_class": "ReconstructionAgent"
       }
     ],
@@ -40,7 +40,7 @@
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
     "continue_job": true,
-    "relion_dir": "/home/daoyi/scratch/relion/relion_tutorial/rrr",
+    "relion_dir": "/mnt/sda2/relion/10089_test/rcr",
     "backend_execution": {
       "enabled": true,
       "default_timeout": 3600,
@@ -75,7 +75,7 @@
     }
   },
   "agent": {
-    "provider": "deepseek", 
+    "provider": "deepseek",
     "temperature": 0.1,
     "max_iterations": 50,
     "verbose": true,
@@ -94,7 +94,10 @@
         "api_key": "${DEEPSEEK_API_KEY}",
         "base_url": "https://api.deepseek.com",
         "model_name": "deepseek-chat",
-        "possible_models": ["deepseek-chat", "deepseek-reasoner"],
+        "possible_models": [
+          "deepseek-chat",
+          "deepseek-reasoner"
+        ],
         "temperature": 0.1,
         "timeout": 60
       },
@@ -102,7 +105,11 @@
         "api_key": "${OPENAI_API_KEY}",
         "base_url": "https://api.openai.com/v1",
         "model_name": "gpt-4o",
-        "possible_models": ["gpt-4o", "gpt-4o-mini","gpt-5"],
+        "possible_models": [
+          "gpt-4o",
+          "gpt-4o-mini",
+          "gpt-5"
+        ],
         "temperature": 0.1,
         "timeout": 60
       },
@@ -110,7 +117,12 @@
         "api_key": "${PANSHI_API_KEY}",
         "base_url": "https://uni-api.cstcloud.cn/v1",
         "model_name": "deepseek-v3:671b",
-        "possible_models": ["deepseek-v3:671b", "deepseek-r1:32b","qwen2.5-vl:72b","S1-Base-Lite"],
+        "possible_models": [
+          "deepseek-v3:671b",
+          "deepseek-r1:32b",
+          "qwen2.5-vl:72b",
+          "S1-Base-Lite"
+        ],
         "temperature": 0.1,
         "timeout": 180
       }
@@ -146,5 +158,14 @@
     "file": "cryoagent_master.log",
     "max_file_size": "10MB",
     "backup_count": 5
+  },
+  "run_matrix_metadata": {
+    "combo": "rcr",
+    "stage_backend_sequence": {
+      "preprocessing": "relion",
+      "particle_picking": "cryosparc",
+      "reconstruction": "relion"
+    },
+    "relion_dir": "/mnt/sda2/relion/10089_test/rcr"
   }
 }

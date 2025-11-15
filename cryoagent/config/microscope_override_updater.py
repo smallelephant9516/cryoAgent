@@ -13,30 +13,43 @@ import json
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional, Sequence
+from typing import Any, Dict, Iterable, List, Optional, Sequence, Union
 
 LOGGER = logging.getLogger(__name__)
+
+
+class _UnsetType:
+    __slots__ = ()
+
+    def __repr__(self) -> str:  # pragma: no cover - debug helper
+        return "<UNSET>"
+
+
+_UNSET = _UnsetType()
+MicroscopeValue = Union[str, float, int, None, _UnsetType]
 
 
 @dataclass(frozen=True)
 class MicroscopeParameters:
     """Container for microscope override parameters."""
 
-    movies_path: Optional[str] = None
-    gain_ref_path: Optional[str] = None
-    gain_rot: Optional[int] = None
-    gain_flip: Optional[int] = None
-    pixel_size: Optional[float] = None
-    voltage: Optional[float] = None
-    cs_mm: Optional[float] = None
-    dose: Optional[float] = None
-    particle_diameter: Optional[float] = None
-    symmetry: Optional[str] = None
+    movies_path: MicroscopeValue = _UNSET
+    gain_ref_path: MicroscopeValue = _UNSET
+    gain_rot: MicroscopeValue = _UNSET
+    gain_flip: MicroscopeValue = _UNSET
+    pixel_size: MicroscopeValue = _UNSET
+    voltage: MicroscopeValue = _UNSET
+    cs_mm: MicroscopeValue = _UNSET
+    dose: MicroscopeValue = _UNSET
+    particle_diameter: MicroscopeValue = _UNSET
+    symmetry: MicroscopeValue = _UNSET
 
     @property
     def is_complete(self) -> bool:
         """Return True if the critical parameters are present."""
-        return self.pixel_size is not None and self.particle_diameter is not None
+        pixel_size = _value_or_none(self.pixel_size)
+        diameter = _value_or_none(self.particle_diameter)
+        return pixel_size is not None and diameter is not None
 
 
 def apply_microscope_overrides_if_enabled(base_path: Optional[Path] = None) -> None:
@@ -99,17 +112,23 @@ def _save_json(path: Path, data: Dict[str, Any]) -> None:
 def _parse_microscope_parameters(raw: Dict[str, Any]) -> MicroscopeParameters:
     """Parse microscope parameter overrides into a structured dataclass."""
     return MicroscopeParameters(
-        movies_path=raw.get("movies_path"),
-        gain_ref_path=raw.get("gain_ref_path"),
-        gain_rot=_safe_int(raw.get("gain_rot")),
-        gain_flip=_safe_int(raw.get("gain_flip")),
-        pixel_size=_safe_float(raw.get("pixel_size")),
-        voltage=_safe_float(raw.get("voltage")),
-        cs_mm=_safe_float(raw.get("cs_mm")),
-        dose=_safe_float(raw.get("dose")),
-        particle_diameter=_safe_float(raw.get("particle_diameter")),
-        symmetry=_safe_str(raw.get("symmetry")),
+        movies_path=_maybe_cast(raw, "movies_path", _safe_str),
+        gain_ref_path=_maybe_cast(raw, "gain_ref_path", _safe_str),
+        gain_rot=_maybe_cast(raw, "gain_rot", _safe_int),
+        gain_flip=_maybe_cast(raw, "gain_flip", _safe_int),
+        pixel_size=_maybe_cast(raw, "pixel_size", _safe_float),
+        voltage=_maybe_cast(raw, "voltage", _safe_float),
+        cs_mm=_maybe_cast(raw, "cs_mm", _safe_float),
+        dose=_maybe_cast(raw, "dose", _safe_float),
+        particle_diameter=_maybe_cast(raw, "particle_diameter", _safe_float),
+        symmetry=_maybe_cast(raw, "symmetry", _safe_str),
     )
+
+
+def _maybe_cast(raw: Dict[str, Any], key: str, caster) -> MicroscopeValue:
+    if key not in raw:
+        return _UNSET
+    return caster(raw.get(key)) if caster else raw.get(key)
 
 
 def _safe_float(value: Any) -> Optional[float]:
@@ -213,7 +232,7 @@ def _update_relion_picking(config_data: Dict[str, Any], overrides: MicroscopePar
     ]
     updates_made |= _bulk_update(config_data, paths_to_update)
 
-    diameter = overrides.particle_diameter
+    diameter = _value_or_none(overrides.particle_diameter)
     if diameter is not None:
         log_min = _round_sig(diameter * 0.7)
         log_max = _round_sig(diameter * 1.3)
@@ -229,7 +248,8 @@ def _update_relion_picking(config_data: Dict[str, Any], overrides: MicroscopePar
         )
 
     if overrides.is_complete:
-        box_size = _compute_nearest_box_size(overrides.particle_diameter, overrides.pixel_size)
+        pixel_size = _value_or_none(overrides.pixel_size)
+        box_size = _compute_nearest_box_size(diameter, pixel_size)
         updates_made |= _bulk_update(
             config_data,
             [
@@ -257,20 +277,22 @@ def _update_cryosparc_picking(config_data: Dict[str, Any], overrides: Microscope
     ]
     updates_made |= _bulk_update(config_data, paths_to_update)
 
-    if overrides.particle_diameter is not None:
+    particle_diameter = _value_or_none(overrides.particle_diameter)
+    if particle_diameter is not None:
         updates_made |= _bulk_update(
             config_data,
             [
-                (["workflow", "blob_picker", "particle_diameter"], _round_sig(overrides.particle_diameter)),
+                (["workflow", "blob_picker", "particle_diameter"], _round_sig(particle_diameter)),
             ],
         )
 
     if overrides.is_complete:
-        box_size = _compute_nearest_box_size(overrides.particle_diameter, overrides.pixel_size)
+        pixel_size = _value_or_none(overrides.pixel_size)
+        box_size = _compute_nearest_box_size(particle_diameter, pixel_size)
         if box_size is not None:
             desc = (
                 f"Extraction box size in pixels. Calculated as "
-                f"{overrides.particle_diameter}/{overrides.pixel_size} + 125 ≈ {box_size}."
+                f"{particle_diameter}/{pixel_size} + 125 ≈ {box_size}."
             )
             updates_made |= _bulk_update(
                 config_data,
@@ -291,7 +313,7 @@ def _update_relion_reconstruction(config_data: Dict[str, Any], overrides: Micros
     ]
     updates_made |= _bulk_update(config_data, paths_to_update)
 
-    symmetry = overrides.symmetry
+    symmetry = _value_or_none(overrides.symmetry)
     if symmetry is not None:
         updates_made |= _bulk_update(
             config_data,
@@ -301,8 +323,9 @@ def _update_relion_reconstruction(config_data: Dict[str, Any], overrides: Micros
             ],
         )
 
-    if overrides.particle_diameter is not None:
-        scaled_diameter = _scale_value(overrides.particle_diameter, 1.2)
+    particle_diameter = _value_or_none(overrides.particle_diameter)
+    if particle_diameter is not None:
+        scaled_diameter = _scale_value(particle_diameter, 1.2)
         updates_made |= _bulk_update(
             config_data,
             [
@@ -312,7 +335,8 @@ def _update_relion_reconstruction(config_data: Dict[str, Any], overrides: Micros
         )
 
     if overrides.is_complete:
-        box_size = _compute_nearest_box_size(overrides.particle_diameter, overrides.pixel_size)
+        pixel_size = _value_or_none(overrides.pixel_size)
+        box_size = _compute_nearest_box_size(particle_diameter, pixel_size)
         updates_made |= _bulk_update(
             config_data,
             [
@@ -339,7 +363,7 @@ def _update_cryosparc_reconstruction(config_data: Dict[str, Any], overrides: Mic
     ]
     updates_made |= _bulk_update(config_data, paths_to_update)
 
-    symmetry = overrides.symmetry
+    symmetry = _value_or_none(overrides.symmetry)
     if symmetry is not None:
         updates_made |= _bulk_update(
             config_data,
@@ -349,8 +373,9 @@ def _update_cryosparc_reconstruction(config_data: Dict[str, Any], overrides: Mic
             ],
         )
 
-    if overrides.particle_diameter is not None:
-        scaled_diameter = _scale_value(overrides.particle_diameter, 1.2)
+    particle_diameter = _value_or_none(overrides.particle_diameter)
+    if particle_diameter is not None:
+        scaled_diameter = _scale_value(particle_diameter, 1.2)
         updates_made |= _bulk_update(
             config_data,
             [
@@ -366,7 +391,7 @@ def _bulk_update(config_data: Dict[str, Any], path_value_pairs: Iterable[tuple[L
     """Apply multiple nested updates and return True if any changes were made."""
     updated = False
     for path, value in path_value_pairs:
-        if value is None:
+        if value is _UNSET:
             continue
         if _update_nested_value(config_data, path, value):
             updated = True
@@ -419,5 +444,11 @@ def _scale_value(value: Optional[float], factor: float) -> Optional[float]:
     if value is None:
         return None
     return _round_sig(value * factor)
+
+
+def _value_or_none(value: MicroscopeValue) -> Optional[Union[str, float, int]]:
+    if value is _UNSET:
+        return None
+    return value
 
 
