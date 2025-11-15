@@ -16,6 +16,7 @@ import json
 import shutil
 import subprocess
 import sys
+from collections import defaultdict
 from pathlib import Path
 from typing import Dict, List, Set
 
@@ -142,6 +143,46 @@ def copy_outputs_to_destination(source_files: List[Path], destination: Path) -> 
         shutil.copy2(src, dest)
         copied.append(dest)
     return copied
+
+
+STAGE_PREFIX_MAP = {
+    "preprocessing": ("preprocessing_results_",),
+    "particle_picking": ("particle_picking_results_",),
+    "reconstruction": ("reconstruction_results_",),
+}
+
+
+def categorize_stage_outputs(file_paths: List[Path]) -> Dict[str, List[Path]]:
+    categorized: Dict[str, List[Path]] = defaultdict(list)
+    for path in file_paths:
+        name = path.name
+        for stage, prefixes in STAGE_PREFIX_MAP.items():
+            if any(name.startswith(prefix) for prefix in prefixes):
+                categorized[stage].append(path)
+                break
+    return categorized
+
+
+def copy_stage_files_to_outputs(stage_files: List[Path], outputs_root: Path) -> List[Path]:
+    copied = []
+    for src in stage_files:
+        dest = outputs_root / src.name
+        counter = 1
+        while dest.exists():
+            dest = outputs_root / f"{src.stem}_{counter}{src.suffix}"
+            counter += 1
+        shutil.copy2(src, dest)
+        copied.append(dest)
+    return copied
+
+
+def remove_files(file_paths: List[Path]) -> None:
+    for path in file_paths:
+        try:
+            if path.exists():
+                path.unlink()
+        except OSError:
+            pass
 
 
 def validate_combo(code: str) -> str:
@@ -280,6 +321,7 @@ def main() -> None:
         grouped_combos[prefix].append(combo)
 
     summary: Dict[str, Dict[str, object]] = {}
+    combo_stage_cache: Dict[str, Dict[str, List[Path]]] = {}
 
     for prefix in prefix_order:
         combos_for_prefix = grouped_combos[prefix]
@@ -309,6 +351,9 @@ def main() -> None:
             keep_original=args.keep_original_outputs,
         )
 
+        stage_cache = categorize_stage_outputs(relocated_files)
+        combo_stage_cache[primary_combo] = stage_cache
+
         summary[primary_combo] = {
             "return_code": result_code,
             "relocated_files": relocated_files,
@@ -324,19 +369,52 @@ def main() -> None:
             )
 
         for replica_combo in replicas:
-            copied_files = copy_outputs_to_destination(
-                relocated_files,
+            reuse_stage_files = (
+                combo_stage_cache[primary_combo].get("preprocessing", [])
+                + combo_stage_cache[primary_combo].get("particle_picking", [])
+            )
+            temp_stage_files = copy_stage_files_to_outputs(reuse_stage_files, outputs_root)
+
+            before_snapshot = snapshot_files(outputs_root)
+
+            print(f"\n=== 🔄 Reusing preprocessing+pick for {replica_combo.upper()} ===")
+            if not args.dry_run:
+                result_code = run_workflow(
+                    workflow_script,
+                    combo_config_paths[replica_combo],
+                    verbose=args.verbose,
+                    dry_run=False,
+                )
+            else:
+                print("Dry run enabled; skipping workflow execution.")
+                result_code = 0
+
+            relocated_files = move_new_outputs(
+                outputs_root,
+                before_snapshot,
+                combo_output_dirs[replica_combo],
+                keep_original=args.keep_original_outputs,
+            )
+
+            copied_stage_records = copy_outputs_to_destination(
+                reuse_stage_files,
                 combo_output_dirs[replica_combo],
             )
+            relocated_files.extend(copied_stage_records)
+
             summary[replica_combo] = {
-                "return_code": 0,
-                "relocated_files": copied_files,
-                "executed": False,
+                "return_code": result_code,
+                "relocated_files": relocated_files,
+                "executed": True,
                 "copied_from": primary_combo,
             }
+
             print(
-                f"📁 Copied outputs from {primary_combo.upper()} to {replica_combo.upper()} ({len(copied_files)} files)."
+                f"✅ {replica_combo.upper()} finished. Reused {len(reuse_stage_files)} stage files from {primary_combo.upper()} "
+                f"and stored {len(relocated_files)} outputs in {combo_output_dirs[replica_combo]}."
             )
+
+            remove_files(temp_stage_files)
 
     print("\n=== 📦 Run Matrix Summary ===")
     for combo, info in summary.items():

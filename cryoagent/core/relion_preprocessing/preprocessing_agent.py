@@ -24,7 +24,8 @@ class PreprocessingAgent(BaseReActAgent):
     def __init__(
         self,
         config: CryoAgentConfig,
-        llm: Optional[BaseLanguageModel] = None
+        llm: Optional[BaseLanguageModel] = None,
+        master_config_path: str = "configs/master_config.json"
     ):
         """
         Initialize the preprocessing agent.
@@ -36,7 +37,7 @@ class PreprocessingAgent(BaseReActAgent):
         # Initialize RELION tools
         self.config_loader = ConfigLoader(
             config_path="configs/relion/preprocessing_config.json",
-            master_config_path="configs/master_config.json"
+            master_config_path=master_config_path
         )
         self.relion_tools = RELIONTools(
             self.config_loader.get_relion_settings(),

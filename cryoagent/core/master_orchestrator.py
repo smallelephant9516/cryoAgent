@@ -123,7 +123,7 @@ class WorkflowContext:
 class StageAgent:
     """Base class for specialized stage agents using modular architecture."""
     
-    def __init__(self, stage_name: str, config_path: str):
+    def __init__(self, stage_name: str, config_path: str, master_config_path: Optional[str] = None):
         """
         Initialize the stage agent.
         
@@ -133,6 +133,7 @@ class StageAgent:
         """
         self.stage_name = stage_name
         self.config_path = config_path
+        self.master_config_path = master_config_path or "configs/master_config.json"
         self.config = None
         self.cryosparc_tools = None
         self.modular_agent = None  # Changed from react_agent to modular_agent
@@ -174,16 +175,15 @@ class StageAgent:
 class PreprocessingAgent(StageAgent):
     """Specialized agent for pre-processing stage using modular architecture."""
     
-    def __init__(self, config_path: str):
-        super().__init__("preprocessing", config_path)
+    def __init__(self, config_path: str, master_config_path: Optional[str] = None):
+        super().__init__("preprocessing", config_path, master_config_path)
         self.backend_type = None  # Will be set during initialization
     
     def initialize(self) -> bool:
         """Initialize the preprocessing agent with modular architecture."""
         try:
             # Load stage-specific configuration with master config
-            master_config_path = "configs/master_config.json"
-            config_loader = ConfigLoader(self.config_path, master_config_path)
+            config_loader = ConfigLoader(self.config_path, self.master_config_path)
             self.config = config_loader.load_config()
             
             # Initialize the modular agent based on config (determines backend automatically)
@@ -210,7 +210,8 @@ class PreprocessingAgent(StageAgent):
             
             self.cryosparc_tools = None  # No CryoSPARC tools for RELION
             self.modular_agent = RelionPreprocessingAgent(
-                config=self.config
+                config=self.config,
+                master_config_path=self.master_config_path
             )
             self.backend_type = "RELION"
             
@@ -318,15 +319,14 @@ class PreprocessingAgent(StageAgent):
 class RelionPreprocessingAgent(StageAgent):
     """Specialized agent for RELION pre-processing stage using modular architecture."""
     
-    def __init__(self, config_path: str):
-        super().__init__("preprocessing", config_path)
+    def __init__(self, config_path: str, master_config_path: Optional[str] = None):
+        super().__init__("preprocessing", config_path, master_config_path)
     
     def initialize(self) -> bool:
         """Initialize the RELION preprocessing agent with modular architecture."""
         try:
             # Load stage-specific configuration with master config
-            master_config_path = "configs/master_config.json"
-            config_loader = ConfigLoader(self.config_path, master_config_path)
+            config_loader = ConfigLoader(self.config_path, self.master_config_path)
             self.config = config_loader.load_config()
             
             # Initialize RELION preprocessing agent (no CryoSPARC tools needed)
@@ -427,15 +427,14 @@ class RelionPreprocessingAgent(StageAgent):
 class ParticlePickingAgent(StageAgent):
     """Specialized agent for particle picking stage using modular architecture."""
     
-    def __init__(self, config_path: str):
-        super().__init__("particle_picking", config_path)
+    def __init__(self, config_path: str, master_config_path: Optional[str] = None):
+        super().__init__("particle_picking", config_path, master_config_path)
     
     def initialize(self) -> bool:
         """Initialize the particle picking agent with modular architecture."""
         try:
             # Load stage-specific configuration with master config
-            master_config_path = "configs/master_config.json"
-            config_loader = ConfigLoader(self.config_path, master_config_path)
+            config_loader = ConfigLoader(self.config_path, self.master_config_path)
             self.config = config_loader.load_config()
             
             # Detect backend type from config path
@@ -446,7 +445,8 @@ class ParticlePickingAgent(StageAgent):
                 
                 self.cryosparc_tools = None  # No CryoSPARC tools for RELION
                 self.modular_agent = RelionPickingAgent(
-                    config=self.config
+                    config=self.config,
+                    master_config_path=self.master_config_path
                 )
                 self.backend_type = "RELION"
                 
@@ -668,16 +668,15 @@ class ParticlePickingAgent(StageAgent):
 class ReconstructionAgent(StageAgent):
     """Specialized agent for 3D reconstruction stage."""
     
-    def __init__(self, config_path: str):
-        super().__init__("reconstruction", config_path)
+    def __init__(self, config_path: str, master_config_path: Optional[str] = None):
+        super().__init__("reconstruction", config_path, master_config_path)
         self.backend_type = None  # Will be set during initialization
     
     def initialize(self) -> bool:
         """Initialize the reconstruction agent with modular architecture."""
         try:
             # Load basic configuration
-            master_config_path = "configs/master_config.json"
-            config_loader = ConfigLoader(self.config_path, master_config_path)
+            config_loader = ConfigLoader(self.config_path, self.master_config_path)
             self.config = config_loader.load_config()
             
             # Detect backend type from config path
@@ -690,7 +689,8 @@ class ReconstructionAgent(StageAgent):
                 
                 self.cryosparc_tools = None  # No CryoSPARC tools for RELION
                 self.modular_agent = RelionReconstructionAgent(
-                    config=self.config
+                    config=self.config,
+                    master_config_path=self.master_config_path
                 )
                 self.backend_type = "RELION"
                 
@@ -1135,7 +1135,7 @@ class ReconstructionAgent(StageAgent):
                         # Try to get from config
                         try:
                             from ..config.config_loader import ConfigLoader
-                            config_loader = ConfigLoader(self.config_path, "configs/master_config.json")
+                            config_loader = ConfigLoader(self.config_path, self.master_config_path)
                             config = config_loader.load_config()
                             relion_dir = config.relion.relion_dir
                         except:
@@ -1315,11 +1315,11 @@ class MasterOrchestrator:
                 
                 # Create appropriate agent based on class name
                 if agent_class == "PreprocessingAgent":
-                    agent = PreprocessingAgent(config_path)
+                    agent = PreprocessingAgent(config_path, self.master_config_path)
                 elif agent_class == "ParticlePickingAgent":
-                    agent = ParticlePickingAgent(config_path)
+                    agent = ParticlePickingAgent(config_path, self.master_config_path)
                 elif agent_class == "ReconstructionAgent":
-                    agent = ReconstructionAgent(config_path)
+                    agent = ReconstructionAgent(config_path, self.master_config_path)
                 else:
                     self.logger.error(f"Unknown agent class: {agent_class}")
                     return False

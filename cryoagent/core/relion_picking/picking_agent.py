@@ -25,7 +25,8 @@ class PickingAgent(BaseReActAgent):
     def __init__(
         self,
         config: CryoAgentConfig,
-        llm: Optional[BaseLanguageModel] = None
+        llm: Optional[BaseLanguageModel] = None,
+        master_config_path: str = "configs/master_config.json"
     ):
         """
         Initialize the particle picking agent.
@@ -37,7 +38,7 @@ class PickingAgent(BaseReActAgent):
         # Initialize RELION tools
         self.config_loader = ConfigLoader(
             config_path="configs/relion/particle_picking_config.json",
-            master_config_path="configs/master_config.json"
+            master_config_path=master_config_path
         )
         self.relion_tools = RELIONTools(
             self.config_loader.get_relion_settings(),
