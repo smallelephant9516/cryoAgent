@@ -489,7 +489,9 @@ class CryoSPARCReconstructionParser:
             "project_uid": context.project_uid,
             "workspace_uid": context.workspace_uid,
             "final_volume_job_uid": stage_outputs.get("final_volume_job_uid"),
-            "final_volume_directory": stage_outputs.get("final_volume_absolute_path") or stage_outputs.get("volume_location")
+            "final_volume_directory": stage_outputs.get("final_volume_absolute_path") or stage_outputs.get("volume_location"),
+            "ab_initio_job_uid": stage_outputs.get("ab_initio_job_uid"),
+            "homogeneous_refinement_job_uid": stage_outputs.get("homogeneous_refinement_job_uid")
         }
         
         output_file = output_dir / f"reconstruction_results_cryosparc_{timestamp}.json"

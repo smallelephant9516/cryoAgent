@@ -245,19 +245,7 @@ Execute the 3D reconstruction workflow starting with {method_name.lower()}:
 """
             elif p['refinement_type'] == 'heterogeneous':
                 workflow_description += f"""
-═══ PHASE 2: Heterogeneous Refinement ═══
 
-2. **Heterogeneous Refinement** - Refine multiple 3D structures simultaneously
-   - Tool: heterogeneous_refinement
-   - Parameters:
-     * particles_job_uid={particles_job_uid}
-     * volume_job_uids=[all volumes from step 1]
-     * num_classes={p['num_classes']}
-   - Simultaneously refines structures and classifies particles
-   - Wait for completion and record job UID
-"""
-        
-        workflow_description += f"""
 **Critical Instructions**:
 - Execute ALL steps in order - do not skip any steps
 - Each step MUST complete successfully before proceeding

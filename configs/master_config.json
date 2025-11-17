@@ -23,6 +23,13 @@
         "enabled": true,
         "agent_group": "cryosparc",
         "agent_class": "ReconstructionAgent"
+      },
+      {
+        "name": "optimization",
+        "description": "Box size optimization stage: Optimize box size/diameter for 3D reconstruction",
+        "enabled": true,
+        "agent_group": "cryosparc",
+        "agent_class": "OptimizerAgent"
       }
     ],
     "execution_mode": "sequential",
@@ -117,7 +124,7 @@
     }
   },
   "workflow": {
-    "project_uid": "P4",
+    "project_uid": "P1",
     "workspace_uid": "W1"
   },
   "job_management": {

@@ -1071,35 +1071,84 @@ class CryoSPARCTools:
                 **kwargs
             }
             
-            # Create extraction job with connections to both particles and micrographs
-            # Try different output labels from the picker job and micrograph job
+            # First, check which output labels are available without creating jobs
+            # This prevents creating multiple jobs for failed connection attempts
             connection_errors = []
-            job = None
+            valid_connection = None
             
             # Try different combinations of output labels
-            particle_labels = ("particles", "particles_all", "picked_particles")
+            # Include particles_selected for select_2D jobs
+            particle_labels = ("particles", "particles_selected", "particles_all", "picked_particles", "selected_particles")
             micrograph_labels = ("exposures_accepted", "micrographs", "exposures")
             
-            for particle_label in particle_labels:
-                for micrograph_label in micrograph_labels:
-                    try:
-                        job = workspace.create_job(
-                            "extract_micrographs_multi",  # Particle extraction job type
-                            params=job_params,
-                            connections={
-                                "particles": (particles_job_uid, particle_label),
-                                "micrographs": (micrographs_job_uid, micrograph_label)
-                            }
-                        )
-                        print(f"✅ Connected particle extraction:")
-                        print(f"   - Particles: {particles_job_uid}.{particle_label}")
-                        print(f"   - Micrographs: {micrographs_job_uid}.{micrograph_label}")
+            # Check which combination works by examining job outputs first
+            try:
+                particles_job = project.find_job(particles_job_uid)
+                particles_job.refresh()
+                particles_doc = getattr(particles_job, "doc", {})
+                particles_outputs = particles_doc.get("output_result_groups", [])
+                available_particle_labels = {group.get("name") for group in particles_outputs if group.get("type") == "particle"}
+                
+                micrographs_job = project.find_job(micrographs_job_uid)
+                micrographs_job.refresh()
+                micrographs_doc = getattr(micrographs_job, "doc", {})
+                micrographs_outputs = micrographs_doc.get("output_result_groups", [])
+                available_micrograph_labels = {group.get("name") for group in micrographs_outputs if "exposure" in group.get("type", "").lower() or "micrograph" in group.get("type", "").lower()}
+                
+                # Find first valid combination
+                for particle_label in particle_labels:
+                    if particle_label in available_particle_labels:
+                        for micrograph_label in micrograph_labels:
+                            if micrograph_label in available_micrograph_labels:
+                                valid_connection = (particle_label, micrograph_label)
+                                break
+                        if valid_connection:
+                            break
+            except Exception as check_exc:
+                # If checking fails, fall back to trial-and-error method
+                pass
+            
+            # If we found a valid connection, use it; otherwise try all combinations
+            if valid_connection:
+                particle_label, micrograph_label = valid_connection
+                try:
+                    job = workspace.create_job(
+                        "extract_micrographs_multi",
+                        params=job_params,
+                        connections={
+                            "particles": (particles_job_uid, particle_label),
+                            "micrographs": (micrographs_job_uid, micrograph_label)
+                        }
+                    )
+                    print(f"✅ Connected particle extraction:")
+                    print(f"   - Particles: {particles_job_uid}.{particle_label}")
+                    print(f"   - Micrographs: {micrographs_job_uid}.{micrograph_label}")
+                except Exception as exc:
+                    connection_errors.append((particle_label, micrograph_label, exc))
+                    job = None
+            else:
+                # Fallback: try all combinations (this may create multiple jobs)
+                job = None
+                for particle_label in particle_labels:
+                    for micrograph_label in micrograph_labels:
+                        try:
+                            job = workspace.create_job(
+                                "extract_micrographs_multi",  # Particle extraction job type
+                                params=job_params,
+                                connections={
+                                    "particles": (particles_job_uid, particle_label),
+                                    "micrographs": (micrographs_job_uid, micrograph_label)
+                                }
+                            )
+                            print(f"✅ Connected particle extraction:")
+                            print(f"   - Particles: {particles_job_uid}.{particle_label}")
+                            print(f"   - Micrographs: {micrographs_job_uid}.{micrograph_label}")
+                            break
+                        except Exception as exc:
+                            connection_errors.append((particle_label, micrograph_label, exc))
+                            job = None
+                    if job is not None:
                         break
-                    except Exception as exc:
-                        connection_errors.append((particle_label, micrograph_label, exc))
-                        job = None
-                if job is not None:
-                    break
             
             if job is None:
                 error_messages = "\n".join(
@@ -1834,6 +1883,111 @@ class CryoSPARCTools:
         except Exception as e:
             raise RuntimeError(f"Failed to get job output directory for {job_uid}: {e}")
     
+    def get_refinement_fsc_info(
+        self,
+        project_uid: str,
+        job_uid: str
+    ) -> Dict[str, Any]:
+        """
+        Get FSC resolution and box size information from a refinement job output.
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            job_uid: UID of the refinement job
+            
+        Returns:
+            Dictionary containing:
+            - box_size (N): Box size in pixels
+            - resolution_angstroms (radwn_noisesub_A): FSC resolution in Angstroms
+            - success: Whether the information was successfully retrieved
+        """
+        try:
+            job = self.cs.find_job(project_uid, job_uid)
+            job.refresh()
+            doc = getattr(job, "doc", {})
+            
+            # Try to get latest summary stats from output_result_groups (plural, array)
+            # Path: output_result_groups[i]->latest_summary_stats->fsc_info_best
+            latest_summary_stats = None
+            fsc_info = None
+            
+            if "output_result_groups" in doc:
+                output_result_groups = doc.get("output_result_groups", [])
+                if isinstance(output_result_groups, list):
+                    # Try each output result group
+                    for group in output_result_groups:
+                        if isinstance(group, dict) and "latest_summary_stats" in group:
+                            latest_summary_stats = group.get("latest_summary_stats", {})
+                            fsc_info = latest_summary_stats.get("fsc_info_best")
+                            if fsc_info:
+                                break
+            
+            # Fallback: try output_result_group (singular)
+            if not fsc_info and "output_result_group" in doc:
+                output_result_group = doc.get("output_result_group", {})
+                if isinstance(output_result_group, dict):
+                    latest_summary_stats = output_result_group.get("latest_summary_stats", {})
+                    fsc_info = latest_summary_stats.get("fsc_info_best") if latest_summary_stats else None
+            
+            # Fallback: try direct path in doc
+            if not fsc_info:
+                latest_summary_stats = doc.get("latest_summary_stats", {})
+                fsc_info = latest_summary_stats.get("fsc_info_best") if latest_summary_stats else None
+            
+            # Final fallback: read from job.json file directly
+            if not fsc_info:
+                try:
+                    job_dir = getattr(job, "dir", None)
+                    if job_dir:
+                        import json
+                        from pathlib import Path
+                        job_json_path = Path(job_dir) / "job.json"
+                        if job_json_path.exists():
+                            with open(job_json_path, 'r') as f:
+                                file_data = json.load(f)
+                            
+                            # Search in output_result_groups
+                            if "output_result_groups" in file_data:
+                                output_result_groups = file_data.get("output_result_groups", [])
+                                for group in output_result_groups:
+                                    if isinstance(group, dict) and "latest_summary_stats" in group:
+                                        latest_summary_stats = group.get("latest_summary_stats", {})
+                                        fsc_info = latest_summary_stats.get("fsc_info_best")
+                                        if fsc_info:
+                                            break
+                except Exception as file_error:
+                    # File read failed, continue with error below
+                    pass
+            
+            if not fsc_info:
+                return {
+                    "success": False,
+                    "error": "No FSC information found in job output (checked output_result_groups, output_result_group, doc, and job.json file)"
+                }
+            
+            # Extract box size (N) and resolution (radwn_noisesub_A)
+            box_size = fsc_info.get("N")
+            resolution_angstroms = fsc_info.get("radwn_noisesub_A")
+            
+            if box_size is None or resolution_angstroms is None:
+                return {
+                    "success": False,
+                    "error": f"Missing FSC data: N={box_size}, radwn_noisesub_A={resolution_angstroms}"
+                }
+            
+            return {
+                "success": True,
+                "box_size": int(box_size),
+                "resolution_angstroms": float(resolution_angstroms),
+                "fsc_info": fsc_info
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to get FSC info from job {job_uid}: {str(e)}"
+            }
+    
     def ab_initio_reconstruction(
         self,
         project_uid: str,
@@ -2008,32 +2162,75 @@ class CryoSPARCTools:
             project = self.cs.find_project(project_uid)
             workspace = project.find_workspace(workspace_uid)
             
-            # Determine the correct output slots based on source job type
-            try:
-                source_job = project.find_job(volume_job_uid)
-                source_job_type = source_job.doc.get("type", "")
+            # Determine the correct output slots
+            # For optimization: particles come from particles_job_uid (extraction), volume from volume_job_uid (reconstruction)
+            # For normal refinement: both come from volume_job_uid (ab initio)
+            
+            # Check if particles_job_uid is different from volume_job_uid (optimization case)
+            use_separate_particles = (particles_job_uid != volume_job_uid)
+            
+            if use_separate_particles:
+                # Optimization case: particles from extraction job, volume from refinement job
+                # Find particles output slot from extraction job
+                try:
+                    extract_job = project.find_job(particles_job_uid)
+                    extract_job.refresh()
+                    extract_doc = getattr(extract_job, "doc", {})
+                    extract_outputs = extract_doc.get("output_result_groups", [])
+                    # Find particles output slot
+                    particles_slot = "particles"  # Default
+                    for group in extract_outputs:
+                        if group.get("type") == "particle":
+                            particles_slot = group.get("name", "particles")
+                            break
+                except Exception as e:
+                    particles_slot = "particles"
+                    print(f"⚠️  Could not detect particles slot from extraction job, using default: {e}")
                 
-                # Ab initio jobs (homo_abinit) use these slots:
-                if "abinit" in source_job_type.lower():
-                    particles_slot = "particles_all_classes"
-                    volume_slot = "volume_class_0"
-                # Homogeneous reconstruction (homo_recon) might use these:
-                elif "recon" in source_job_type.lower():
-                    # Try to detect actual output slots
-                    particles_slot = "particles"  # Common for homo_recon
-                    volume_slot = "volume"  # Common for homo_recon
-                else:
-                    # Default to ab initio convention
-                    particles_slot = "particles_all_classes"
-                    volume_slot = "volume_class_0"
+                # Find volume output slot from volume job (refinement job)
+                try:
+                    volume_job = project.find_job(volume_job_uid)
+                    volume_job.refresh()
+                    volume_doc = getattr(volume_job, "doc", {})
+                    volume_outputs = volume_doc.get("output_result_groups", [])
+                    # Find volume output slot
+                    volume_slot = "volume"  # Default
+                    for group in volume_outputs:
+                        if group.get("type") == "volume":
+                            volume_slot = group.get("name", "volume")
+                            break
+                except Exception as e:
+                    volume_slot = "volume"
+                    print(f"⚠️  Could not detect volume slot from volume job, using default: {e}")
+                
+                print(f"ℹ️  Optimization mode: particles from {particles_job_uid}.{particles_slot}, volume from {volume_job_uid}.{volume_slot}")
+            else:
+                # Normal case: both from same job (ab initio)
+                try:
+                    source_job = project.find_job(volume_job_uid)
+                    source_job_type = source_job.doc.get("type", "")
                     
-                print(f"ℹ️  Detected source job type: {source_job_type}")
-                print(f"ℹ️  Using particles slot: '{particles_slot}', volume slot: '{volume_slot}'")
-            except Exception as e:
-                # Fallback to ab initio convention
-                particles_slot = "particles_all_classes"
-                volume_slot = "volume_class_0"
-                print(f"⚠️  Could not detect job type, using default slots: {e}")
+                    # Ab initio jobs (homo_abinit) use these slots:
+                    if "abinit" in source_job_type.lower():
+                        particles_slot = "particles_all_classes"
+                        volume_slot = "volume_class_0"
+                    # Homogeneous reconstruction (homo_recon) might use these:
+                    elif "recon" in source_job_type.lower():
+                        # Try to detect actual output slots
+                        particles_slot = "particles"  # Common for homo_recon
+                        volume_slot = "volume"  # Common for homo_recon
+                    else:
+                        # Default to ab initio convention
+                        particles_slot = "particles_all_classes"
+                        volume_slot = "volume_class_0"
+                        
+                    print(f"ℹ️  Detected source job type: {source_job_type}")
+                    print(f"ℹ️  Using particles slot: '{particles_slot}', volume slot: '{volume_slot}'")
+                except Exception as e:
+                    # Fallback to ab initio convention
+                    particles_slot = "particles_all_classes"
+                    volume_slot = "volume_class_0"
+                    print(f"⚠️  Could not detect job type, using default slots: {e}")
             
             # Create homogeneous refinement job with comprehensive parameters
             job_params: Dict[str, Any] = {
@@ -2065,7 +2262,7 @@ class CryoSPARCTools:
             job = workspace.create_job(
                 "homo_refine_new",  # Homogeneous refinement job type
                 connections={
-                    "particles": (volume_job_uid, particles_slot),
+                    "particles": (particles_job_uid, particles_slot),
                     "volume": (volume_job_uid, volume_slot)
                 },
                 params=job_params

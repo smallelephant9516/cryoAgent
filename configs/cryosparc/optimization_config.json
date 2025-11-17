@@ -1,0 +1,29 @@
+{
+  "stage_info": {
+    "name": "optimization",
+    "description": "Box size optimization stage: Optimize box size/diameter for 3D reconstruction",
+    "version": "1.0.0"
+  },
+  "required_inputs": [
+    "refinement_job_uid",
+    "particles_job_uid",
+    "micrographs_job_uid",
+    "volume_job_uid"
+  ],
+  "outputs": [
+    "best_box_size",
+    "best_resolution",
+    "best_job_uid",
+    "tested_combinations"
+  ],
+  "microscope_parameters": {},
+  "workflow": {
+    "optimization": {
+      "max_iterations": 5,
+      "box_size_variation": 0.1,
+      "max_iterations_description": "Maximum number of optimization iterations (default: 5)",
+      "box_size_variation_description": "Box size variation percentage (default: 0.1 = 10%)"
+    }
+  }
+}
+

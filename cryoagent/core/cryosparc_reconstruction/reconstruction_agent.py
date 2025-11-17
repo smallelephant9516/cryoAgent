@@ -29,11 +29,17 @@ class ReconstructionAgent(BaseReActAgent):
             config: Complete configuration object
             llm: Language model for the agent
         """
-        super().__init__(cryosparc_tools, config, llm)
+        # Initialize stage_config BEFORE calling super().__init__() because
+        # BaseReActAgent.__init__() calls _create_tools() which may access stage_config
         self.workflow_defaults: Dict[str, Any] = {}
         self.stage_config = self._load_stage_config()
         self.stage_workflow = self.stage_config.get("workflow", {})
         stage_defaults = self.stage_config.get("microscope_parameters", {})
+        
+        # Now call super().__init__() which will call _create_tools()
+        super().__init__(cryosparc_tools, config, llm)
+        
+        # Set microscope_config after super().__init__() since it uses methods from base class
         self.microscope_config = self._resolve_microscope_defaults(stage_defaults, update_cache=True)
     
     def update_workflow_defaults(self, defaults: Dict[str, Any]) -> None:
@@ -116,6 +122,7 @@ You specialize in generating and refining 3D structures from 2D particle images.
    - Required: particles_job_uid, volume_job_uids (list of volumes from ab initio)
    - Use when structural heterogeneity is present
    - Classifies particles while refining structures
+
 
 ## ReAct Process:
 For each step, you MUST follow this pattern:
@@ -251,13 +258,13 @@ CRITICAL: You MUST try at least 3 different parameter combinations before giving
 **Simple Homogeneous Case (Ab Initio)**:
 1. Run ab_initio_reconstruction with num_classes=1
 2. Wait for completion
-3. Optionally run homogeneous_refinement
+3. Run homogeneous_refinement
 4. Wait for completion
 
 **Simple Homogeneous Case (Alternative)**:
 1. Run homogeneous_reconstruction
 2. Wait for completion
-3. Optionally run homogeneous_refinement with the resulting volume
+3. Run homogeneous_refinement with the resulting volume
 4. Wait for completion
 
 **Heterogeneous Case**:
@@ -650,4 +657,4 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
         except Exception as e:
             self._record_tool_execution("reason_about_workflow", {"input": input_str}, error=str(e))
             return f"❌ Error in workflow reasoning: {str(e)}"
-
+    

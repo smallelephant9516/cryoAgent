@@ -30,6 +30,7 @@ class WorkflowStage(Enum):
     PREPROCESSING = "preprocessing"
     PARTICLE_PICKING = "particle_picking"
     RECONSTRUCTION = "reconstruction"
+    OPTIMIZATION = "optimization"
 
 
 def check_stage_output_exists(stage: WorkflowStage, outputs_dir: str = "outputs") -> Optional[Dict[str, Any]]:
@@ -48,19 +49,30 @@ def check_stage_output_exists(stage: WorkflowStage, outputs_dir: str = "outputs"
         return None
     
     # Map stage names to output file patterns
+    # Note: Reconstruction files are named:
+    # - reconstruction_results_cryosparc_{timestamp}.json (CryoSPARC from master orchestrator)
+    # - 3d_reconstruction_results_relion_{timestamp}.json (RELION from master orchestrator)
     stage_patterns = {
         WorkflowStage.PREPROCESSING: "preprocessing_results_*.json",
         WorkflowStage.PARTICLE_PICKING: "particle_picking_results_*.json",
-        WorkflowStage.RECONSTRUCTION: "reconstruction_results_*.json"
+        WorkflowStage.RECONSTRUCTION: ["reconstruction_results_cryosparc_*.json", "3d_reconstruction_results_relion_*.json"],
+        WorkflowStage.OPTIMIZATION: "optimization_results_*.json"
     }
     
     pattern = stage_patterns.get(stage)
     if not pattern:
         return None
     
-    # Search for matching output files
-    search_pattern = str(outputs_path / pattern)
-    matching_files = glob.glob(search_pattern)
+    # Handle multiple patterns (for reconstruction which has different naming conventions)
+    if isinstance(pattern, list):
+        matching_files = []
+        for p in pattern:
+            search_pattern = str(outputs_path / p)
+            matching_files.extend(glob.glob(search_pattern))
+    else:
+        # Single pattern
+        search_pattern = str(outputs_path / pattern)
+        matching_files = glob.glob(search_pattern)
     
     if not matching_files:
         return None
@@ -1068,11 +1080,11 @@ class ReconstructionAgent(StageAgent):
             
             if not particles_job_uid:
                 # Third priority: classified_particles (2D classification output)
-                particles_job_uid = picking_results.get("outputs", {}).get("classified_particles")
+                particles_job_uid = picking_results.get("job_uids", {}).get("classified_particles")
             
             if not particles_job_uid:
-                # Fourth priority: extracted_particles
-                particles_job_uid = picking_results.get("outputs", {}).get("extracted_particles")
+                # Fourth priority: extracted_particles (extraction output)
+                particles_job_uid = picking_results.get("job_uids", {}).get("extracted_particles")
             
             if particles_job_uid:
                 self.logger.info(f"Found particles job UID from output file: {particles_job_uid}")
@@ -1099,6 +1111,62 @@ class ReconstructionAgent(StageAgent):
             "success": True,
             "error": None
         }
+    
+    def _extract_reconstruction_outputs(self, results: List) -> Dict[str, Any]:
+        """Extract job UIDs and metadata from reconstruction workflow results."""
+        stage_outputs = {
+            "ab_initio_job_uid": None,
+            "homogeneous_reconstruction_job_uid": None,
+            "homogeneous_refinement_job_uid": None,
+            "heterogeneous_refinement_job_uid": None,
+            "final_volume_job_uid": None,
+            "reconstruction_type": "unknown"
+        }
+        
+        # Extract job UIDs from results
+        for result in results:
+            step_name = result.step.value
+            if result.success and result.job_uid:
+                if step_name == "ab_initio_reconstruction":
+                    stage_outputs["ab_initio_job_uid"] = result.job_uid
+                    stage_outputs["final_volume_job_uid"] = result.job_uid
+                    stage_outputs["reconstruction_type"] = "ab_initio"
+                elif step_name == "homogeneous_reconstruction":
+                    stage_outputs["homogeneous_reconstruction_job_uid"] = result.job_uid
+                    stage_outputs["final_volume_job_uid"] = result.job_uid
+                    stage_outputs["reconstruction_type"] = "homogeneous_reconstruction"
+                elif step_name == "homogeneous_refinement":
+                    stage_outputs["homogeneous_refinement_job_uid"] = result.job_uid
+                    stage_outputs["final_volume_job_uid"] = result.job_uid
+                    # Only update type if it's still initial reconstruction
+                    if stage_outputs["reconstruction_type"] in ["ab_initio", "homogeneous_reconstruction"]:
+                        stage_outputs["reconstruction_type"] = "homogeneous_refinement"
+                elif step_name == "heterogeneous_refinement":
+                    stage_outputs["heterogeneous_refinement_job_uid"] = result.job_uid
+                    stage_outputs["final_volume_job_uid"] = result.job_uid
+                    stage_outputs["reconstruction_type"] = "heterogeneous_refinement"
+        
+        # Get volume location from the final volume job
+        if stage_outputs["final_volume_job_uid"]:
+            try:
+                job = self.cryosparc_tools.find_job(self.config.workflow.project_uid, stage_outputs["final_volume_job_uid"])
+                if job:
+                    job.refresh()
+                    doc = getattr(job, "doc", {})
+                    output_group = doc.get("output_result_groups", [{}])[0]
+                    volume_location = output_group.get("output_files", {}).get("volume", [None])[0]
+                    if volume_location:
+                        stage_outputs["volume_location"] = volume_location
+                        # Get absolute path
+                        job_dir = getattr(job, "dir", "")
+                        if job_dir and volume_location:
+                            from pathlib import Path
+                            volume_path = Path(job_dir) / volume_location
+                            stage_outputs["final_volume_absolute_path"] = str(volume_path.absolute())
+            except Exception as e:
+                self.logger.warning(f"Could not get volume location: {e}")
+        
+        return stage_outputs
     
     def _save_reconstruction_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True, backend_type: str = "CryoSPARC") -> str:
         """Save 3D reconstruction results to a JSON file."""
@@ -1149,6 +1217,8 @@ class ReconstructionAgent(StageAgent):
                 "status": status,
                 "stage": "3d_reconstruction",
                 "agent_type": "relion",
+                "project_uid": context.project_uid,
+                "workspace_uid": context.workspace_uid,
                 "final_volume_folder": final_volume_folder,
                 "metadata": {
                     "workflow_type": getattr(context, 'workflow_type', context.metadata.get("workflow_type", "unknown")),
@@ -1166,6 +1236,7 @@ class ReconstructionAgent(StageAgent):
                 "stage": "3d_reconstruction",
                 "status": status,
                 "timestamp": timestamp,
+                "agent_type": "cryosparc",
                 "project_uid": context.project_uid,
                 "workspace_uid": context.workspace_uid,
                 "input_particles_job_uid": context.metadata.get("input_particles_job_uid"),
@@ -1189,74 +1260,214 @@ class ReconstructionAgent(StageAgent):
                 }
             }
             
-            # Save to JSON file with CryoSPARC naming convention
-            output_file = output_dir / f"3d_reconstruction_results_{timestamp}.json"
+            # Save to JSON file with CryoSPARC naming convention: reconstruction_results_cryosparc_{timestamp}.json
+            output_file = output_dir / f"reconstruction_results_cryosparc_{timestamp}.json"
         
         with open(output_file, 'w') as f:
             json.dump(reconstruction_results, f, indent=2)
         
         self.logger.info(f"3D reconstruction results saved to {output_file}")
         return str(output_file)
+
+
+class OptimizerAgent(StageAgent):
+    """Specialized agent for box size optimization stage."""
     
-    def _extract_reconstruction_outputs(self, results: List) -> Dict[str, Any]:
-        """Extract job UIDs and metadata from reconstruction workflow results."""
-        stage_outputs = {
-            "ab_initio_job_uid": None,
-            "homogeneous_reconstruction_job_uid": None,
-            "homogeneous_refinement_job_uid": None,
-            "heterogeneous_refinement_job_uid": None,
-            "final_volume_job_uid": None,
-            "reconstruction_type": "unknown"
+    def __init__(self, config_path: str, master_config_path: Optional[str] = None):
+        super().__init__("optimization", config_path, master_config_path)
+        self.backend_type = None  # Will be set during initialization
+    
+    def initialize(self) -> bool:
+        """Initialize the optimization agent with modular architecture."""
+        try:
+            # Load basic configuration
+            config_loader = ConfigLoader(self.config_path, self.master_config_path)
+            self.config = config_loader.load_config()
+            
+            # Optimization is only available for CryoSPARC
+            from .cryosparc_optimize.optimizer_agent import OptimizerAgent as ModularOptimizerAgent
+            from .cryosparc_optimize.optimizer_workflow import OptimizerWorkflow
+            
+            # Initialize CryoSPARC tools
+            self.cryosparc_tools = CryoSPARCTools(self.config.cryosparc)
+            
+            # Initialize modular optimizer agent and workflow
+            self.modular_agent = ModularOptimizerAgent(self.cryosparc_tools, self.config)
+            self.modular_workflow = OptimizerWorkflow(self.modular_agent, self.config, stage_config_path=self.config_path)
+            self.backend_type = "CryoSPARC"
+            
+            # Set stage name and workflow type for conversation logging
+            self.modular_agent.stage_name = "optimization"
+            self.modular_agent.workflow_type = "cryoem"
+            
+            self.logger.info(f"Stage agent {self.stage_name} initialized with {self.backend_type} backend")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize stage agent {self.stage_name}: {e}")
+            return False
+    
+    def execute_stage(self, context: WorkflowContext, conversation_id: Optional[str] = None) -> StageResult:
+        """
+        Execute the optimization stage.
+        
+        Args:
+            context: Workflow context with previous stage outputs
+            conversation_id: Optional conversation identifier
+            
+        Returns:
+            StageResult with optimization outputs
+        """
+        start_time = time.time()
+        try:
+            # Get required inputs from previous stages
+            stage_outputs_map = getattr(context, "stage_outputs", {}) or {}
+            reconstruction_outputs = stage_outputs_map.get(WorkflowStage.RECONSTRUCTION)
+            if isinstance(reconstruction_outputs, StageResult):
+                reconstruction_outputs = reconstruction_outputs.stage_outputs
+            
+            # Get final_volume_job_uid first (this is the key identifier)
+            # Check both direct fields and nested job_uids/outputs structures (from JSON files)
+            final_volume_job_uid = (
+                reconstruction_outputs.get("final_volume_job_uid")
+                or (reconstruction_outputs.get("job_uids", {}).get("final_volume") if isinstance(reconstruction_outputs.get("job_uids"), dict) else None)
+                or (reconstruction_outputs.get("outputs", {}).get("final_volume_job_uid") if isinstance(reconstruction_outputs.get("outputs"), dict) else None)
+                or reconstruction_outputs.get("homogeneous_refinement_job_uid")
+                or (reconstruction_outputs.get("job_uids", {}).get("homogeneous_refinement") if isinstance(reconstruction_outputs.get("job_uids"), dict) else None)
+            )
+            
+            # refinement_job_uid and volume_job_uid should both be the final_volume_job_uid
+            # (the final refined volume is used both as the source of initial resolution/box size
+            #  and as the initial volume for new refinements)
+            refinement_job_uid = final_volume_job_uid
+            volume_job_uid = final_volume_job_uid
+            
+            # Get particles job UID (picking job for re-extraction)
+            picking_outputs = stage_outputs_map.get(WorkflowStage.PARTICLE_PICKING)
+            if isinstance(picking_outputs, StageResult):
+                picking_outputs = picking_outputs.stage_outputs
+            
+            particles_job_uid = (
+                picking_outputs.get("blob_picker_job_uid")
+                or picking_outputs.get("picking_job_uid")
+                or picking_outputs.get("particle_picking_job_uid")
+                or picking_outputs.get("final_selection_job_uid")  # From JSON: final_selection_job_uid
+                or picking_outputs.get("selected_particles_job_uid")
+            )
+            
+            # Get micrographs job UID
+            preprocessing_outputs = stage_outputs_map.get(WorkflowStage.PREPROCESSING)
+            if isinstance(preprocessing_outputs, StageResult):
+                preprocessing_outputs = preprocessing_outputs.stage_outputs
+            
+            micrographs_job_uid = (
+                preprocessing_outputs.get("micrograph_selection_job_uid")
+                or preprocessing_outputs.get("final_micrographs_job_uid")
+            )
+            
+            if not all([refinement_job_uid, particles_job_uid, micrographs_job_uid, volume_job_uid]):
+                missing = []
+                if not refinement_job_uid:
+                    missing.append("refinement_job_uid")
+                if not particles_job_uid:
+                    missing.append("particles_job_uid")
+                if not micrographs_job_uid:
+                    missing.append("micrographs_job_uid")
+                if not volume_job_uid:
+                    missing.append("volume_job_uid")
+                
+                execution_time = time.time() - start_time
+                return StageResult(
+                    stage=WorkflowStage.OPTIMIZATION,
+                    success=False,
+                    error=f"Missing required inputs from previous stages: {', '.join(missing)}",
+                    stage_outputs={},
+                    execution_time=execution_time
+                )
+            
+            # Execute optimization workflow
+            result = self.modular_workflow.execute_optimization(
+                refinement_job_uid=refinement_job_uid,
+                particles_job_uid=particles_job_uid,
+                micrographs_job_uid=micrographs_job_uid,
+                volume_job_uid=volume_job_uid,
+                conversation_id=conversation_id
+            )
+            
+            # Extract outputs
+            # Note: OptimizationResult uses 'job_uid' not 'best_job_uid'
+            stage_outputs = {
+                "optimization_job_uid": result.job_uid,
+                "best_box_size": result.best_box_size,
+                "best_resolution_angstroms": result.best_resolution,
+                "tested_combinations": result.tested_combinations or [],
+                "iterations": len(result.tested_combinations) if result.tested_combinations else 0
+            }
+            
+            # Calculate execution time
+            execution_time = time.time() - start_time
+            
+            # Save results
+            output_file = self._save_optimization_results(stage_outputs, context, result.success, execution_time)
+            stage_outputs["output_file"] = output_file
+            
+            return StageResult(
+                stage=WorkflowStage.OPTIMIZATION,
+                success=result.success,
+                error=result.error,
+                stage_outputs=stage_outputs,
+                execution_time=execution_time
+            )
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self.logger.error(f"Failed to execute optimization stage: {e}")
+            return StageResult(
+                stage=WorkflowStage.OPTIMIZATION,
+                success=False,
+                error=str(e),
+                stage_outputs={},
+                execution_time=execution_time
+            )
+    
+    def _save_optimization_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True, execution_time: float = 0.0) -> str:
+        """Save optimization results to a JSON file."""
+        import datetime
+        from pathlib import Path
+        
+        output_dir = Path("outputs")
+        output_dir.mkdir(exist_ok=True)
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        status = "completed" if success else "failed"
+        
+        optimization_results = {
+            "stage": "optimization",
+            "status": status,
+            "timestamp": timestamp,
+            "agent_type": "cryosparc",
+            "project_uid": context.project_uid,
+            "workspace_uid": context.workspace_uid,
+            "execution_time": execution_time,
+            "best_box_size": stage_outputs.get("best_box_size"),
+            "best_resolution_angstroms": stage_outputs.get("best_resolution_angstroms"),
+            "best_job_uid": stage_outputs.get("optimization_job_uid"),
+            "iterations": stage_outputs.get("iterations", 0),
+            "tested_combinations": stage_outputs.get("tested_combinations", [])
         }
         
-        # Extract job UIDs from results
-        for result in results:
-            step_name = result.step.value
-            if result.success and result.job_uid:
-                if step_name == "ab_initio_reconstruction":
-                    stage_outputs["ab_initio_job_uid"] = result.job_uid
-                    stage_outputs["final_volume_job_uid"] = result.job_uid
-                    stage_outputs["reconstruction_type"] = "ab_initio"
-                elif step_name == "homogeneous_reconstruction":
-                    stage_outputs["homogeneous_reconstruction_job_uid"] = result.job_uid
-                    stage_outputs["final_volume_job_uid"] = result.job_uid
-                    stage_outputs["reconstruction_type"] = "homogeneous_reconstruction"
-                elif step_name == "homogeneous_refinement":
-                    stage_outputs["homogeneous_refinement_job_uid"] = result.job_uid
-                    stage_outputs["final_volume_job_uid"] = result.job_uid
-                    # Only update type if it's still initial reconstruction
-                    if stage_outputs["reconstruction_type"] in ["ab_initio", "homogeneous_reconstruction"]:
-                        stage_outputs["reconstruction_type"] = "refined_" + stage_outputs["reconstruction_type"]
-                elif step_name == "heterogeneous_refinement":
-                    stage_outputs["heterogeneous_refinement_job_uid"] = result.job_uid
-                    stage_outputs["final_volume_job_uid"] = result.job_uid
-                    stage_outputs["reconstruction_type"] = "heterogeneous_refined"
+        output_file = output_dir / f"optimization_results_cryosparc_{timestamp}.json"
+        with open(output_file, 'w') as f:
+            json.dump(optimization_results, f, indent=2)
         
-        # Get volume output directory if available
-        final_volume_job_uid = stage_outputs.get("final_volume_job_uid")
-        project_uid = getattr(self.config.workflow, "project_uid", None)
-        
-        if final_volume_job_uid and project_uid:
-            try:
-                job_info = self.cryosparc_tools.get_job_output_directory(project_uid, final_volume_job_uid)
-                job_directory = job_info.get("job_directory")
-                stage_outputs["volume_location"] = job_directory
-                stage_outputs["volume_job_metadata"] = job_info
-                
-                # Add absolute paths for final volume
-                if job_directory:
-                    from pathlib import Path
-                    job_path = Path(job_directory)
-                    stage_outputs["final_volume_absolute_path"] = str(job_path.absolute())
-                    
-            except Exception as exc:
-                self.logger.warning(
-                    "Failed to resolve volume job directory for %s: %s",
-                    final_volume_job_uid,
-                    exc
-                )
-        
-        return stage_outputs
+        self.logger.info(f"Optimization results saved to {output_file}")
+        return str(output_file)
+    
+    def get_stage_description(self) -> str:
+        return "Box Size Optimization: Optimize particle extraction box size for improved 3D reconstruction resolution"
+    
+    def get_required_inputs(self) -> List[str]:
+        return ["homogeneous_refinement_job_uid", "picked_particles", "micrograph_selection_job_uid", "volume_job_uid"]
 
 
 class MasterOrchestrator:
@@ -1320,6 +1531,8 @@ class MasterOrchestrator:
                     agent = ParticlePickingAgent(config_path, self.master_config_path)
                 elif agent_class == "ReconstructionAgent":
                     agent = ReconstructionAgent(config_path, self.master_config_path)
+                elif agent_class == "OptimizerAgent":
+                    agent = OptimizerAgent(config_path, self.master_config_path)
                 else:
                     self.logger.error(f"Unknown agent class: {agent_class}")
                     return False
@@ -1478,7 +1691,26 @@ class MasterOrchestrator:
             final_volume_dir = data.get("final_volume_directory")
             final_volume_uid = data.get("final_volume_job_uid")
             final_star_file = data.get("final_star_file")
-
+            
+            # Extract from nested job_uids structure (CryoSPARC format)
+            job_uids = data.get("job_uids", {})
+            if isinstance(job_uids, dict):
+                if job_uids.get("ab_initio"):
+                    stage_outputs["ab_initio_job_uid"] = job_uids["ab_initio"]
+                if job_uids.get("homogeneous_reconstruction"):
+                    stage_outputs["homogeneous_reconstruction_job_uid"] = job_uids["homogeneous_reconstruction"]
+                if job_uids.get("homogeneous_refinement"):
+                    stage_outputs["homogeneous_refinement_job_uid"] = job_uids["homogeneous_refinement"]
+                if job_uids.get("final_volume"):
+                    stage_outputs["final_volume_job_uid"] = job_uids["final_volume"]
+            
+            # Extract from nested outputs structure (CryoSPARC format)
+            outputs = data.get("outputs", {})
+            if isinstance(outputs, dict):
+                if outputs.get("final_volume_job_uid"):
+                    stage_outputs["final_volume_job_uid"] = outputs["final_volume_job_uid"]
+            
+            # Direct fields (fallback)
             if final_volume_dir:
                 stage_outputs["final_volume_directory"] = final_volume_dir
             if final_volume_uid:
@@ -1534,12 +1766,24 @@ class MasterOrchestrator:
         print("🚀 Starting Complete CryoEM Workflow")
         print("=" * 60)
         
-        # Execute stages in sequence
-        stages_to_execute = [
-            WorkflowStage.PREPROCESSING,
-            WorkflowStage.PARTICLE_PICKING,
-            WorkflowStage.RECONSTRUCTION
-        ]
+        # Execute stages in sequence - dynamically determine from master config
+        stages_to_execute = []
+        for stage_info in self.master_config["master_workflow"]["stages"]:
+            if stage_info.get("enabled", False):
+                try:
+                    stage = WorkflowStage(stage_info["name"])
+                    stages_to_execute.append(stage)
+                except ValueError:
+                    self.logger.warning(f"Unknown stage name in config: {stage_info['name']}")
+        
+        # Fallback to default stages if none found in config
+        if not stages_to_execute:
+            self.logger.warning("No enabled stages found in config, using default stages")
+            stages_to_execute = [
+                WorkflowStage.PREPROCESSING,
+                WorkflowStage.PARTICLE_PICKING,
+                WorkflowStage.RECONSTRUCTION
+            ]
         
         for stage in stages_to_execute:
             stage_name = stage.value
@@ -1562,8 +1806,12 @@ class MasterOrchestrator:
                 if 'stage_outputs' in data:
                     # RELION format: use stage_outputs directly
                     stage_outputs = data['stage_outputs']
+                elif stage == WorkflowStage.RECONSTRUCTION:
+                    # For reconstruction, use _reconstruct_stage_outputs_from_minimal_data
+                    # to properly extract from nested job_uids and outputs structures
+                    stage_outputs = self._reconstruct_stage_outputs_from_minimal_data(stage, data)
                 elif 'job_uids' in data:
-                    # CryoSPARC format: reconstruct from job_uids
+                    # CryoSPARC format: reconstruct from job_uids (for other stages)
                     job_uids = data.get('job_uids', {})
                     stage_outputs = self._reconstruct_stage_outputs_from_cache(stage, job_uids)
                     # Ensure project_uid and workspace_uid are included
@@ -1774,8 +2022,12 @@ class MasterOrchestrator:
                 if 'stage_outputs' in data:
                     # RELION format: use stage_outputs directly
                     stage_outputs = data['stage_outputs']
+                elif stage == WorkflowStage.RECONSTRUCTION:
+                    # For reconstruction, use _reconstruct_stage_outputs_from_minimal_data
+                    # to properly extract from nested job_uids and outputs structures
+                    stage_outputs = self._reconstruct_stage_outputs_from_minimal_data(stage, data)
                 elif 'job_uids' in data:
-                    # CryoSPARC format: reconstruct from job_uids
+                    # CryoSPARC format: reconstruct from job_uids (for other stages)
                     job_uids = data.get('job_uids', {})
                     stage_outputs = self._reconstruct_stage_outputs_from_cache(stage, job_uids)
                     # Ensure project_uid and workspace_uid are included
