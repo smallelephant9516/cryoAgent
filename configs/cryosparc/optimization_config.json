@@ -1,7 +1,7 @@
 {
   "stage_info": {
     "name": "optimization",
-    "description": "Box size optimization stage: Optimize box size/diameter for 3D reconstruction",
+    "description": "Box size optimization stage: Optimize box size/diameter for 3D reconstruction and heterogeneous refinement",
     "version": "1.0.0"
   },
   "required_inputs": [
@@ -14,7 +14,10 @@
     "best_box_size",
     "best_resolution",
     "best_job_uid",
-    "tested_combinations"
+    "tested_combinations",
+    "best_hetero_k",
+    "best_hetero_class_id",
+    "best_hetero_resolution"
   ],
   "microscope_parameters": {},
   "workflow": {
@@ -22,7 +25,11 @@
       "max_iterations": 5,
       "box_size_variation": 0.1,
       "max_iterations_description": "Maximum number of optimization iterations (default: 5)",
-      "box_size_variation_description": "Box size variation percentage (default: 0.1 = 10%)"
+      "box_size_variation_description": "Box size variation percentage (default: 0.1 = 10%)",
+      "enable_box_size_optimization": false,
+      "enable_heterogeneous_refinement": true,
+      "heterogeneous_refinement_max_iterations": 5,
+      "heterogeneous_refinement_max_iterations_description": "Maximum number of K values to test for heterogeneous refinement (default: 3)"
     }
   }
 }

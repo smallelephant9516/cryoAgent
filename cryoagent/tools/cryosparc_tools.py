@@ -1988,6 +1988,126 @@ class CryoSPARCTools:
                 "error": f"Failed to get FSC info from job {job_uid}: {str(e)}"
             }
     
+    def get_heterogeneous_refinement_class_resolutions(
+        self,
+        project_uid: str,
+        job_uid: str
+    ) -> Dict[str, Any]:
+        """
+        Get resolution information for each class in a heterogeneous refinement job.
+        
+        For each class (volume_class_x where x is the class id starting from 0),
+        extracts:
+        - radwn_loosemask_A: Estimated resolution in Angstroms
+        - fsc_loosemask: List of FSC values, use the last value for comparison
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            job_uid: UID of the heterogeneous refinement job
+            
+        Returns:
+            Dictionary containing:
+            - success: Whether the information was successfully retrieved
+            - classes: List of dictionaries, each with:
+              - class_id: Class index (0, 1, 2, ...)
+              - resolution_angstroms: Resolution in Angstroms (radwn_loosemask_A)
+              - fsc_loosemask_last: Last value of fsc_loosemask list
+              - group_name: Name of the output group (e.g., "volume_class_0")
+            - error: Error message if unsuccessful
+        """
+        try:
+            job = self.cs.find_job(project_uid, job_uid)
+            job.refresh()
+            doc = getattr(job, "doc", {})
+            
+            classes_info = []
+            
+            # Try to get from doc.output_result_groups
+            output_result_groups = doc.get("output_result_groups", [])
+            
+            # Fallback: read from job.json file directly
+            if not output_result_groups:
+                try:
+                    job_dir = getattr(job, "dir", None)
+                    if job_dir:
+                        import json
+                        from pathlib import Path
+                        job_json_path = Path(job_dir) / "job.json"
+                        if job_json_path.exists():
+                            with open(job_json_path, 'r') as f:
+                                file_data = json.load(f)
+                                output_result_groups = file_data.get("output_result_groups", [])
+                except Exception as file_error:
+                    pass
+            
+            if not output_result_groups:
+                return {
+                    "success": False,
+                    "error": "No output_result_groups found in job output",
+                    "classes": []
+                }
+            
+            # Find all volume_class_x groups
+            for group in output_result_groups:
+                if not isinstance(group, dict):
+                    continue
+                
+                group_name = group.get("name", "")
+                
+                # Check if this is a volume_class_x group
+                if group_name.startswith("volume_class_"):
+                    try:
+                        # Extract class ID from name (e.g., "volume_class_0" -> 0)
+                        class_id_str = group_name.replace("volume_class_", "")
+                        class_id = int(class_id_str)
+                        
+                        # Get latest_summary_stats
+                        latest_summary_stats = group.get("latest_summary_stats", {})
+                        
+                        # Extract resolution (radwn_loosemask_A)
+                        resolution_angstroms = latest_summary_stats.get("radwn_loosemask_A")
+                        
+                        # Extract fsc_loosemask (should be a list)
+                        fsc_loosemask = latest_summary_stats.get("fsc_loosemask", [])
+                        fsc_loosemask_last = None
+                        if isinstance(fsc_loosemask, list) and len(fsc_loosemask) > 0:
+                            fsc_loosemask_last = float(fsc_loosemask[-1])
+                        
+                        if resolution_angstroms is not None:
+                            classes_info.append({
+                                "class_id": class_id,
+                                "group_name": group_name,
+                                "resolution_angstroms": float(resolution_angstroms),
+                                "fsc_loosemask_last": fsc_loosemask_last,
+                                "fsc_loosemask": fsc_loosemask
+                            })
+                    except (ValueError, TypeError, AttributeError) as e:
+                        # Skip invalid groups
+                        continue
+            
+            # Sort by class_id
+            classes_info.sort(key=lambda x: x["class_id"])
+            
+            if not classes_info:
+                return {
+                    "success": False,
+                    "error": "No volume_class_x groups found in output_result_groups",
+                    "classes": []
+                }
+            
+            return {
+                "success": True,
+                "classes": classes_info,
+                "num_classes": len(classes_info)
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to get heterogeneous refinement class resolutions from job {job_uid}: {str(e)}",
+                "classes": []
+            }
+    
     def ab_initio_reconstruction(
         self,
         project_uid: str,
@@ -2162,75 +2282,85 @@ class CryoSPARCTools:
             project = self.cs.find_project(project_uid)
             workspace = project.find_workspace(workspace_uid)
             
-            # Determine the correct output slots
-            # For optimization: particles come from particles_job_uid (extraction), volume from volume_job_uid (reconstruction)
-            # For normal refinement: both come from volume_job_uid (ab initio)
+            # Check if group names are explicitly provided (e.g., from heterogeneous refinement)
+            particles_group_name = kwargs.get("particles_group_name")
+            volume_group_name = kwargs.get("volume_group_name")
             
-            # Check if particles_job_uid is different from volume_job_uid (optimization case)
-            use_separate_particles = (particles_job_uid != volume_job_uid)
-            
-            if use_separate_particles:
-                # Optimization case: particles from extraction job, volume from refinement job
-                # Find particles output slot from extraction job
-                try:
-                    extract_job = project.find_job(particles_job_uid)
-                    extract_job.refresh()
-                    extract_doc = getattr(extract_job, "doc", {})
-                    extract_outputs = extract_doc.get("output_result_groups", [])
-                    # Find particles output slot
-                    particles_slot = "particles"  # Default
-                    for group in extract_outputs:
-                        if group.get("type") == "particle":
-                            particles_slot = group.get("name", "particles")
-                            break
-                except Exception as e:
-                    particles_slot = "particles"
-                    print(f"⚠️  Could not detect particles slot from extraction job, using default: {e}")
-                
-                # Find volume output slot from volume job (refinement job)
-                try:
-                    volume_job = project.find_job(volume_job_uid)
-                    volume_job.refresh()
-                    volume_doc = getattr(volume_job, "doc", {})
-                    volume_outputs = volume_doc.get("output_result_groups", [])
-                    # Find volume output slot
-                    volume_slot = "volume"  # Default
-                    for group in volume_outputs:
-                        if group.get("type") == "volume":
-                            volume_slot = group.get("name", "volume")
-                            break
-                except Exception as e:
-                    volume_slot = "volume"
-                    print(f"⚠️  Could not detect volume slot from volume job, using default: {e}")
-                
-                print(f"ℹ️  Optimization mode: particles from {particles_job_uid}.{particles_slot}, volume from {volume_job_uid}.{volume_slot}")
+            if particles_group_name and volume_group_name:
+                # Use explicitly provided group names (e.g., particles_class_X, volume_class_X)
+                particles_slot = particles_group_name
+                volume_slot = volume_group_name
+                print(f"ℹ️  Using explicit group names: particles={particles_slot}, volume={volume_slot}")
             else:
-                # Normal case: both from same job (ab initio)
-                try:
-                    source_job = project.find_job(volume_job_uid)
-                    source_job_type = source_job.doc.get("type", "")
+                # Determine the correct output slots
+                # For optimization: particles come from particles_job_uid (extraction), volume from volume_job_uid (reconstruction)
+                # For normal refinement: both come from volume_job_uid (ab initio)
+                
+                # Check if particles_job_uid is different from volume_job_uid (optimization case)
+                use_separate_particles = (particles_job_uid != volume_job_uid)
+                
+                if use_separate_particles:
+                    # Optimization case: particles from extraction job, volume from refinement job
+                    # Find particles output slot from extraction job
+                    try:
+                        extract_job = project.find_job(particles_job_uid)
+                        extract_job.refresh()
+                        extract_doc = getattr(extract_job, "doc", {})
+                        extract_outputs = extract_doc.get("output_result_groups", [])
+                        # Find particles output slot
+                        particles_slot = "particles"  # Default
+                        for group in extract_outputs:
+                            if group.get("type") == "particle":
+                                particles_slot = group.get("name", "particles")
+                                break
+                    except Exception as e:
+                        particles_slot = "particles"
+                        print(f"⚠️  Could not detect particles slot from extraction job, using default: {e}")
                     
-                    # Ab initio jobs (homo_abinit) use these slots:
-                    if "abinit" in source_job_type.lower():
-                        particles_slot = "particles_all_classes"
-                        volume_slot = "volume_class_0"
-                    # Homogeneous reconstruction (homo_recon) might use these:
-                    elif "recon" in source_job_type.lower():
-                        # Try to detect actual output slots
-                        particles_slot = "particles"  # Common for homo_recon
-                        volume_slot = "volume"  # Common for homo_recon
-                    else:
-                        # Default to ab initio convention
-                        particles_slot = "particles_all_classes"
-                        volume_slot = "volume_class_0"
+                    # Find volume output slot from volume job (refinement job)
+                    try:
+                        volume_job = project.find_job(volume_job_uid)
+                        volume_job.refresh()
+                        volume_doc = getattr(volume_job, "doc", {})
+                        volume_outputs = volume_doc.get("output_result_groups", [])
+                        # Find volume output slot
+                        volume_slot = "volume"  # Default
+                        for group in volume_outputs:
+                            if group.get("type") == "volume":
+                                volume_slot = group.get("name", "volume")
+                                break
+                    except Exception as e:
+                        volume_slot = "volume"
+                        print(f"⚠️  Could not detect volume slot from volume job, using default: {e}")
+                    
+                    print(f"ℹ️  Optimization mode: particles from {particles_job_uid}.{particles_slot}, volume from {volume_job_uid}.{volume_slot}")
+                else:
+                    # Normal case: both from same job (ab initio)
+                    try:
+                        source_job = project.find_job(volume_job_uid)
+                        source_job_type = source_job.doc.get("type", "")
                         
-                    print(f"ℹ️  Detected source job type: {source_job_type}")
-                    print(f"ℹ️  Using particles slot: '{particles_slot}', volume slot: '{volume_slot}'")
-                except Exception as e:
-                    # Fallback to ab initio convention
-                    particles_slot = "particles_all_classes"
-                    volume_slot = "volume_class_0"
-                    print(f"⚠️  Could not detect job type, using default slots: {e}")
+                        # Ab initio jobs (homo_abinit) use these slots:
+                        if "abinit" in source_job_type.lower():
+                            particles_slot = "particles_all_classes"
+                            volume_slot = "volume_class_0"
+                        # Homogeneous reconstruction (homo_recon) might use these:
+                        elif "recon" in source_job_type.lower():
+                            # Try to detect actual output slots
+                            particles_slot = "particles"  # Common for homo_recon
+                            volume_slot = "volume"  # Common for homo_recon
+                        else:
+                            # Default to ab initio convention
+                            particles_slot = "particles_all_classes"
+                            volume_slot = "volume_class_0"
+                            
+                        print(f"ℹ️  Detected source job type: {source_job_type}")
+                        print(f"ℹ️  Using particles slot: '{particles_slot}', volume slot: '{volume_slot}'")
+                    except Exception as e:
+                        # Fallback to ab initio convention
+                        particles_slot = "particles_all_classes"
+                        volume_slot = "volume_class_0"
+                        print(f"⚠️  Could not detect job type, using default slots: {e}")
             
             # Create homogeneous refinement job with comprehensive parameters
             job_params: Dict[str, Any] = {
@@ -2326,6 +2456,7 @@ class CryoSPARCTools:
         particles_job_uid: str,
         volume_job_uids: List[str],
         num_classes: Optional[int] = None,
+        symmetry: str = "C1",
         lane: Optional[str] = None,
         hostname: Optional[str] = None,
         wait_for_completion: bool = False,
@@ -2342,6 +2473,7 @@ class CryoSPARCTools:
             particles_job_uid: UID of the particles job
             volume_job_uids: List of volume job UIDs (from ab initio)
             num_classes: Number of classes (default: length of volume_job_uids)
+            symmetry: Symmetry group (e.g., C1, D7) - applied to all classes (default: C1)
             lane: Compute lane to use
             hostname: Specific hostname to run on
             wait_for_completion: Whether to wait for job completion
@@ -2356,28 +2488,60 @@ class CryoSPARCTools:
             project = self.cs.find_project(project_uid)
             workspace = project.find_workspace(workspace_uid)
             
-            # Determine number of classes
+            # Determine number of classes (will be inferred from volume connections)
             if num_classes is None:
                 num_classes = len(volume_job_uids)
             
             # Create heterogeneous refinement job
-            # Note: Only set parameters that exist for hetrefine_new job type
-            job_params: Dict[str, Any] = {
-                "hetrefine_N": num_classes  # Number of classes
-            }
+            # Note: For hetero_refine job type, the number of classes is automatically determined
+            # from the number of volume connections
+            # The symmetry parameter is "multirefine_symmetry" for hetero_refine
+            job_params: Dict[str, Any] = {}
+            
+            # Add symmetry if specified and not C1
+            if symmetry and symmetry != "C1":
+                job_params["multirefine_symmetry"] = symmetry
             
             # Build connections for all volumes
+            # For hetero_refine, the input group is named "volume" (singular) and accepts multiple connections
+            # The number of classes is determined by the number of volume connections to this single "volume" group
+            # For K classes, we need to connect the SAME volume K times (repeat the same volume connection)
+            particles_slot = "particles_selected" if "select" in particles_job_uid.lower() else "particles"
+            
+            # Determine the correct volume output slot from the first volume job
+            # (all volumes should use the same slot since they're the same job repeated)
+            volume_slot = "volume"  # Default
+            try:
+                first_volume_job = project.find_job(volume_job_uids[0])
+                first_volume_job.refresh()
+                volume_doc = getattr(first_volume_job, "doc", {})
+                volume_outputs = volume_doc.get("output_result_groups", [])
+                for group in volume_outputs:
+                    if group.get("type") == "volume":
+                        volume_slot = group.get("name", "volume")
+                        break
+            except Exception as e:
+                volume_slot = "volume"
+                print(f"⚠️  Could not detect volume slot, using default 'volume': {e}")
+            
             connections = {
-                "particles": (particles_job_uid, "particles_selected" if "select" in particles_job_uid.lower() else "particles")
+                "particles": (particles_job_uid, particles_slot)
             }
             
-            # Add volume connections
-            for i, volume_job_uid in enumerate(volume_job_uids):
-                connections[f"volume_{i}"] = (volume_job_uid, "volume")
+            # Add all volume connections to the single "volume" input group
+            # For K classes, repeat the same (volume_job_uid, volume_slot) tuple K times
+            # CryoSPARC will infer num_classes from the number of connections to "volume"
+            # The Python API expects a list of tuples when an input group accepts multiple connections
+            volume_connections = [(volume_job_uid, volume_slot) for volume_job_uid in volume_job_uids]
+            connections["volume"] = volume_connections
+            
+            print(f"ℹ️  Heterogeneous refinement: connecting {len(volume_connections)} volumes (K={len(volume_connections)}) to 'volume' input group")
+            print(f"ℹ️  All volumes from: {volume_job_uids[0]} (same volume repeated {len(volume_connections)} times)")
             
             # Create the job
+            # The number of classes (K) is automatically determined from the number of volume connections
             job = workspace.create_job(
-                "hetrefine_new",  # Heterogeneous refinement job type
+                "hetero_refine",  # Heterogeneous refinement job type
                 connections=connections,
                 params=job_params
             )
