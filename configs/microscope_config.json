@@ -11,7 +11,7 @@
     "cs_mm": 2.7,
     "dose": 53,
     "particle_diameter": 200,
-    "symmetry": "C5",
+    "symmetry": "D7",
     "movies_path": "/home/daoyi/cryoEM_dataset/10025_subset/empiar_10025_subset/*.tif",
     "gain_ref_path": "/home/daoyi/cryoEM_dataset/10025_subset/empiar_10025_subset/norm-amibox05-0.mrc",
     "gain_rot": 0,

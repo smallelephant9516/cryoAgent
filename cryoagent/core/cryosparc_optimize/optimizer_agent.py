@@ -116,7 +116,7 @@ You specialize in optimizing box size/diameter for 3D reconstruction by testing 
 **Process**:
 1. Read the original box size and FSC resolution from the first refinement job
 2. Test with 10% less and 10% more box sizes
-3. Extract particles with new box sizes
+3. Extract particles with new box sizes using refined coordinates from the refinement job
 4. Run homogeneous refinement with each new box size, and map from the output volume in the reconstruction job
 5. Compare FSC resolutions from all tests
 6. Iteratively refine the box size until optimal resolution is found
@@ -133,10 +133,10 @@ You specialize in optimizing box size/diameter for 3D reconstruction by testing 
 - **optimize_diameter**: Main optimization tool that automatically:
   * Reads FSC info from refinement job
   * Tests different box sizes
-  * Extracts particles and runs refinement
+  * Extracts particles using refined coordinates from refinement job and runs refinement
   * Compares results and finds optimal box size
-  * Required: refinement_job_uid (first refinement), particles_job_uid (picking job), 
-    micrographs_job_uid, volume_job_uid
+  * Required: refinement_job_uid (first refinement, used for refined particle coordinates), 
+    particles_job_uid (refinement job, kept for compatibility), micrographs_job_uid, volume_job_uid
   * Returns best box size, resolution, and tested combinations
 
 - **get_job_status**: Check status of a specific job (use job UID only, e.g., "J113")
@@ -155,7 +155,7 @@ You specialize in optimizing box size/diameter for 3D reconstruction by testing 
 ## Example Workflow:
 
 1. Get refinement_job_uid from previous reconstruction stage
-2. Get particles_job_uid (picking job for re-extraction)
+2. Get particles_job_uid (refinement job for re-extraction)
 3. Get micrographs_job_uid (for re-extraction)
 4. Get volume_job_uid (initial volume from reconstruction)
 5. Run optimize_diameter tool with all required parameters
@@ -202,10 +202,7 @@ Box size optimization can take significant time as it runs multiple refinement j
             if not particles_job_uid:
                 # Try to get picking job (for re-extraction) from various possible keys
                 particles_job_uid = (
-                    defaults.get("picking_job_uid")
-                    or defaults.get("blob_picker_job_uid")
-                    or defaults.get("particle_picking_job_uid")
-                    or defaults.get("particles_job_uid")  # Fallback to extracted particles
+                    defaults.get("particles_job_uid")  # Fallback to extracted particles
                     or defaults.get("selected_particles_job_uid")
                 )
             if not micrographs_job_uid:
@@ -372,11 +369,12 @@ Box size optimization can take significant time as it runs multiple refinement j
                             self.logger.info(f"🔬 Testing box_size_less: {box_size_less}")
                             
                             # Step 1: Extract particles with new box size
+                            # Use refinement job for particle coordinates (refined positions/orientations)
                             self.logger.info(f"📦 Step 1/3: Extracting particles with box_size {box_size_less}...")
                             extract_params = {
                                 "project_uid": project_uid,
                                 "workspace_uid": workspace_uid,
-                                "particles_job_uid": particles_job_uid,
+                                "particles_job_uid": refinement_job_uid,  # Use refinement job for refined coordinates
                                 "micrographs_job_uid": micrographs_job_uid,
                                 "box_size_pix": box_size_less
                             }
@@ -467,11 +465,12 @@ Box size optimization can take significant time as it runs multiple refinement j
                             self.logger.info(f"🔬 Testing box_size_more: {box_size_more}")
                             
                             # Step 1: Extract particles with new box size
+                            # Use refinement job for particle coordinates (refined positions/orientations)
                             self.logger.info(f"📦 Step 1/3: Extracting particles with box_size {box_size_more}...")
                             extract_params = {
                                 "project_uid": project_uid,
                                 "workspace_uid": workspace_uid,
-                                "particles_job_uid": particles_job_uid,
+                                "particles_job_uid": refinement_job_uid,  # Use refinement job for refined coordinates
                                 "micrographs_job_uid": micrographs_job_uid,
                                 "box_size_pix": box_size_more
                             }
@@ -587,14 +586,14 @@ Box size optimization can take significant time as it runs multiple refinement j
 **Optimization Process**:
 1. Read original box size and FSC resolution from first refinement
 2. Test with 10% less and 10% more box sizes
-3. Extract particles with new box sizes
+3. Extract particles with new box sizes using refined coordinates from refinement job
 4. Run homogeneous refinement for each
 5. Compare FSC resolutions
 6. Iteratively refine until optimal box size found
 
 **Parameters**:
-- **refinement_job_uid**: First homogeneous refinement job (required)
-- **particles_job_uid**: Picking job for re-extraction (required)
+- **refinement_job_uid**: First homogeneous refinement job (required, used for refined particle coordinates)
+- **particles_job_uid**: Picking job (kept for compatibility, not used for re-extraction)
 - **micrographs_job_uid**: Micrographs for re-extraction (required)
 - **volume_job_uid**: Initial volume from reconstruction (required)
 

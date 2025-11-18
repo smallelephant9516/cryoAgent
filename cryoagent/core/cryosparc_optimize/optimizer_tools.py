@@ -13,11 +13,11 @@ class OptimizerTools:
         return Tool(
             name="optimize_diameter",
             description="Optimize box size/diameter by testing different box sizes and comparing FSC resolutions. "
-                       "This tool automatically tests 10% less and 10% more box sizes, extracts particles, runs refinement, "
+                       "This tool automatically tests 10% less and 10% more box sizes, extracts particles using refined coordinates from the refinement job, runs refinement, "
                        "and iteratively finds the optimal box size. "
-                       "Required parameters: refinement_job_uid (first refinement job), particles_job_uid (picking job for re-extraction, e.g., blob picker), "
+                       "Required parameters: refinement_job_uid (first refinement job, used for refined particle coordinates), particles_job_uid (picking job, kept for compatibility), "
                        "micrographs_job_uid (micrographs for re-extraction), volume_job_uid (initial volume). "
-                       "Note: particles_job_uid should be the picking job (not extracted particles) so particles can be re-extracted with different box sizes. "
+                       "Note: Particle re-extraction uses coordinates from the refinement_job_uid (refined positions/orientations), not the picking job. "
                        "Optional parameters: project_uid, workspace_uid. "
                        "The tool will try to get missing parameters from workflow defaults if not provided.",
             func=agent._optimize_diameter_tool
