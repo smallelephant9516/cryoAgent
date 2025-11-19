@@ -2597,6 +2597,369 @@ class CryoSPARCTools:
                 "message": f"Failed to queue heterogeneous refinement job: {str(e)}"
             }
     
+    def regroup_classes(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        particles_job_uid: str,
+        num_superclasses: int = 2,
+        job_title: Optional[str] = None,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Regroup K classes from a heterogeneous refinement into fewer superclasses.
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            workspace_uid: CryoSPARC workspace UID
+            particles_job_uid: UID of the heterogeneous refinement job (contains particles_class_X groups)
+            num_superclasses: Number of superclasses to create (default: 2)
+            job_title: Optional title for the regroup job
+            lane: Compute lane to use
+            hostname: Specific hostname to run on
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            check_interval: Time between status checks in seconds
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+            
+            # Get the heterogeneous refinement job to find the combined output groups
+            hetero_job = project.find_job(particles_job_uid)
+            hetero_job.refresh()
+            hetero_doc = getattr(hetero_job, "doc", {})
+            hetero_outputs = hetero_doc.get("output_result_groups", [])
+            
+            # Count the number of input classes from the heterogeneous refinement job
+            # Look for particles_class_X groups to determine K
+            num_input_classes = 0
+            for group in hetero_outputs:
+                group_name = group.get("name", "")
+                if group_name.startswith("particles_class_") and group_name != "particles_all_classes":
+                    num_input_classes += 1
+            
+            # Special case: if we have exactly 2 input classes, skip regroup and select the best class
+            # This will be used for direct homogeneous_refinement on the selected class
+            if num_input_classes == 2:
+                print(f"ℹ️  Regroup: K=2, selecting best class instead of creating regroup job")
+                
+                # Get resolution information for all classes
+                resolutions_result = self.get_heterogeneous_refinement_class_resolutions(
+                    project_uid=project_uid,
+                    job_uid=particles_job_uid
+                )
+                
+                if not resolutions_result.get("success"):
+                    return {
+                        "success": False,
+                        "error": resolutions_result.get("error", "Failed to get class resolutions"),
+                        "message": "Could not get class resolutions to select best class"
+                    }
+                
+                classes = resolutions_result.get("classes", [])
+                if not classes:
+                    return {
+                        "success": False,
+                        "error": "No classes found in heterogeneous refinement job",
+                        "message": "Cannot select best class: no classes available"
+                    }
+                
+                # Find the best class: lower resolution is better
+                # If resolution is the same (within tolerance), higher fsc_loosemask_last is better
+                best_class = None
+                best_resolution = float('inf')
+                best_fsc_last = -1.0
+                resolution_tolerance = 0.001  # 0.001 Å tolerance for resolution comparison
+                
+                for class_info in classes:
+                    resolution = class_info.get("resolution_angstroms")
+                    fsc_last = class_info.get("fsc_loosemask_last")
+                    
+                    if resolution is None:
+                        continue
+                    
+                    # Lower resolution is better
+                    if resolution < best_resolution - resolution_tolerance:
+                        best_class = class_info
+                        best_resolution = resolution
+                        best_fsc_last = fsc_last if fsc_last is not None else -1.0
+                    elif abs(resolution - best_resolution) <= resolution_tolerance:
+                        # If resolution is the same (within tolerance), prefer higher fsc_loosemask_last
+                        if fsc_last is not None and fsc_last > best_fsc_last:
+                            best_class = class_info
+                            best_resolution = resolution  # Update to current resolution
+                            best_fsc_last = fsc_last
+                
+                if best_class is None:
+                    return {
+                        "success": False,
+                        "error": "Could not determine best class",
+                        "message": "No valid class with resolution data found"
+                    }
+                
+                best_class_id = best_class.get("class_id")
+                # The group_name from get_heterogeneous_refinement_class_resolutions is volume_class_X
+                # We need to convert it to particles_class_X for the particles group
+                volume_group_name = best_class.get("group_name")  # e.g., "volume_class_0"
+                best_particles_group_name = volume_group_name.replace("volume_class_", "particles_class_")  # e.g., "particles_class_0"
+                
+                # Find the corresponding volume group name
+                best_volume_group_name = volume_group_name  # Use the volume group name directly
+                
+                if not best_volume_group_name:
+                    return {
+                        "success": False,
+                        "error": f"Could not find volume group for class {best_class_id}",
+                        "message": f"Volume group 'volume_class_{best_class_id}' not found in heterogeneous refinement output"
+                    }
+                
+                print(f"✅ Selected best class: {best_particles_group_name} (class {best_class_id})")
+                print(f"   Resolution: {best_resolution:.3f} Å")
+                if best_fsc_last is not None and best_fsc_last >= 0:
+                    print(f"   FSC loosemask last value: {best_fsc_last:.4f}")
+                print(f"   Volume group: {best_volume_group_name}")
+                
+                return {
+                    "success": True,
+                    "job_uid": None,  # No job created
+                    "job_type": "class_selection",
+                    "message": f"Selected best class {best_class_id} ({best_particles_group_name}) instead of regroup",
+                    "num_superclasses": 1,
+                    "selected_class": {
+                        "class_id": best_class_id,
+                        "particles_group_name": best_particles_group_name,
+                        "volume_group_name": best_volume_group_name,
+                        "resolution_angstroms": best_resolution,
+                        "fsc_loosemask_last": best_fsc_last
+                    }
+                }
+            
+            # Normal regroup flow: create regroup job to regroup K classes into num_superclasses
+            # Based on inspection of J202, regroup_3D_new connects to:
+            # 1. "particles_all_classes" group (not individual particles_class_X groups)
+            # 2. "volumes_all_classes" group (optional but recommended)
+            
+            # Find the combined output groups
+            particles_all_classes = None
+            volumes_all_classes = None
+            
+            for group in hetero_outputs:
+                group_name = group.get("name", "")
+                if group_name == "particles_all_classes":
+                    particles_all_classes = group_name
+                elif group_name == "volumes_all_classes":
+                    volumes_all_classes = group_name
+            
+            if not particles_all_classes:
+                return {
+                    "success": False,
+                    "error": f"No 'particles_all_classes' group found in job {particles_job_uid}",
+                    "message": "Regroup requires heterogeneous refinement output with 'particles_all_classes' group. "
+                              "This group contains all particle classes combined."
+                }
+            
+            # Build connections for regroup job
+            # The regroup job expects:
+            # - "particles" input slot -> connects to "particles_all_classes" from hetero job
+            # - "volume_series" input slot -> connects to "volumes_all_classes" from hetero job (optional)
+            connections = {
+                "particles": (particles_job_uid, particles_all_classes)
+            }
+            
+            # Add volumes connection if available
+            if volumes_all_classes:
+                connections["volume_series"] = (particles_job_uid, volumes_all_classes)
+            
+            print(f"ℹ️  Regroup: connecting to '{particles_all_classes}' from job {particles_job_uid}")
+            if volumes_all_classes:
+                print(f"ℹ️  Regroup: also connecting to '{volumes_all_classes}' from job {particles_job_uid}")
+            print(f"ℹ️  Regroup: will create {num_superclasses} superclasses")
+            
+            # Check available job types to find the correct regroup job type
+            # The job type is "regroup_3D_new" not "regroup"
+            regroup_job_type = "regroup_3D_new"  # Default to the correct job type name
+            
+            # Create the job with the number of superclasses parameter
+            # The parameter name is 'regroup3D_N_K'
+            job_params = {
+                "regroup3D_N_K": num_superclasses
+            }
+            
+            try:
+                job = workspace.create_job(
+                    regroup_job_type,
+                    connections=connections,
+                    params=job_params
+                )
+                print(f"✅ Created regroup job with regroup3D_N_K={num_superclasses}")
+            except Exception as e:
+                raise RuntimeError(f"Failed to create regroup job: {e}") from e
+            
+            # Set job title if provided (after job creation)
+            if job_title:
+                try:
+                    job.set_title(job_title)
+                except Exception as title_error:
+                    # If set_title doesn't work, try alternative methods
+                    print(f"⚠️  Could not set job title: {title_error}")
+            
+            # Queue the job with lane auto-detection
+            used_lane = lane
+            try:
+                job.queue(lane=lane, hostname=hostname)
+            except Exception as queue_error:
+                message = str(queue_error)
+                if (lane is None and hostname is None and "Must specify a lane" in message):
+                    try:
+                        lanes = self.cs.get_lanes()
+                        if not lanes:
+                            raise queue_error
+                        used_lane = lanes[0]["name"]
+                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
+                        job.queue(lane=used_lane)
+                    except Exception:
+                        raise queue_error
+                else:
+                    raise queue_error
+            print(f"Queued regroup job: {job.uid}")
+            
+            job_uid = job.uid
+            
+            result = {
+                "success": True,
+                "job_uid": job_uid,
+                "job_type": "regroup_3D_new",
+                "message": f"Regroup job {job_uid} queued successfully",
+                "num_superclasses": num_superclasses,
+                "lane": used_lane
+            }
+            
+            if wait_for_completion:
+                status_result = self.wait_for_job_completion(
+                    project_uid=project_uid,
+                    job_uid=job_uid,
+                    workspace_uid=workspace_uid,
+                    timeout=timeout,
+                    check_interval=check_interval
+                )
+                result.update(status_result)
+            
+            return result
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "job_type": "regroup_3D_new",
+                "message": f"Failed to queue regroup job: {str(e)}"
+            }
+    
+    def get_regroup_superclass_info(
+        self,
+        project_uid: str,
+        job_uid: str
+    ) -> Dict[str, Any]:
+        """
+        Get information about superclasses from a regroup job.
+        Reads job.json to find num_items for each particles_superclass_x group.
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            job_uid: UID of the regroup job
+            
+        Returns:
+            Dictionary containing:
+            - success: Whether the information was successfully retrieved
+            - superclasses: List of dictionaries, each with:
+              - superclass_id: Superclass index (0, 1, ...)
+              - num_items: Number of particles in this superclass
+              - group_name: Name of the output group (e.g., "particles_superclass_0")
+            - error: Error message if unsuccessful
+        """
+        try:
+            job = self.cs.find_job(project_uid, job_uid)
+            job.refresh()
+            doc = getattr(job, "doc", {})
+            
+            superclasses_info = []
+            
+            # Try to get from doc.output_result_groups
+            output_result_groups = doc.get("output_result_groups", [])
+            
+            # Fallback: read from job.json file directly
+            if not output_result_groups:
+                try:
+                    job_dir = getattr(job, "dir", None)
+                    if job_dir:
+                        import json
+                        from pathlib import Path
+                        job_json_path = Path(job_dir) / "job.json"
+                        if job_json_path.exists():
+                            with open(job_json_path, 'r') as f:
+                                file_data = json.load(f)
+                                output_result_groups = file_data.get("output_result_groups", [])
+                except Exception as file_error:
+                    pass
+            
+            if not output_result_groups:
+                return {
+                    "success": False,
+                    "error": "No output_result_groups found in regroup job output",
+                    "superclasses": []
+                }
+            
+            # Find all particles_superclass_x groups
+            for group in output_result_groups:
+                group_name = group.get("name", "")
+                if group_name.startswith("particles_superclass_"):
+                    # Extract superclass ID from name (e.g., "particles_superclass_0" -> 0)
+                    try:
+                        superclass_id = int(group_name.split("_")[-1])
+                        num_items = group.get("num_items", 0)
+                        
+                        superclasses_info.append({
+                            "superclass_id": superclass_id,
+                            "num_items": num_items,
+                            "group_name": group_name
+                        })
+                    except (ValueError, IndexError):
+                        # Skip if we can't parse the superclass ID
+                        continue
+            
+            if not superclasses_info:
+                return {
+                    "success": False,
+                    "error": "No particles_superclass_x groups found in regroup job output",
+                    "superclasses": []
+                }
+            
+            # Sort by superclass_id
+            superclasses_info.sort(key=lambda x: x["superclass_id"])
+            
+            return {
+                "success": True,
+                "job_uid": job_uid,
+                "num_superclasses": len(superclasses_info),
+                "superclasses": superclasses_info
+            }
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "superclasses": []
+            }
+    
     def get_job_log(self, job_uid: str, project_uid: Optional[str] = None, workspace_uid: Optional[str] = None) -> Dict[str, Any]:
         """
         Read the log file of a CryoSPARC job to analyze errors and failures.

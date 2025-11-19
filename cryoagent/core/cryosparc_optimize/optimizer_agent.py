@@ -266,7 +266,7 @@ You specialize in optimizing {optimization_desc} for 3D reconstruction by testin
 
 **Agentic Optimization Process**:
 1. **Baseline**: Get FSC resolution from the final refinement job (K=1, which is homogeneous refinement)
-2. **First Round Testing**: Test K=3 and K=5 using `test_heterogeneous_refinement` tool
+2. **First Round Testing**: Test K=2 and K=3 using `test_heterogeneous_refinement` tool
 3. **REASONING REQUIRED**: After EACH test, you MUST actively reason about the results:
    - Analyze the `class_comparison` data and `class_selection_reason` from each test
    - Compare resolution results across all K values tested so far
@@ -313,8 +313,8 @@ You specialize in optimizing {optimization_desc} for 3D reconstruction by testin
 
 **Initial Testing**:
 - Always start by getting FSC info from the original refinement job (K=1 baseline)
-- Test K=3 and K=5 in the first round
-- Compare K=1, K=3, and K=5 to see the trend
+- Test K=2 and K=3 in the first round
+- Compare K=1, K=2, and K=3 to see the trend
 
 **REASONING REQUIREMENT - After Each Test**:
 **CRITICAL**: After calling `test_heterogeneous_refinement`, you MUST actively reason about:
@@ -325,12 +325,12 @@ You specialize in optimizing {optimization_desc} for 3D reconstruction by testin
 
 2. **K Value Comparison**: Compare the final resolution from this K value with previous K values tested
    - Which K value has given the best resolution so far?
-   - Is there a clear trend (e.g., increasing K improves resolution, or vice versa)?
+   - Is there a clear trend (e.g., increasing K improves resolution, or vice versa or choose the value in between)?
 
 3. **Decision Making**: Based on your analysis, decide:
    - **Which K to test next** (if any): If there's a clear trend, test further in that direction. If optimal seems to be between tested values, test intermediate values.
    - **Whether to STOP**: Consider stopping if:
-     * Resolution is getting worse with more K values
+     * Resolution is getting worse with more K values test
      * Resolution has plateaued (no improvement across multiple K values)
      * You've found a clear optimal K value
      * You've reached or approached max_iterations ({max_hetero_iterations})
@@ -1139,10 +1139,11 @@ Think carefully about trends before deciding what to test next. Both optimizatio
         This tool:
         1. Repeats the volume from refinement_job_uid K times as initial densities
         2. Runs heterogeneous refinement using particles from refinement_job_uid
-        3. Gets resolution for each class
-        4. Selects best class (smallest resolution value, or HIGHEST fsc_loosemask_last if tied - higher FSC is better)
-        5. Runs homogeneous refinement on selected class particles
-        6. Gets final FSC resolution
+        3. Runs regroup to regroup K classes into 2 superclasses (job name: regroup_3D_new)
+        4. Gets num_items for each superclass from regroup job.json
+        5. Selects the superclass with more particles
+        6. Runs homogeneous refinement on selected superclass particles and volumes
+        7. Gets final FSC resolution
         """
         try:
             # Handle case where tool_input might be a tuple/list (from LangChain parsing issues)
@@ -1197,7 +1198,7 @@ Think carefully about trends before deciding what to test next. Both optimizatio
             # Get symmetry from reconstruction_config.json (workflow.refinement.symmetry)
             symmetry = self._get_refinement_symmetry()
             
-            self.logger.info(f"📦 Step 1/5: Running heterogeneous refinement with K={k} (repeating volume {refinement_job_uid} {k} times) using symmetry {symmetry}...")
+            self.logger.info(f"📦 Step 1/7: Running heterogeneous refinement with K={k} (repeating volume {refinement_job_uid} {k} times) using symmetry {symmetry}...")
             hetero_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
@@ -1236,85 +1237,170 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                 })
             
             hetero_job_uid = hetero_result["job_uid"]
-            self.logger.info(f"✅ Step 1/5: Heterogeneous refinement completed for K={k}, job: {hetero_job_uid}")
+            self.logger.info(f"✅ Step 1/7: Heterogeneous refinement completed for K={k}, job: {hetero_job_uid}")
             
-            # Step 2: Get class resolutions
-            self.logger.info(f"📊 Step 2/5: Getting class resolutions for K={k}...")
-            class_resolutions = self.cryosparc_tools.get_heterogeneous_refinement_class_resolutions(project_uid, hetero_job_uid)
-            if not class_resolutions.get("success"):
-                error_msg = class_resolutions.get("error", "Unknown error")
-                self.logger.error(f"❌ Failed to get class resolutions for K={k}: {error_msg}")
-                return json.dumps({
-                    "success": False,
-                    "error": f"Failed to get class resolutions: {error_msg}",
-                    "k": k,
-                    "hetero_job_uid": hetero_job_uid
-                })
-            
-            classes = class_resolutions.get("classes", [])
-            if not classes:
-                return json.dumps({
-                    "success": False,
-                    "error": "No classes found in heterogeneous refinement result",
-                    "k": k,
-                    "hetero_job_uid": hetero_job_uid
-                })
-            
-            # Step 3: Select best class
-            # Best = smallest resolution_angstroms value (lower is better), or if tied, HIGHEST fsc_loosemask_last (higher is better)
-            # Use negative fsc_loosemask_last for tie-breaking so min() selects the highest value
-            best_class = min(classes, key=lambda c: (
-                c.get("resolution_angstroms", float('inf')),
-                -(c.get("fsc_loosemask_last") if c.get("fsc_loosemask_last") is not None else -float('inf'))
-            ))
-            best_class_id = best_class["class_id"]
-            best_class_resolution = best_class["resolution_angstroms"]
-            best_fsc_last = best_class.get("fsc_loosemask_last")
-            best_group_name = best_class["group_name"]
-            
-            # Build reasoning explanation for class selection
-            class_comparison = []
-            for cls in classes:
-                cls_id = cls["class_id"]
-                cls_res = cls["resolution_angstroms"]
-                cls_fsc = cls.get("fsc_loosemask_last")
-                class_comparison.append({
-                    "class_id": cls_id,
-                    "resolution_angstroms": cls_res,
-                    "fsc_loosemask_last": cls_fsc
-                })
-            
-            # Determine selection reason
-            same_resolution_classes = [c for c in classes if c.get("resolution_angstroms") == best_class_resolution]
-            if len(same_resolution_classes) > 1:
-                selection_reason = f"Selected class {best_class_id} because it has the highest fsc_loosemask_last ({best_fsc_last}) among {len(same_resolution_classes)} classes with the same resolution ({best_class_resolution} Å)"
-            else:
-                selection_reason = f"Selected class {best_class_id} because it has the best (smallest) resolution ({best_class_resolution} Å)"
-            
-            self.logger.info(f"✅ Step 2/5: Found {len(classes)} classes. {selection_reason}")
-            self.logger.info(f"📊 Class comparison: {class_comparison}")
-            
-            # Step 4: Run homogeneous refinement on selected class particles
-            # The particles for the selected class come from the heterogeneous refinement job
-            # The volume comes from the selected class in the heterogeneous refinement job
-            self.logger.info(f"🔧 Step 3/5: Running homogeneous refinement on best class {best_class_id} particles...")
-            symmetry = self._get_refinement_symmetry()
-            
-            # For homogeneous refinement from heterogeneous refinement, we need:
-            # - particles_job_uid: the heterogeneous refinement job, with group_name = particles_class_X
-            # - volume_job_uid: the heterogeneous refinement job, with group_name = volume_class_X
-            particles_group_name = f"particles_class_{best_class_id}"
-            volume_group_name = best_group_name  # Already set to volume_class_X
-            
-            refine_params = {
+            # Step 2: Run regroup to regroup K classes into 2 superclasses (or select best class if K=2)
+            self.logger.info(f"🔄 Step 2/7: Running regroup to regroup {k} classes into 2 superclasses (job name: regroup_3D_new)...")
+            regroup_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
-                "particles_job_uid": hetero_job_uid,
-                "volume_job_uid": hetero_job_uid,
-                "symmetry": symmetry,
-                "particles_group_name": particles_group_name,  # Pass via kwargs
-                "volume_group_name": volume_group_name  # Pass via kwargs
+                "particles_job_uid": hetero_job_uid,  # Use particles from heterogeneous refinement
+                "num_superclasses": 2,
+                "job_title": "regroup_3D_new"
             }
+            self._record_tool_execution("regroup_classes", regroup_params)
+            regroup_result = self.cryosparc_tools.regroup_classes(
+                **regroup_params,
+                wait_for_completion=True,
+                timeout=self.config.job_management.default_timeout,
+                check_interval=self.config.job_management.status_check_interval
+            )
+            self._record_tool_execution("regroup_classes", regroup_params, result=regroup_result)
+            
+            # Verify regroup completed successfully
+            if not regroup_result.get("success", False):
+                error_msg = regroup_result.get("error") or "Unknown error"
+                self.logger.error(f"❌ Regroup failed for K={k}: {error_msg}")
+                return json.dumps({
+                    "success": False,
+                    "error": f"Regroup failed: {error_msg}",
+                    "k": k,
+                    "hetero_job_uid": hetero_job_uid
+                })
+            
+            # Check if K=2: regroup skipped and best class was selected
+            regroup_job_type = regroup_result.get("job_type", "")
+            regroup_job_uid = regroup_result.get("job_uid")
+            
+            if regroup_job_type == "class_selection" and regroup_job_uid is None:
+                # K=2 case: Skip regroup, use selected class directly for homogeneous refinement
+                self.logger.info(f"✅ Step 2/7: K=2 detected, skipped regroup and selected best class")
+                
+                selected_class = regroup_result.get("selected_class", {})
+                if not selected_class:
+                    return json.dumps({
+                        "success": False,
+                        "error": "Selected class information not found in regroup result",
+                        "k": k,
+                        "hetero_job_uid": hetero_job_uid
+                    })
+                
+                best_class_id = selected_class.get("class_id")
+                best_particles_group_name = selected_class.get("particles_group_name")
+                best_volume_group_name = selected_class.get("volume_group_name")
+                
+                if not best_particles_group_name or not best_volume_group_name:
+                    return json.dumps({
+                        "success": False,
+                        "error": "Particles or volume group name not found in selected class",
+                        "k": k,
+                        "hetero_job_uid": hetero_job_uid,
+                        "selected_class": selected_class
+                    })
+                
+                self.logger.info(f"✅ Selected best class: {best_particles_group_name} (class {best_class_id})")
+                self.logger.info(f"   Using particles: {best_particles_group_name}, volume: {best_volume_group_name}")
+                
+                # Step 3: Run homogeneous refinement directly on the selected class from heterogeneous refinement
+                self.logger.info(f"🔧 Step 3/7: Running homogeneous refinement on selected class {best_class_id}...")
+                symmetry = self._get_refinement_symmetry()
+                
+                # For homogeneous refinement, we use particles and volume from the heterogeneous refinement job
+                refine_params = {
+                    "project_uid": project_uid,
+                    "workspace_uid": workspace_uid,
+                    "particles_job_uid": hetero_job_uid,  # Particles from heterogeneous refinement
+                    "volume_job_uid": hetero_job_uid,  # Volume from heterogeneous refinement
+                    "symmetry": symmetry,
+                    "particles_group_name": best_particles_group_name,  # e.g., "particles_class_0"
+                    "volume_group_name": best_volume_group_name  # e.g., "volume_class_0"
+                }
+            else:
+                # K>2 case: Normal regroup flow
+                regroup_status = regroup_result.get("status", "unknown")
+                if regroup_status != "completed":
+                    error_msg = regroup_result.get("error") or f"Status: {regroup_status}"
+                    self.logger.error(f"❌ Regroup did not complete for K={k}: {error_msg}")
+                    return json.dumps({
+                        "success": False,
+                        "error": f"Regroup did not complete: {error_msg}",
+                        "k": k,
+                        "hetero_job_uid": hetero_job_uid
+                    })
+                
+                self.logger.info(f"✅ Step 2/7: Regroup completed, job: {regroup_job_uid}")
+                
+                # Step 3: Get superclass info (num_items for each superclass)
+                self.logger.info(f"📊 Step 3/7: Getting superclass information from regroup job...")
+                superclass_info = self.cryosparc_tools.get_regroup_superclass_info(project_uid, regroup_job_uid)
+                if not superclass_info.get("success"):
+                    error_msg = superclass_info.get("error", "Unknown error")
+                    self.logger.error(f"❌ Failed to get superclass info: {error_msg}")
+                    return json.dumps({
+                        "success": False,
+                        "error": f"Failed to get superclass info: {error_msg}",
+                        "k": k,
+                        "hetero_job_uid": hetero_job_uid,
+                        "regroup_job_uid": regroup_job_uid
+                    })
+                
+                superclasses = superclass_info.get("superclasses", [])
+                if not superclasses:
+                    return json.dumps({
+                        "success": False,
+                        "error": "No superclasses found in regroup result",
+                        "k": k,
+                        "hetero_job_uid": hetero_job_uid,
+                        "regroup_job_uid": regroup_job_uid
+                    })
+                
+                # Step 4: Select superclass with more particles
+                best_superclass = max(superclasses, key=lambda s: s.get("num_items", 0))
+                best_superclass_id = best_superclass["superclass_id"]
+                best_superclass_num_items = best_superclass["num_items"]
+                best_superclass_group_name = best_superclass["group_name"]
+                
+                # Build comparison for all superclasses
+                superclass_comparison = []
+                for sc in superclasses:
+                    superclass_comparison.append({
+                        "superclass_id": sc["superclass_id"],
+                        "num_items": sc["num_items"],
+                        "group_name": sc["group_name"]
+                    })
+                
+                selection_reason = f"Selected superclass {best_superclass_id} because it has the most particles ({best_superclass_num_items})"
+                
+                self.logger.info(f"✅ Step 3/7: Found {len(superclasses)} superclasses. {selection_reason}")
+                self.logger.info(f"📊 Superclass comparison: {superclass_comparison}")
+                
+                # Step 5: Get the volume for the selected superclass and run homogeneous refinement
+                # The regroup job should output volumes for each superclass (volume_superclass_X)
+                # We'll use the volume from the regroup job that corresponds to the selected superclass
+                volume_group_name = f"volume_superclass_{best_superclass_id}"
+                
+                # Run homogeneous refinement on selected superclass particles and volumes
+                # Both particles and volumes come from the regroup job
+                # - particles: particles_superclass_X from regroup job
+                # - volume: volume_superclass_X from regroup job
+                self.logger.info(f"🔧 Step 5/7: Running homogeneous refinement on superclass {best_superclass_id} particles and volumes...")
+                symmetry = self._get_refinement_symmetry()
+                
+                # For homogeneous refinement, we need:
+                # - particles_job_uid: the regroup job, with group_name = particles_superclass_X
+                # - volume_job_uid: the regroup job, with group_name = volume_superclass_X
+                particles_group_name = best_superclass_group_name  # particles_superclass_X
+                
+                refine_params = {
+                    "project_uid": project_uid,
+                    "workspace_uid": workspace_uid,
+                    "particles_job_uid": regroup_job_uid,  # Particles from regroup
+                    "volume_job_uid": regroup_job_uid,  # Volume from regroup (volume_superclass_X)
+                    "symmetry": symmetry,
+                    "particles_group_name": particles_group_name,  # Pass via kwargs: particles_superclass_X
+                    "volume_group_name": volume_group_name  # Pass via kwargs: volume_superclass_X
+                }
+                best_class_id = best_superclass_id  # For consistency in logging
             
             self._record_tool_execution("homogeneous_refinement", refine_params)
             refine_result = self.cryosparc_tools.homogeneous_refinement(
@@ -1329,60 +1415,101 @@ Think carefully about trends before deciding what to test next. Both optimizatio
             if not refine_result.get("success", False):
                 error_msg = refine_result.get("error") or "Unknown error"
                 self.logger.error(f"❌ Homogeneous refinement failed for class {best_class_id}: {error_msg}")
-                return json.dumps({
+                error_data = {
                     "success": False,
                     "error": f"Homogeneous refinement failed: {error_msg}",
                     "k": k,
                     "hetero_job_uid": hetero_job_uid,
                     "best_class_id": best_class_id
-                })
+                }
+                if regroup_job_uid:
+                    error_data["regroup_job_uid"] = regroup_job_uid
+                return json.dumps(error_data)
             
             refine_status = refine_result.get("status", "unknown")
             if refine_status != "completed":
                 error_msg = refine_result.get("error") or f"Status: {refine_status}"
                 self.logger.error(f"❌ Homogeneous refinement did not complete for class {best_class_id}: {error_msg}")
-                return json.dumps({
+                error_data = {
                     "success": False,
                     "error": f"Homogeneous refinement did not complete: {error_msg}",
                     "k": k,
                     "hetero_job_uid": hetero_job_uid,
                     "best_class_id": best_class_id
-                })
+                }
+                if regroup_job_uid:
+                    error_data["regroup_job_uid"] = regroup_job_uid
+                return json.dumps(error_data)
             
             refine_job_uid = refine_result["job_uid"]
-            self.logger.info(f"✅ Step 3/5: Homogeneous refinement completed for class {best_class_id}, job: {refine_job_uid}")
+            # Adjust step number based on whether regroup was skipped (K=2) or not (K>2)
+            if regroup_job_type == "class_selection" and regroup_job_uid is None:
+                step_num = "3/4"  # K=2: Step 1=hetero, Step 2=select class, Step 3=refine, Step 4=FSC
+            else:
+                step_num = "6/7"  # K>2: Normal flow
+            self.logger.info(f"✅ Step {step_num}: Homogeneous refinement completed for class {best_class_id}, job: {refine_job_uid}")
             
-            # Step 5: Get final FSC resolution
-            self.logger.info(f"📊 Step 4/5: Getting final FSC resolution for class {best_class_id}...")
+            # Get final FSC resolution
+            if regroup_job_type == "class_selection" and regroup_job_uid is None:
+                step_num = "4/4"
+            else:
+                step_num = "7/7"
+            self.logger.info(f"📊 Step {step_num}: Getting final FSC resolution for class {best_class_id}...")
             fsc_info = self.cryosparc_tools.get_refinement_fsc_info(project_uid, refine_job_uid)
             if not fsc_info.get("success"):
                 error_msg = fsc_info.get("error", "Unknown error")
                 self.logger.error(f"❌ Failed to get FSC info for class {best_class_id}: {error_msg}")
-                return json.dumps({
+                error_data = {
                     "success": False,
                     "error": f"Failed to get FSC info: {error_msg}",
                     "k": k,
                     "hetero_job_uid": hetero_job_uid,
                     "best_class_id": best_class_id,
                     "refine_job_uid": refine_job_uid
-                })
+                }
+                if regroup_job_uid:
+                    error_data["regroup_job_uid"] = regroup_job_uid
+                return json.dumps(error_data)
             
             final_resolution = fsc_info["resolution_angstroms"]
-            self.logger.info(f"✅ Step 4/5: Final resolution for K={k}, class {best_class_id}: {final_resolution} Å")
+            # Adjust step number and message based on whether regroup was skipped
+            if regroup_job_type == "class_selection" and regroup_job_uid is None:
+                step_num = "4/4"
+                self.logger.info(f"✅ Step {step_num}: Final resolution for K={k}, class {best_class_id}: {final_resolution} Å")
+            else:
+                step_num = "7/7"
+                self.logger.info(f"✅ Step {step_num}: Final resolution for K={k}, class {best_class_id}: {final_resolution} Å")
             
+            # Build result dictionary based on whether regroup was skipped (K=2) or not (K>2)
             result = {
                 "success": True,
                 "k": k,
                 "hetero_job_uid": hetero_job_uid,
-                "best_class_id": best_class_id,
-                "best_class_resolution": best_class_resolution,
-                "best_class_fsc_last": best_fsc_last,
-                "class_selection_reason": selection_reason,
-                "class_comparison": class_comparison,
                 "refine_job_uid": refine_job_uid,
                 "final_resolution_angstroms": final_resolution,
-                "all_classes": classes
+                "best_class_id": best_class_id
             }
+            
+            if regroup_job_type == "class_selection" and regroup_job_uid is None:
+                # K=2 case: regroup was skipped
+                selected_class = regroup_result.get("selected_class", {})
+                result.update({
+                    "regroup_skipped": True,
+                    "regroup_job_uid": None,
+                    "selected_class": selected_class
+                })
+            else:
+                # K>2 case: regroup was performed
+                result.update({
+                    "regroup_skipped": False,
+                    "regroup_job_uid": regroup_job_uid,
+                    "regroup_job_title": "regroup_3D_new",
+                    "best_superclass_id": best_class_id,  # Same as best_class_id in this context
+                    "best_superclass_num_items": best_superclass_num_items,
+                    "superclass_selection_reason": selection_reason,
+                    "superclass_comparison": superclass_comparison,
+                    "all_superclasses": superclasses
+                })
             
             self._record_tool_execution("test_heterogeneous_refinement", params, result=result)
             return json.dumps(result)

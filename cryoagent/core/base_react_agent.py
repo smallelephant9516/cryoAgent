@@ -480,13 +480,12 @@ Execute the following workflow using the ReAct framework:
 {workflow_input}
 
 Remember to:
-1. Start with reasoning about the workflow state
-2. Follow the Thought → Action → Observation pattern
-3. Check dependencies before each step
-4. Wait for jobs to complete before proceeding
-5. Provide clear status updates
+1. Follow the Thought → Action → Observation pattern
+2. Check dependencies before each step
+3. Wait for jobs to complete before proceeding
+4. Provide clear status updates
 
-Begin with reasoning about the current workflow state.
+Start by thinking about what needs to be done, then execute the appropriate tools directly.
 """
     
     def run_single_step(self, step_description: str, conversation_id: Optional[str] = None) -> str:

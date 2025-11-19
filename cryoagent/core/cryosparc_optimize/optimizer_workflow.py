@@ -158,10 +158,10 @@ Please report the current resolution from this refinement job."""
             # Execute optimization using the agent
             result = self.agent.run_react_workflow(prompt, conversation_id=conversation_id)
             
-            # Parse the result - look for test_box_size and get_fsc_info tool executions
+            # Parse the result - look for test_box_size, test_heterogeneous_refinement, and get_fsc_info tool executions
             tool_execution_log = self.agent.get_tool_execution_log()
             
-            # Collect all test results from test_box_size tool executions
+            # Collect all test results from test_box_size and test_heterogeneous_refinement tool executions
             tested_combinations = []
             best_result = None
             best_resolution = float('inf')  # Lower is better
@@ -170,7 +170,41 @@ Please report the current resolution from this refinement job."""
                 tool_name = tool_exec.get("tool")
                 tool_result = tool_exec.get("result")
                 
-                if tool_name == "test_box_size" and tool_result:
+                if tool_name == "test_heterogeneous_refinement" and tool_result:
+                    # Handle heterogeneous refinement optimization results
+                    try:
+                        if isinstance(tool_result, str):
+                            result_data = json.loads(tool_result)
+                        else:
+                            result_data = tool_result
+                        
+                        if result_data.get("success"):
+                            k = result_data.get("k")
+                            resolution = result_data.get("final_resolution_angstroms")
+                            refine_job_uid = result_data.get("refine_job_uid")
+                            
+                            if k is not None and resolution is not None:
+                                tested_combinations.append({
+                                    "k": k,
+                                    "resolution": resolution,
+                                    "job_uid": refine_job_uid,
+                                    "type": "heterogeneous_refinement"
+                                })
+                                
+                                # Track best result (lowest resolution)
+                                if resolution < best_resolution:
+                                    best_resolution = resolution
+                                    best_result = {
+                                        "k": k,
+                                        "resolution": resolution,
+                                        "job_uid": refine_job_uid,
+                                        "type": "heterogeneous_refinement"
+                                    }
+                    except (json.JSONDecodeError, TypeError, ValueError) as e:
+                        # Skip invalid results
+                        continue
+                
+                elif tool_name == "test_box_size" and tool_result:
                     try:
                         # Parse the result
                         if isinstance(tool_result, str):
@@ -244,14 +278,21 @@ Please report the current resolution from this refinement job."""
             
             # Return result based on what we found
             if best_result and tested_combinations:
+                # Format message based on optimization type
+                opt_type = best_result.get("type", "box_size")
+                if opt_type == "heterogeneous_refinement":
+                    message = f"Optimization completed successfully. Best K value: {best_result.get('k')} with resolution: {best_result.get('resolution'):.3f} Å"
+                else:
+                    message = f"Optimization completed successfully. Best box size: {best_result.get('box_size')}px with resolution: {best_result.get('resolution'):.3f} Å"
+                
                 return OptimizationResult(
                     step=OptimizationStep.OPTIMIZE_DIAMETER,
                     success=True,
                     job_uid=best_result.get("job_uid"),
-                    best_box_size=best_result.get("box_size"),
+                    best_box_size=best_result.get("box_size"),  # May be None for hetero refinement
                     best_resolution=best_result.get("resolution"),
                     tested_combinations=tested_combinations,
-                    message=f"Optimization completed successfully. Best box size: {best_result.get('box_size')}px with resolution: {best_result.get('resolution'):.3f} Å"
+                    message=message
                 )
             elif tested_combinations:
                 # Have results but couldn't determine best
