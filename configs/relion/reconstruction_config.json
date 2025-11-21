@@ -80,7 +80,8 @@
       "scale": true
     },
     "validation":{
-      "method":"cryosparc"
+      "method":"cryosparc_fsc",
+      "cryosparc_fsc": true
     }
   },
   "react_workflow": {

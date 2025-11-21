@@ -14,6 +14,7 @@ from ..base_react_agent import BaseReActAgent
 from .reconstruction_tools import ReconstructionTools
 from ...config.config_loader import CryoAgentConfig, ConfigLoader
 from ...tools.relion_tools import RELIONTools
+from ...tools.cryosparc_tools import CryoSPARCTools
 
 
 class ReconstructionAgent(BaseReActAgent):
@@ -47,9 +48,29 @@ class ReconstructionAgent(BaseReActAgent):
         self.stage_config = self._load_stage_config()
         self.stage_workflow = self.stage_config.get("workflow", {})
         
-        super().__init__(None, config, llm)  # No CryoSPARC tools needed for RELION
-        # Initialize logger for this agent
-        self.logger = logging.getLogger("RelionReconstructionAgent")
+        # Check if CryoSPARC FSC validation is enabled
+        validation_config = self.stage_workflow.get("validation", {})
+        self.cryosparc_fsc_enabled = self._parse_boolean_param(
+            validation_config.get("cryosparc_fsc", False)
+        )
+        
+        # Initialize CryoSPARC tools if validation is enabled
+        cryosparc_tools = None
+        if self.cryosparc_fsc_enabled:
+            try:
+                cryosparc_settings = self.config_loader.get_cryosparc_settings()
+                cryosparc_tools = CryoSPARCTools(cryosparc_settings)
+                self.logger = logging.getLogger("RelionReconstructionAgent")
+                self.logger.info("CryoSPARC FSC validation enabled - CryoSPARC tools initialized")
+            except Exception as e:
+                self.logger = logging.getLogger("RelionReconstructionAgent")
+                self.logger.warning(f"Failed to initialize CryoSPARC tools: {e}. CryoSPARC FSC validation will be disabled.")
+                self.cryosparc_fsc_enabled = False
+                cryosparc_tools = None
+        else:
+            self.logger = logging.getLogger("RelionReconstructionAgent")
+        
+        super().__init__(cryosparc_tools, config, llm)
         # Cache microscope configuration for derived defaults (respecting microscope_config overrides)
         stage_defaults = self.stage_config.get("microscope_parameters", {})
         self.microscope_config = self._resolve_microscope_defaults(stage_defaults, update_cache=True)
@@ -73,7 +94,14 @@ class ReconstructionAgent(BaseReActAgent):
                 "completed": False,
                 "job_dir": None,
                 "output_file": None,
-                "refined_map": None
+                "refined_map": None,
+                "half_map_a": None,
+                "half_map_b": None
+            },
+            "validation": {
+                "completed": False,
+                "job_dir": None,
+                "fsc_results": None
             }
         }
         self.context_stage_outputs: Dict[Any, Any] = {}
@@ -123,7 +151,7 @@ class ReconstructionAgent(BaseReActAgent):
     
     def _create_tools(self) -> List[Tool]:
         """Create reconstruction-specific tools."""
-        return [
+        tools = [
             ReconstructionTools.create_ab_initio_reconstruction_tool(self),
             ReconstructionTools.create_particle_reextraction_tool(self),
             ReconstructionTools.create_refinement_3d_tool(self),
@@ -133,6 +161,15 @@ class ReconstructionAgent(BaseReActAgent):
             ReconstructionTools.create_validate_inputs_tool(self),
             ReconstructionTools.create_reason_about_workflow_tool(self)
         ]
+        
+        # Add CryoSPARC validation tools if enabled
+        if self.cryosparc_fsc_enabled and self.cryosparc_tools:
+            tools.extend([
+                ReconstructionTools.create_import_volumes_tool(self),
+                ReconstructionTools.create_compute_fsc_validation_tool(self)
+            ])
+        
+        return tools
     
     def _get_react_system_prompt(self) -> str:
         """Get the reconstruction-specific ReAct system prompt."""
@@ -443,6 +480,17 @@ class ReconstructionAgent(BaseReActAgent):
                 self.workflow_state["refinement_3d"]["completed"] = True
                 if result.get("output_file"):
                     self.workflow_state["refinement_3d"]["output_file"] = result.get("output_file")
+                
+                # Try to detect half maps for CryoSPARC FSC validation
+                if self.cryosparc_fsc_enabled and output_dir_full:
+                    half_map_a = os.path.join(output_dir_full, "run_half1_class001_unfil.mrc")
+                    half_map_b = os.path.join(output_dir_full, "run_half2_class001_unfil.mrc")
+                    
+                    if os.path.exists(half_map_a) and os.path.exists(half_map_b):
+                        self.workflow_state["refinement_3d"]["half_map_a"] = half_map_a
+                        self.workflow_state["refinement_3d"]["half_map_b"] = half_map_b
+                        self.logger.info(f"Detected half maps for FSC validation: {half_map_a}, {half_map_b}")
+                
                 return f"✅ Successfully completed 3D refinement: {result.get('output_dir')}"
             elif job_status == "running":
                 # Job started but not completed yet
@@ -1153,4 +1201,156 @@ class ReconstructionAgent(BaseReActAgent):
         except Exception as e:
             self._record_tool_execution("reason_about_workflow", {"input": input_str}, error=str(e))
             return f"❌ Error analyzing workflow: {str(e)}"
+    
+    def _import_volumes_tool(self, input_str: str) -> str:
+        """Tool wrapper for importing volumes (half maps) into CryoSPARC."""
+        if not self.cryosparc_fsc_enabled or not self.cryosparc_tools:
+            return "❌ Error: CryoSPARC FSC validation is not enabled or CryoSPARC tools are not available."
+        
+        params: Dict[str, Any] = {}
+        used_params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            
+            # Get required parameters
+            half_map_a_path = params.get("half_map_a_path")
+            half_map_b_path = params.get("half_map_b_path")
+            project_uid = params.get("project_uid")
+            workspace_uid = params.get("workspace_uid")
+            
+            if not half_map_a_path or not half_map_b_path:
+                # Try to auto-detect from refinement_3d output
+                refinement_state = self.workflow_state.get("refinement_3d", {})
+                half_map_a = refinement_state.get("half_map_a")
+                half_map_b = refinement_state.get("half_map_b")
+                
+                if half_map_a and half_map_b:
+                    half_map_a_path = half_map_a
+                    half_map_b_path = half_map_b
+                    self.logger.info(f"Auto-detected half maps from refinement: {half_map_a_path}, {half_map_b_path}")
+                else:
+                    return "❌ Error: half_map_a_path and half_map_b_path parameters are required. " \
+                           "These should be paths to run_half1_class001_unfil.mrc and run_half2_class001_unfil.mrc " \
+                           "from the Refine3D job output."
+            
+            # Auto-detect project_uid and workspace_uid from config if not provided
+            if not project_uid or not workspace_uid:
+                try:
+                    workflow_settings = self.config_loader.get_workflow_settings()
+                    if not project_uid:
+                        project_uid = workflow_settings.project_uid
+                    if not workspace_uid:
+                        workspace_uid = workflow_settings.workspace_uid
+                    self.logger.info(f"Auto-detected CryoSPARC parameters from config: project_uid={project_uid}, workspace_uid={workspace_uid}")
+                except Exception as e:
+                    self.logger.warning(f"Could not get workflow settings from config: {e}")
+                    return "❌ Error: project_uid and workspace_uid parameters are required for CryoSPARC operations. " \
+                           "Either provide them as parameters or ensure they are set in the master_config.json workflow section."
+            
+            used_params = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+                "half_map_a_path": half_map_a_path,
+                "half_map_b_path": half_map_b_path,
+                "pixel_size": params.get("pixel_size"),
+                "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion", "false")),
+                "timeout": int(params.get("timeout", 3600)),
+                "check_interval": int(params.get("check_interval", 30))
+            }
+            
+            result = self.cryosparc_tools.import_volumes(**used_params)
+            self._record_tool_execution("import_volumes", used_params, result=result)
+            
+            if result.get("success"):
+                job_uid_a = result.get("job_uid_a")
+                job_uid_b = result.get("job_uid_b")
+                # Store job UIDs for later use in FSC validation
+                self.workflow_state["validation"]["import_job_uid_a"] = job_uid_a
+                self.workflow_state["validation"]["import_job_uid_b"] = job_uid_b
+                return f"✅ Successfully queued import volumes jobs: " \
+                       f"Job A (half map A): {job_uid_a}, Job B (half map B): {job_uid_b}. " \
+                       f"Half map A: {half_map_a_path}, Half map B: {half_map_b_path}"
+            else:
+                return f"❌ Failed to import volumes: {result.get('error', 'Unknown error')}"
+                
+        except Exception as e:
+            context = used_params or params or {"raw_input": input_str}
+            self._record_tool_execution("import_volumes", context, error=str(e))
+            return f"❌ Error importing volumes: {str(e)}"
+    
+    def _compute_fsc_validation_tool(self, input_str: str) -> str:
+        """Tool wrapper for computing FSC validation using CryoSPARC."""
+        if not self.cryosparc_fsc_enabled or not self.cryosparc_tools:
+            return "❌ Error: CryoSPARC FSC validation is not enabled or CryoSPARC tools are not available."
+        
+        params: Dict[str, Any] = {}
+        used_params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            
+            # Get required parameters
+            volume_a_job_uid = params.get("volume_a_job_uid")
+            volume_b_job_uid = params.get("volume_b_job_uid")
+            project_uid = params.get("project_uid")
+            workspace_uid = params.get("workspace_uid")
+            
+            if not volume_a_job_uid or not volume_b_job_uid:
+                # Try to get from import_volumes result if available
+                validation_state = self.workflow_state.get("validation", {})
+                volume_a_job_uid = validation_state.get("import_job_uid_a")
+                volume_b_job_uid = validation_state.get("import_job_uid_b")
+                
+                if volume_a_job_uid and volume_b_job_uid:
+                    self.logger.info(f"Auto-detected import job UIDs from validation state: {volume_a_job_uid}, {volume_b_job_uid}")
+                else:
+                    return "❌ Error: volume_a_job_uid and volume_b_job_uid parameters are required. " \
+                           "These should be the job UIDs from the import_volumes step (job_uid_a and job_uid_b)."
+            
+            # Auto-detect project_uid and workspace_uid from config if not provided
+            if not project_uid or not workspace_uid:
+                try:
+                    workflow_settings = self.config_loader.get_workflow_settings()
+                    if not project_uid:
+                        project_uid = workflow_settings.project_uid
+                    if not workspace_uid:
+                        workspace_uid = workflow_settings.workspace_uid
+                    self.logger.info(f"Auto-detected CryoSPARC parameters from config: project_uid={project_uid}, workspace_uid={workspace_uid}")
+                except Exception as e:
+                    self.logger.warning(f"Could not get workflow settings from config: {e}")
+                    return "❌ Error: project_uid and workspace_uid parameters are required for CryoSPARC operations. " \
+                           "Either provide them as parameters or ensure they are set in the master_config.json workflow section."
+            
+            used_params = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+                "volume_a_job_uid": volume_a_job_uid,
+                "volume_b_job_uid": volume_b_job_uid,
+                "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion", "false")),
+                "timeout": int(params.get("timeout", 3600)),
+                "check_interval": int(params.get("check_interval", 30))
+            }
+            
+            result = self.cryosparc_tools.compute_fsc_validation(**used_params)
+            self._record_tool_execution("compute_fsc_validation", used_params, result=result)
+            
+            if result.get("success"):
+                job_uid = result.get("job_uid")
+                self.workflow_state["validation"]["job_dir"] = job_uid
+                fsc_info = result.get("fsc_info")
+                if fsc_info:
+                    self.workflow_state["validation"]["fsc_results"] = fsc_info
+                
+                status_msg = f"✅ Successfully queued FSC validation job: {job_uid}"
+                if fsc_info:
+                    resolution = fsc_info.get("resolution_angstroms")
+                    if resolution:
+                        status_msg += f". Resolution: {resolution:.2f} Å"
+                return status_msg
+            else:
+                return f"❌ Failed to compute FSC validation: {result.get('error', 'Unknown error')}"
+                
+        except Exception as e:
+            context = used_params or params or {"raw_input": input_str}
+            self._record_tool_execution("compute_fsc_validation", context, error=str(e))
+            return f"❌ Error computing FSC validation: {str(e)}"
 

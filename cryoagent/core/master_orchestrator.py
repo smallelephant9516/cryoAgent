@@ -796,6 +796,19 @@ class ReconstructionAgent(StageAgent):
                         refinement_state = self.modular_agent.workflow_state["refinement_3d"]
                         stage_outputs["refined_map"] = refinement_state.get("output_file")
                         stage_outputs["refinement_job_dir"] = refinement_state.get("job_dir")
+                    
+                    # Extract validation information if available
+                    validation_state = self.modular_agent.workflow_state.get("validation", {})
+                    if validation_state.get("import_job_uid_a") or validation_state.get("import_job_uid_b") or validation_state.get("job_dir"):
+                        stage_outputs["validation"] = {}
+                        if validation_state.get("import_job_uid_a"):
+                            stage_outputs["validation"]["import_job_uid_a"] = validation_state.get("import_job_uid_a")
+                        if validation_state.get("import_job_uid_b"):
+                            stage_outputs["validation"]["import_job_uid_b"] = validation_state.get("import_job_uid_b")
+                        if validation_state.get("job_dir"):
+                            stage_outputs["validation"]["fsc_validation_job_uid"] = validation_state.get("job_dir")
+                        if validation_state.get("fsc_results"):
+                            stage_outputs["validation"]["fsc_results"] = validation_state.get("fsc_results")
                 
                 stage_outputs["final_star_file"] = final_star_file
                 
@@ -1226,6 +1239,95 @@ class ReconstructionAgent(StageAgent):
                     "conversation_id": getattr(context, 'conversation_id', context.metadata.get("conversation_id", None))
                 }
             }
+            
+            # Add validation information if available
+            validation_info = stage_outputs.get("validation")
+            if validation_info:
+                validation_data = {}
+                
+                # Get job directory paths from CryoSPARC if available
+                try:
+                    # Try to get cryosparc_tools from modular_agent (for RELION with validation) or from self
+                    cryosparc_tools = None
+                    if hasattr(self, 'modular_agent') and hasattr(self.modular_agent, 'cryosparc_tools'):
+                        cryosparc_tools = self.modular_agent.cryosparc_tools
+                    elif hasattr(self, 'cryosparc_tools') and self.cryosparc_tools:
+                        cryosparc_tools = self.cryosparc_tools
+                    
+                    if cryosparc_tools:
+                        project_uid = context.project_uid
+                        
+                        # Import job A
+                        import_job_uid_a = validation_info.get("import_job_uid_a")
+                        if import_job_uid_a:
+                            try:
+                                job_info = cryosparc_tools.get_job_output_directory(project_uid, import_job_uid_a)
+                                validation_data["import_job_a"] = {
+                                    "job_uid": import_job_uid_a,
+                                    "job_number": import_job_uid_a,  # Job UID contains job number (e.g., "J329")
+                                    "job_folder": job_info.get("job_directory", "")
+                                }
+                            except Exception as e:
+                                self.logger.warning(f"Could not get job directory for import job A {import_job_uid_a}: {e}")
+                                validation_data["import_job_a"] = {
+                                    "job_uid": import_job_uid_a,
+                                    "job_number": import_job_uid_a
+                                }
+                        
+                        # Import job B
+                        import_job_uid_b = validation_info.get("import_job_uid_b")
+                        if import_job_uid_b:
+                            try:
+                                job_info = cryosparc_tools.get_job_output_directory(project_uid, import_job_uid_b)
+                                validation_data["import_job_b"] = {
+                                    "job_uid": import_job_uid_b,
+                                    "job_number": import_job_uid_b,
+                                    "job_folder": job_info.get("job_directory", "")
+                                }
+                            except Exception as e:
+                                self.logger.warning(f"Could not get job directory for import job B {import_job_uid_b}: {e}")
+                                validation_data["import_job_b"] = {
+                                    "job_uid": import_job_uid_b,
+                                    "job_number": import_job_uid_b
+                                }
+                        
+                        # FSC validation job
+                        fsc_job_uid = validation_info.get("fsc_validation_job_uid")
+                        if fsc_job_uid:
+                            try:
+                                job_info = cryosparc_tools.get_job_output_directory(project_uid, fsc_job_uid)
+                                validation_data["fsc_validation"] = {
+                                    "job_uid": fsc_job_uid,
+                                    "job_number": fsc_job_uid,
+                                    "job_folder": job_info.get("job_directory", "")
+                                }
+                            except Exception as e:
+                                self.logger.warning(f"Could not get job directory for FSC validation job {fsc_job_uid}: {e}")
+                                validation_data["fsc_validation"] = {
+                                    "job_uid": fsc_job_uid,
+                                    "job_number": fsc_job_uid
+                                }
+                        
+                        # Add FSC results if available
+                        if validation_info.get("fsc_results"):
+                            validation_data["fsc_results"] = validation_info.get("fsc_results")
+                        
+                        if validation_data:
+                            reconstruction_results["validation"] = validation_data
+                except Exception as e:
+                    self.logger.warning(f"Could not retrieve validation job information: {e}")
+                    # Fallback: include basic validation info without job folders
+                    validation_data = {}
+                    if validation_info.get("import_job_uid_a"):
+                        validation_data["import_job_a"] = {"job_uid": validation_info.get("import_job_uid_a"), "job_number": validation_info.get("import_job_uid_a")}
+                    if validation_info.get("import_job_uid_b"):
+                        validation_data["import_job_b"] = {"job_uid": validation_info.get("import_job_uid_b"), "job_number": validation_info.get("import_job_uid_b")}
+                    if validation_info.get("fsc_validation_job_uid"):
+                        validation_data["fsc_validation"] = {"job_uid": validation_info.get("fsc_validation_job_uid"), "job_number": validation_info.get("fsc_validation_job_uid")}
+                    if validation_info.get("fsc_results"):
+                        validation_data["fsc_results"] = validation_info.get("fsc_results")
+                    if validation_data:
+                        reconstruction_results["validation"] = validation_data
             
             # Save to JSON file with RELION naming convention
             output_file = output_dir / f"3d_reconstruction_results_relion_{timestamp}.json"

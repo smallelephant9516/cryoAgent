@@ -99,6 +99,11 @@ class ReconstructionWorkflow:
         ab_initio_config = workflow_config.get("ab_initio_reconstruction", {})
         reextraction_config = workflow_config.get("particle_reextraction", {})
         refinement_config = workflow_config.get("refinement_3d", {})
+        validation_config = workflow_config.get("validation", {})
+        # Check both config value AND whether CryoSPARC tools are actually initialized
+        cryosparc_fsc_config_enabled = validation_config.get("cryosparc_fsc", False)
+        cryosparc_tools_available = self.agent.cryosparc_tools is not None
+        cryosparc_fsc_enabled = cryosparc_fsc_config_enabled and cryosparc_tools_available
         
         # Build the input_star parameter
         input_star_info = ""
@@ -145,6 +150,16 @@ Execute the complete RELION reconstruction workflow using the ReAct framework. F
    - Low resolution for joining halves: {refinement_config.get('low_resol_join_halves', 40.0)} Å
    - GPU: {refinement_config.get('gpu', '')} (empty string means use default GPU)
    - This step performs auto-refinement with split random halves validation
+   - Outputs: run_class001.mrc (refined map), run_half1_class001_unfil.mrc (half map A), run_half2_class001_unfil.mrc (half map B)
+
+{f"4. **CryoSPARC FSC Validation** (OPTIONAL): Import half maps and compute FSC using CryoSPARC validation tools" if cryosparc_fsc_enabled else ""}
+{f"   - This step is available because CryoSPARC tools are initialized and ready" if cryosparc_fsc_enabled else ""}
+{f"   - NOTE: CryoSPARC FSC validation is configured but tools are not available. Check CryoSPARC connection." if cryosparc_fsc_config_enabled and not cryosparc_fsc_enabled else ""}
+{f"   - Required parameters: half_map_a_path (run_half1_class001_unfil.mrc), half_map_b_path (run_half2_class001_unfil.mrc)" if cryosparc_fsc_enabled else ""}
+{f"   - Optional parameters: project_uid, workspace_uid (auto-detected from master_config.json workflow section if not provided)" if cryosparc_fsc_enabled else ""}
+{f"   - Step 4a: Use import_volumes to import both half maps into CryoSPARC (auto-detected from refinement output)" if cryosparc_fsc_enabled else ""}
+{f"   - Step 4b: Use compute_fsc_validation to calculate FSC between the two half maps" if cryosparc_fsc_enabled else ""}
+{f"   - Returns FSC resolution and validation results" if cryosparc_fsc_enabled else ""}
 
 ## ReAct Process Requirements:
 - **Thought**: Analyze what needs to be done and why
@@ -152,10 +167,12 @@ Execute the complete RELION reconstruction workflow using the ReAct framework. F
 - **Observation**: Analyze results and determine next steps
 
 ## Critical Workflow Rules:
-- Execute steps in order: Ab Initio → Particle Re-extraction → 3D Refinement
+- Execute steps in order: Ab Initio → Particle Re-extraction → 3D Refinement{f" → CryoSPARC FSC Validation" if cryosparc_fsc_enabled else ""}
 - Wait for ab initio reconstruction to complete before starting re-extraction
 - Wait for particle re-extraction to complete before starting refinement
+- Wait for 3D refinement to complete before starting validation (if enabled)
 - Particle re-extraction is REQUIRED and must be performed before 3D refinement
+{f"- CryoSPARC FSC validation: {'AVAILABLE - CryoSPARC tools are initialized and ready to use' if cryosparc_fsc_enabled else 'NOT AVAILABLE - CryoSPARC is enabled in config but tools failed to initialize. Check CryoSPARC connection settings.'}" if cryosparc_fsc_config_enabled else ""}
 - Validate inputs before starting each step using validate_inputs
 - Check job status and logs if any step fails
 - Use wait_for_job to monitor job completion (these jobs can take hours)
@@ -165,7 +182,8 @@ Execute the complete RELION reconstruction workflow using the ReAct framework. F
 ## Expected Outputs:
 - Ab Initio: InitialModel/jobXXX/initial_model.mrc
 - Particle Re-extraction: ReExtract/jobXXX/particles.star (re-extracted particles with original pixel size)
-- 3D Refinement: Refine3D/jobXXX/run_class001.mrc (refined map)
+- 3D Refinement: Refine3D/jobXXX/run_class001.mrc (refined map), run_half1_class001_unfil.mrc (half map A), run_half2_class001_unfil.mrc (half map B)
+{f"- CryoSPARC FSC Validation: FSC resolution and validation results (if enabled)" if cryosparc_fsc_enabled else ""}
 
 ## Tool Usage:
 - Use validate_inputs to check particles STAR file before ab initio
@@ -175,6 +193,9 @@ Execute the complete RELION reconstruction workflow using the ReAct framework. F
 - Use wait_for_job to monitor re-extraction completion
 - Use refinement_3d with input_star (use re-extracted particles from particle_reextraction), ref_mrc (from ab initio), particle_diameter, and sym parameters
 - Use wait_for_job to monitor refinement completion
+{f"- If CryoSPARC FSC validation is enabled, after refinement completes:" if cryosparc_fsc_enabled else ""}
+{f"  * Use import_volumes with half_map_a_path and half_map_b_path (auto-detected from Refine3D output). project_uid and workspace_uid are optional (auto-detected from config)" if cryosparc_fsc_enabled else ""}
+{f"  * Use compute_fsc_validation with volume_a_job_uid and volume_b_job_uid (auto-detected from import_volumes). project_uid and workspace_uid are optional (auto-detected from config)" if cryosparc_fsc_enabled else ""}
 - Use reason_about_workflow to analyze current state
 
 ## Important Notes:

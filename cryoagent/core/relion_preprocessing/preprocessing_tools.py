@@ -1,7 +1,9 @@
 """MCP tools for RELION preprocessing operations."""
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from langchain.tools import Tool
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
 
 
 class PreprocessingTools:
@@ -100,14 +102,43 @@ class PreprocessingTools:
         )
     
     @staticmethod
-    def create_validate_inputs_tool(agent) -> Tool:
+    def create_validate_inputs_tool(agent) -> StructuredTool:
         """Create tool for validating input files and parameters using RELION tools."""
-        return Tool(
+        # Define the input schema for StructuredTool
+        class ValidateInputsInput(BaseModel):
+            input_type: str = Field(description="Type of input to validate (e.g., 'particles_star', 'star_file', 'mrc_file')")
+            input_path: str = Field(description="Path to the input file to validate")
+            expected_format: Optional[str] = Field(default=None, description="Optional expected format of the file")
+            required_metadata: Optional[str] = Field(default=None, description="Optional required metadata fields")
+        
+        # Create a wrapper function that converts structured input to JSON string format
+        def validate_inputs_wrapper(
+            input_type: str,
+            input_path: str,
+            expected_format: Optional[str] = None,
+            required_metadata: Optional[str] = None
+        ) -> str:
+            """Wrapper to convert structured input to JSON string format."""
+            import json
+            params = {
+                "input_type": input_type,
+                "input_path": input_path
+            }
+            if expected_format:
+                params["expected_format"] = expected_format
+            if required_metadata:
+                params["required_metadata"] = required_metadata
+            # Convert to JSON string and call the original function
+            json_input = json.dumps(params)
+            return agent._validate_inputs_tool(json_input)
+        
+        return StructuredTool.from_function(
+            func=validate_inputs_wrapper,
             name="validate_inputs",
             description="Validate input files and parameters before starting a RELION job. "
                        "Required parameters: input_type, input_path. "
                        "Optional parameters: expected_format, required_metadata. "
                        "Checks file existence, format, and accessibility for RELION processing.",
-            func=agent._validate_inputs_tool
+            args_schema=ValidateInputsInput
         )
     

@@ -3143,3 +3143,340 @@ class CryoSPARCTools:
             analysis["summary"] = "No obvious errors detected in log"
         
         return analysis
+    
+    def import_volumes(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        half_map_a_path: str,
+        half_map_b_path: str,
+        pixel_size: Optional[float] = None,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Import two half maps (volumes) into CryoSPARC for FSC validation.
+        
+        This function creates two separate import_volumes jobs, one for each half map,
+        with appropriate volume_out_name settings (map_half_A and map_half_B).
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            workspace_uid: CryoSPARC workspace UID
+            half_map_a_path: Path to half map A (e.g., run_half1_class001_unfil.mrc)
+            half_map_b_path: Path to half map B (e.g., run_half2_class001_unfil.mrc)
+            pixel_size: Pixel size in Angstroms (optional, will try to infer from volumes)
+            lane: Compute lane to use
+            hostname: Specific hostname to run on
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            check_interval: Time between status checks in seconds
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information with imported volume job UIDs for both half maps
+        """
+        try:
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+            
+            # Import half map A
+            job_params_a = {
+                "volume_blob_path": half_map_a_path,
+                "volume_out_name": "map_half_A"  # Specify this is half map A
+            }
+            
+            if pixel_size is not None:
+                job_params_a["volume_psize"] = float(pixel_size)
+            
+            if kwargs:
+                job_params_a.update(kwargs)
+            
+            print(f"📤 Creating import job for half map A: {half_map_a_path}")
+            job_a = workspace.create_job("import_volumes", params=job_params_a)
+            
+            # Import half map B
+            job_params_b = {
+                "volume_blob_path": half_map_b_path,
+                "volume_out_name": "map_half_B"  # Specify this is half map B
+            }
+            
+            if pixel_size is not None:
+                job_params_b["volume_psize"] = float(pixel_size)
+            
+            if kwargs:
+                job_params_b.update(kwargs)
+            
+            print(f"📤 Creating import job for half map B: {half_map_b_path}")
+            job_b = workspace.create_job("import_volumes", params=job_params_b)
+            
+            # Queue both jobs
+            used_lane = lane
+            try:
+                job_a.queue(lane=lane, hostname=hostname)
+                job_b.queue(lane=lane, hostname=hostname)
+            except Exception as queue_error:
+                message = str(queue_error)
+                if (lane is None and hostname is None and "Must specify a lane" in message):
+                    try:
+                        lanes = self.cs.get_lanes()
+                        if not lanes:
+                            raise queue_error
+                        used_lane = lanes[0]["name"]
+                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
+                        job_a.queue(lane=used_lane)
+                        job_b.queue(lane=used_lane)
+                    except Exception:
+                        raise queue_error
+                else:
+                    raise queue_error
+            
+            print(f"Queued import volumes job A: {job_a.uid}")
+            print(f"Queued import volumes job B: {job_b.uid}")
+            
+            self._job_cache[job_a.uid] = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }
+            self._job_cache[job_b.uid] = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }
+            
+            result = {
+                "success": True,
+                "job_uid_a": job_a.uid,
+                "job_uid_b": job_b.uid,
+                "job_type": "import_volumes",
+                "status": "queued",
+                "half_map_a_path": half_map_a_path,
+                "half_map_b_path": half_map_b_path,
+                "params": {"job_a": job_params_a, "job_b": job_params_b},
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+                "lane": used_lane
+            }
+            
+            if wait_for_completion:
+                print(f"⏳ Waiting for import volumes jobs to complete...")
+                try:
+                    final_status_a = self.wait_for_job_completion(
+                        project_uid=project_uid,
+                        job_uid=job_a.uid,
+                        workspace_uid=workspace_uid,
+                        timeout=timeout,
+                        check_interval=check_interval
+                    )
+                    final_status_b = self.wait_for_job_completion(
+                        project_uid=project_uid,
+                        job_uid=job_b.uid,
+                        workspace_uid=workspace_uid,
+                        timeout=timeout,
+                        check_interval=check_interval
+                    )
+                    
+                    result["status_a"] = final_status_a["status"]
+                    result["status_b"] = final_status_b["status"]
+                    result["final_status_a"] = final_status_a
+                    result["final_status_b"] = final_status_b
+                    
+                    if final_status_a["status"] == "completed" and final_status_b["status"] == "completed":
+                        print(f"✅ Both import volumes jobs completed successfully!")
+                    else:
+                        print(f"⚠️ Import volumes jobs finished with status: A={final_status_a['status']}, B={final_status_b['status']}")
+                except TimeoutError:
+                    result["status"] = "timeout"
+                    print(f"⏰ Import volumes jobs timed out after {timeout} seconds")
+                except Exception as e:
+                    result["status"] = "error"
+                    print(f"❌ Error monitoring import volumes jobs: {e}")
+            
+            return result
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "job_type": "import_volumes",
+                "message": f"Failed to import volumes: {str(e)}"
+            }
+    
+    def compute_fsc_validation(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        volume_a_job_uid: str,
+        volume_b_job_uid: str,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Compute FSC (Fourier Shell Correlation) between two half maps using CryoSPARC validation tools.
+
+        Args:
+            project_uid: CryoSPARC project UID
+            workspace_uid: CryoSPARC workspace UID
+            volume_a_job_uid: UID of the job containing half map A
+            volume_b_job_uid: UID of the job containing half map B
+            lane: Compute lane to use
+            hostname: Specific hostname to run on
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            check_interval: Time between status checks in seconds
+            **kwargs: Additional parameters
+
+        Returns:
+            Dictionary containing job information and FSC results
+        """
+        try:
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+
+            # 1. Prepare job parameters for FSC validation
+            job_params: Dict[str, Any] = {
+                "validate_generate_new_mask": True,  # Generate new FSC mask
+                "validate_optimize_fsc_mask": True   # Optimize FSC mask
+            }
+
+            excluded_params = {'volume_a_slot', 'volume_b_slot'}
+            valid_kwargs = {k: v for k, v in kwargs.items() if k not in excluded_params}
+
+            if valid_kwargs:
+                job_params.update(valid_kwargs)
+
+            # 2. Create the Validation Job (WITHOUT connections initially)
+            # We use 'validation_fsc' which is the standard internal type for this job
+            job_type = "validation"
+
+            try:
+                job = workspace.create_job(
+                    type=job_type,
+                    params=job_params
+                    # Note: We do NOT pass 'connections' here. We handle them manually below.
+                )
+                print(f"✅ Created validation job using type '{job_type}' with UID {job.uid}")
+            except Exception as e:
+                raise RuntimeError(
+                    f"Failed to create validation job with type '{job_type}'. "
+                    f"Error: {e}"
+                )
+
+            # 3. Connect using the High-Level API (Corrected)
+            # We use job.connect() with the 'slots' parameter to handle the aliasing.
+            # This handles the server communication format automatically.
+
+            try:
+                # Connect Half Map A
+                # We map the source 'map' -> destination 'map_half_A'
+                job.connect(
+                    target_input="volume",           # The input group on the Validation job
+                    source_job_uid=volume_a_job_uid,
+                    source_output="imported_volume_1", # The output group from the Import job
+                )
+
+                # Connect Half Map B
+                # We map the source 'map' -> destination 'map_half_B'
+                # Calling connect() a second time on the same input appends this connection
+                job.connect_result(
+                    target_input="volume",
+                    connection_idx = 0,
+                    slot = "map_half_B",
+                    source_job_uid=volume_b_job_uid,
+                    source_output="imported_volume_1",
+                    source_result = "map_half_B"
+                )
+
+                print(f"✅ Connected half-maps to validation job {job.uid}")
+
+            except Exception as conn_err:
+                raise RuntimeError(f"Failed to connect inputs: {conn_err}")
+
+            # 4. Queue the job with lane auto-detection
+            used_lane = lane
+            try:
+                job.queue(lane=lane, hostname=hostname)
+            except Exception as queue_error:
+                message = str(queue_error)
+                if (lane is None and hostname is None and "Must specify a lane" in message):
+                    try:
+                        lanes = self.cs.get_lanes()
+                        if not lanes:
+                            raise queue_error
+                        used_lane = lanes[0]["name"]
+                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
+                        job.queue(lane=used_lane)
+                    except Exception:
+                        raise queue_error
+                else:
+                    raise queue_error
+
+            print(f"Queued FSC validation job: {job.uid}")
+
+            # 5. Cache and Setup Result Object
+            self._job_cache[job.uid] = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }
+
+            result = {
+                "success": True,
+                "job_uid": job.uid,
+                "job_type": "compute_fsc_validation",
+                "status": "queued",
+                "volume_a_job_uid": volume_a_job_uid,
+                "volume_b_job_uid": volume_b_job_uid,
+                "params": job_params,
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+                "lane": used_lane
+            }
+
+            # 6. Optional Wait for Completion
+            if wait_for_completion:
+                print(f"⏳ Waiting for FSC validation job {job.uid} to complete...")
+                try:
+                    final_status = self.wait_for_job_completion(
+                        project_uid=project_uid,
+                        job_uid=job.uid,
+                        workspace_uid=workspace_uid,
+                        timeout=timeout,
+                        check_interval=check_interval
+                    )
+                    result["status"] = final_status["status"]
+                    result["final_status"] = final_status
+
+                    # Try to extract FSC results from the job
+                    if final_status["status"] == "completed":
+                        print(f"✅ FSC validation job {job.uid} completed successfully!")
+                        try:
+                            fsc_info = self.get_refinement_fsc_info(project_uid, job.uid)
+                            if fsc_info.get("success"):
+                                result["fsc_info"] = fsc_info
+                        except Exception as fsc_error:
+                            print(f"⚠️ Could not extract FSC info: {fsc_error}")
+                    else:
+                        print(f"⚠️ FSC validation job {job.uid} finished with status: {final_status['status']}")
+                except TimeoutError:
+                    result["status"] = "timeout"
+                    print(f"⏰ FSC validation job {job.uid} timed out after {timeout} seconds")
+                except Exception as e:
+                    result["status"] = "error"
+                    print(f"❌ Error monitoring FSC validation job {job.uid}: {e}")
+
+            return result
+
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "job_type": "compute_fsc_validation",
+                "message": f"Failed to compute FSC validation: {str(e)}"
+            }

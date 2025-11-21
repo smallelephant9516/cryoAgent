@@ -1,7 +1,9 @@
 """MCP tools for RELION reconstruction operations."""
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from langchain.tools import Tool
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
 
 
 class ReconstructionTools:
@@ -98,14 +100,74 @@ class ReconstructionTools:
         )
     
     @staticmethod
-    def create_validate_inputs_tool(agent) -> Tool:
+    def create_validate_inputs_tool(agent) -> StructuredTool:
         """Create tool for validating input files and parameters using RELION tools."""
-        return Tool(
+        # Define the input schema for StructuredTool
+        class ValidateInputsInput(BaseModel):
+            input_type: str = Field(description="Type of input to validate (e.g., 'particles_star', 'star_file', 'mrc_file')")
+            input_path: str = Field(description="Path to the input file to validate")
+            expected_format: Optional[str] = Field(default=None, description="Optional expected format of the file")
+            required_metadata: Optional[str] = Field(default=None, description="Optional required metadata fields")
+        
+        # Create a wrapper function that converts structured input to JSON string format
+        def validate_inputs_wrapper(
+            input_type: str,
+            input_path: str,
+            expected_format: Optional[str] = None,
+            required_metadata: Optional[str] = None
+        ) -> str:
+            """Wrapper to convert structured input to JSON string format."""
+            import json
+            params = {
+                "input_type": input_type,
+                "input_path": input_path
+            }
+            if expected_format:
+                params["expected_format"] = expected_format
+            if required_metadata:
+                params["required_metadata"] = required_metadata
+            # Convert to JSON string and call the original function
+            json_input = json.dumps(params)
+            return agent._validate_inputs_tool(json_input)
+        
+        return StructuredTool.from_function(
+            func=validate_inputs_wrapper,
             name="validate_inputs",
             description="Validate input files and parameters before starting a RELION job. "
                        "Required parameters: input_type, input_path. "
                        "Optional parameters: expected_format, required_metadata. "
                        "Checks file existence, format, and accessibility for RELION processing.",
-            func=agent._validate_inputs_tool
+            args_schema=ValidateInputsInput
+        )
+    
+    @staticmethod
+    def create_import_volumes_tool(agent) -> Tool:
+        """Create tool for importing volumes (half maps) into CryoSPARC for FSC validation."""
+        return Tool(
+            name="import_volumes",
+            description="Import two half maps (volumes) from RELION refinement into CryoSPARC for FSC validation. "
+                       "This imports run_half1_class001_unfil.mrc as half map A and run_half2_class001_unfil.mrc as half map B. "
+                       "Required parameters: half_map_a_path (path to run_half1_class001_unfil.mrc), "
+                       "half_map_b_path (path to run_half2_class001_unfil.mrc). "
+                       "Optional parameters: project_uid, workspace_uid (auto-detected from master_config.json if not provided), "
+                       "pixel_size, wait_for_completion, timeout, check_interval. "
+                       "Half maps are auto-detected from refinement_3d output if available.",
+            func=agent._import_volumes_tool
+        )
+    
+    @staticmethod
+    def create_compute_fsc_validation_tool(agent) -> Tool:
+        """Create tool for computing FSC validation using CryoSPARC validation tools."""
+        return Tool(
+            name="compute_fsc_validation",
+            description="Compute FSC (Fourier Shell Correlation) between two half maps using CryoSPARC validation tools. "
+                       "This calculates the resolution and FSC curve from the imported half maps. "
+                       "Required parameters: volume_a_job_uid (job UID from import_volumes for half map A with volume_out_name='map_half_A'), "
+                       "volume_b_job_uid (job UID from import_volumes for half map B with volume_out_name='map_half_B'). "
+                       "Optional parameters: project_uid, workspace_uid (auto-detected from master_config.json if not provided), "
+                       "wait_for_completion, timeout, check_interval. "
+                       "The validation job connects using result_name ('map_half_A' and 'map_half_B') directly. "
+                       "Job UIDs are auto-detected from import_volumes step if available. Returns FSC resolution and validation results.",
+            func=agent._compute_fsc_validation_tool
         )
 
