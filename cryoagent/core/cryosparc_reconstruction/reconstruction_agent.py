@@ -407,9 +407,11 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
     
     def _homogeneous_refinement_tool(self, tool_input: str) -> str:
         """Execute homogeneous refinement."""
+
+        print(f"Homogeneous refinement tool input: {tool_input}")
         try:
             params = dict(self._parse_tool_input(tool_input))
-            
+            print(f"Homogeneous refinement params: {params}")
             # Extract required parameters
             particles_job_uid = params.get("particles_job_uid")
             volume_job_uid = params.get("volume_job_uid")

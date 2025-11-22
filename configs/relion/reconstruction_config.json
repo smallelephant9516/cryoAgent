@@ -17,16 +17,16 @@
     "fsc_data"
   ],
   "microscope_parameters": {
-    "particle_diameter": 180.0,
-    "symmetry": "D2"
+    "particle_diameter": 200.0,
+    "symmetry": "D7"
   },
   "workflow": {
     "ab_initio_reconstruction": {
       "iter": 200,
       "K": 1,
       "sym": "C1",
-      "align_sym": "D2",
-      "particle_diameter": 216,
+      "align_sym": "D7",
+      "particle_diameter": 240,
       "oversampling": 1,
       "healpix_order": 1,
       "offset_range": 6.0,
@@ -45,7 +45,7 @@
       "denovo_3dref": true
     },
     "particle_reextraction": {
-      "extract_size": 324,
+      "extract_size": 432,
       "norm": true,
       "bg_radius": -1,
       "white_dust": -1,
@@ -55,8 +55,8 @@
       "only_do_unfinished": false
     },
     "refinement_3d": {
-      "sym": "D2",
-      "particle_diameter": 216,
+      "sym": "D7",
+      "particle_diameter": 240,
       "oversampling": 1,
       "healpix_order": 2,
       "auto_local_healpix_order": 4,
@@ -79,8 +79,8 @@
       "norm": true,
       "scale": true
     },
-    "validation":{
-      "method":"cryosparc_fsc",
+    "validation": {
+      "method": "cryosparc_fsc",
       "cryosparc_fsc": true
     }
   },
