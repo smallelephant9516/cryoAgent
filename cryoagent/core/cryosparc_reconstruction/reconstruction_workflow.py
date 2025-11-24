@@ -236,7 +236,7 @@ Execute the 3D reconstruction workflow starting with {method_name.lower()}:
 2. **Homogeneous Refinement** - Refine the single 3D structure
    - Tool: homogeneous_refinement
    - Parameters:
-     * particles_job_uid={particles_job_uid}
+     * particles_job_uid=[from step 1]
      * volume_job_uid=[from step 1]
      * symmetry={symmetry}
      * refinement_resolution={p['refinement_resolution'] if p['refinement_resolution'] else "auto"}

@@ -1,7 +1,9 @@
 """MCP tools for CryoSPARC 3D reconstruction operations."""
 
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from langchain.tools import Tool
+from langchain_core.tools import StructuredTool
+from pydantic import BaseModel, Field
 
 
 class ReconstructionTools:
@@ -37,12 +39,81 @@ class ReconstructionTools:
         )
     
     @staticmethod
-    def create_homogeneous_refinement_tool(agent) -> Tool:
+    def create_homogeneous_refinement_tool(agent) -> StructuredTool:
         """Create tool for homogeneous refinement."""
-        return Tool(
+        # Define the input schema for StructuredTool
+        class HomogeneousRefinementInput(BaseModel):
+            particles_job_uid: str = Field(description="UID of particles job (from ab initio job, e.g., 'J425')")
+            volume_job_uid: str = Field(description="UID of volume job (from ab initio job, e.g., 'J425'). Both particles and volume typically come from the same ab initio job.")
+            refinement_resolution: Optional[float] = Field(default=None, description="Target resolution in Angstroms (optional)")
+            symmetry: Optional[str] = Field(default=None, description="Symmetry group (e.g., C1, C2, D7, default: C1)")
+            refine_do_init_scale_est: Optional[bool] = Field(default=True, description="Enable initial scale estimation")
+            refine_highpass_res: Optional[float] = Field(default=None, description="High-pass filter resolution in Angstroms")
+            refine_num_final_iterations: Optional[int] = Field(default=None, description="Number of final refinement iterations")
+            refine_res_init: Optional[float] = Field(default=None, description="Initial resolution for refinement in Angstroms")
+            refine_symmetry_do_align: Optional[bool] = Field(default=True, description="Enable symmetry alignment")
+            project_uid: Optional[str] = Field(default="", description="Optional project UID")
+            workspace_uid: Optional[str] = Field(default="", description="Optional workspace UID")
+            wait_for_completion: Optional[bool] = Field(default=False, description="Whether to wait for job completion")
+            timeout: Optional[int] = Field(default=None, description="Maximum time to wait for completion in seconds")
+            check_interval: Optional[int] = Field(default=None, description="Time between status checks in seconds")
+        
+        # Create a wrapper function that converts structured input to JSON string format
+        def homogeneous_refinement_wrapper(
+            particles_job_uid: str,
+            volume_job_uid: str,
+            refinement_resolution: Optional[float] = None,
+            symmetry: Optional[str] = None,
+            refine_do_init_scale_est: Optional[bool] = True,
+            refine_highpass_res: Optional[float] = None,
+            refine_num_final_iterations: Optional[int] = None,
+            refine_res_init: Optional[float] = None,
+            refine_symmetry_do_align: Optional[bool] = True,
+            project_uid: str = "",
+            workspace_uid: str = "",
+            wait_for_completion: bool = False,
+            timeout: Optional[int] = None,
+            check_interval: Optional[int] = None
+        ) -> str:
+            """Wrapper to convert structured input to JSON string format."""
+            import json
+            params = {
+                "particles_job_uid": particles_job_uid,
+                "volume_job_uid": volume_job_uid
+            }
+            if refinement_resolution is not None:
+                params["refinement_resolution"] = refinement_resolution
+            if symmetry:
+                params["symmetry"] = symmetry
+            if refine_do_init_scale_est is not None:
+                params["refine_do_init_scale_est"] = str(refine_do_init_scale_est).lower()
+            if refine_highpass_res is not None:
+                params["refine_highpass_res"] = refine_highpass_res
+            if refine_num_final_iterations is not None:
+                params["refine_num_final_iterations"] = refine_num_final_iterations
+            if refine_res_init is not None:
+                params["refine_res_init"] = refine_res_init
+            if refine_symmetry_do_align is not None:
+                params["refine_symmetry_do_align"] = str(refine_symmetry_do_align).lower()
+            if project_uid:
+                params["project_uid"] = project_uid
+            if workspace_uid:
+                params["workspace_uid"] = workspace_uid
+            if wait_for_completion is not None:
+                params["wait_for_completion"] = str(wait_for_completion).lower()
+            if timeout is not None:
+                params["timeout"] = timeout
+            if check_interval is not None:
+                params["check_interval"] = check_interval
+            # Convert to JSON string and call the original function
+            json_input = json.dumps(params)
+            return agent._homogeneous_refinement_tool(json_input)
+        
+        return StructuredTool.from_function(
+            func=homogeneous_refinement_wrapper,
             name="homogeneous_refinement",
             description="Refine a single 3D structure with all particles. "
-                       "Required parameters: particles_job_uid, volume_job_uid (from ab initio). "
+                       "Required parameters: particles_job_uid, volume_job_uid (both from ab initio job, typically the same job UID). "
                        "Optional parameters: refinement_resolution (target resolution in Å), symmetry, "
                        "refine_do_init_scale_est (enable initial scale estimation), "
                        "refine_highpass_res (high-pass filter resolution in Å), "
@@ -50,7 +121,7 @@ class ReconstructionTools:
                        "refine_res_init (initial resolution in Å), "
                        "refine_symmetry_do_align (enable symmetry alignment), "
                        "project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
-            func=agent._homogeneous_refinement_tool
+            args_schema=HomogeneousRefinementInput
         )
     
     @staticmethod
