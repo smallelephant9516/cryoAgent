@@ -72,6 +72,7 @@ def check_stage_output_exists(stage: WorkflowStage, outputs_dir: str = "outputs"
     stage_patterns = {
         WorkflowStage.PREPROCESSING: "preprocessing_results_*.json",
         WorkflowStage.PARTICLE_PICKING: "particle_picking_results_*.json",
+        WorkflowStage.OPTIMIZATION_2D: "2d_optimization_results_*.json",
         WorkflowStage.RECONSTRUCTION: "reconstruction_results_*.json"
     }
     
@@ -207,9 +208,27 @@ class CryoAgentMasterWorkflow:
             print()
             
             # Check which stages have already been completed
+            # Only check enabled stages from config
             print("🔍 Checking for existing stage outputs...")
             stages_to_skip = []
-            for stage in WorkflowStage:
+            enabled_stages = []
+            
+            # Get enabled stages from master config
+            if self.orchestrator and hasattr(self.orchestrator, 'master_config'):
+                master_config = self.orchestrator.master_config
+                for stage_info in master_config.get("master_workflow", {}).get("stages", []):
+                    if stage_info.get("enabled", False):
+                        try:
+                            stage = WorkflowStage(stage_info["name"])
+                            enabled_stages.append(stage)
+                        except ValueError:
+                            pass
+            
+            # Fallback to all stages if config not available
+            if not enabled_stages:
+                enabled_stages = list(WorkflowStage)
+            
+            for stage in enabled_stages:
                 existing_output = check_stage_output_exists(stage)
                 if existing_output:
                     stages_to_skip.append(stage)
@@ -223,8 +242,8 @@ class CryoAgentMasterWorkflow:
                 print("💡 To re-run all stages, delete or move output files in the outputs/ folder.")
                 print()
             
-            if len(stages_to_skip) == len(list(WorkflowStage)):
-                print("✅ All stages already completed! No execution needed.")
+            if len(stages_to_skip) == len(enabled_stages):
+                print("✅ All enabled stages already completed! No execution needed.")
                 return True
             
             self.start_time = time.time()

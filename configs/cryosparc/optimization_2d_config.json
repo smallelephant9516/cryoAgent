@@ -1,0 +1,54 @@
+{
+  "stage_info": {
+    "name": "2d_optimization",
+    "description": "2D classification optimization stage: Iteratively refine particle selection using 2D classification and CryoSift until 90% good particles are achieved",
+    "version": "1.0.0"
+  },
+  "required_inputs": [
+    "particles_job_uid"
+  ],
+  "outputs": [
+    "final_particles_job_uid",
+    "final_good_particles_count",
+    "final_good_particles_percentage",
+    "total_rounds"
+  ],
+  "microscope_parameters": {},
+  "workflow": {
+    "2d_optimization": {
+      "enable_function1_iterative": false,
+      "enable_function1_iterative_description": "Enable Function 1: Iterative 2D classification until 90% good particles (default: true)",
+      "enable_function2_rescue": true,
+      "enable_function2_rescue_description": "Enable Function 2: Rescue good particles from excluded set (default: true)",
+      "max_iterative_rounds": 5,
+      "max_iterative_rounds_description": "Maximum number of iterative rounds for Function 1 (default: 5)",
+      "good_particles_threshold": 0.9,
+      "good_particles_threshold_description": "Threshold for good particles percentage (default: 0.9 = 90%)",
+      "2d_classification": {
+        "num_classes": 50,
+        "num_classes_description": "Number of 2D classes to generate for each classification round",
+        "max_iterations": 20,
+        "max_iterations_description": "Maximum number of classification iterations",
+        "initial_resolution": 12.0,
+        "initial_resolution_description": "Initial resolution limit in Angstroms",
+        "final_resolution": 6.0,
+        "final_resolution_description": "Final resolution limit in Angstroms"
+      },
+      "select_2d_classes": {
+        "selection_mode": "cryosift",
+        "selection_mode_description": "Strategy for selecting 2D classes: 'top_n' or 'cryosift'",
+        "cryosift_threshold": 4,
+        "cryosift_threshold_description": "CryoSift confidence threshold (1-5). Classes scoring BELOW this value are selected",
+        "cryosift_env": "magellon2DAssess",
+        "cryosift_env_description": "Conda environment used to run CryoSift evaluation",
+        "cryosift_weights_path": "/home/daoyi/tools/cryosift/2dclass_evaluator/CNNTraining/final_model/final_model_cont.pth",
+        "cryosift_weights_path_description": "Path to the CryoSift neural network weights file",
+        "cryosift_output_subdir": "cryosift_eval",
+        "cryosift_output_subdir_description": "Subdirectory where CryoSift outputs will be written",
+        "cryosift_fallback_strategy": "top_n",
+        "cryosift_fallback_strategy_description": "Fallback behaviour if CryoSift evaluation fails"
+      }
+    }
+  }
+}
+

@@ -1230,8 +1230,11 @@ class CryoSPARCTools:
         self,
         project_uid: str,
         workspace_uid: str,
-        particles_job_uid: str,
+        particles_job_uid: Optional[str] = None,
         num_classes: int = 20,
+        particles_group_name: Optional[str] = None,
+        particles_job_uids: Optional[List[str]] = None,
+        particles_group_names: Optional[List[str]] = None,
         lane: Optional[str] = None,
         hostname: Optional[str] = None,
         wait_for_completion: bool = False,
@@ -1245,8 +1248,11 @@ class CryoSPARCTools:
         Args:
             project_uid: CryoSPARC project UID
             workspace_uid: CryoSPARC workspace UID
-            particles_job_uid: UID of the particle extraction job
+            particles_job_uid: UID of the particle extraction job (for single input, deprecated if particles_job_uids is provided)
             num_classes: Number of 2D classes to generate
+            particles_group_name: Optional specific particles group name to use (e.g., "particles_excluded", "particles_selected")
+            particles_job_uids: Optional list of particle job UIDs for multiple inputs (takes precedence over particles_job_uid)
+            particles_group_names: Optional list of group names for each job in particles_job_uids
             lane: Compute lane to use
             hostname: Specific hostname to run on
             wait_for_completion: Whether to wait for job completion
@@ -1268,30 +1274,96 @@ class CryoSPARCTools:
                 **kwargs
             }
             
-            # Create 2D classification job with connections
-            # Try different output labels from the extraction job
-            connection_errors = []
-            job = None
-            for output_label in ("particles", "particles_all", "extracted_particles"):
+            # Support multiple particle inputs (for connecting both J159 and J157 when both functions are enabled)
+            if particles_job_uids and len(particles_job_uids) > 1:
+                # Multiple particle inputs: connect both jobs directly to class_2d
+                connections = {}
+                connection_errors = []
+                
+                # Infer group names if not provided
+                if particles_group_names is None:
+                    particles_group_names = []
+                    for job_uid in particles_job_uids:
+                        slot = self._infer_particles_output_slot(project, job_uid)
+                        particles_group_names.append(slot)
+                elif len(particles_group_names) != len(particles_job_uids):
+                    # Pad or truncate to match length
+                    inferred_names = []
+                    for i, job_uid in enumerate(particles_job_uids):
+                        if i < len(particles_group_names) and particles_group_names[i]:
+                            inferred_names.append(particles_group_names[i])
+                        else:
+                            slot = self._infer_particles_output_slot(project, job_uid)
+                            inferred_names.append(slot)
+                    particles_group_names = inferred_names
+                
+                # Build connections dictionary with indexed connection names
+                # CryoSPARC class_2d can accept multiple particle inputs using indexed names
+                connection_key = []
+                for i, (job_uid, group_name) in enumerate(zip(particles_job_uids, particles_group_names)):
+                    # Try indexed connection names (particles_0, particles_1, etc.)
+                    connection_key.append((job_uid, group_name))
+                
+                connections = {"particles": connection_key}
+                
+                # Try to create job with multiple connections
                 try:
                     job = workspace.create_job(
                         "class_2D",  # 2D classification job type
                         params=job_params,
-                        connections={"particles": (particles_job_uid, output_label)}
+                        connections=connections
                     )
-                    print(f"✅ Connected 2D classification to {particles_job_uid}.{output_label}")
-                    break
+                    connected_jobs = ", ".join([f"{uid}.{name}" for uid, name in zip(particles_job_uids, particles_group_names)])
+                    print(f"✅ Connected 2D classification to multiple particle jobs: {connected_jobs}")
+                except Exception as exc:
+                    # If indexed connections don't work, try alternative approach
+                    # Some CryoSPARC versions might support multiple connections differently
+                    connection_errors.append((f"multiple connections", exc))
+                    raise RuntimeError(
+                        f"Unable to connect 2D classification to multiple particle job inputs: {exc}. "
+                        f"Jobs: {particles_job_uids}, Groups: {particles_group_names}"
+                    )
+            else:
+                # Single particle input (backward compatible)
+                # Use particles_job_uids[0] if provided, otherwise fall back to particles_job_uid
+                single_job_uid = particles_job_uids[0] if particles_job_uids and len(particles_job_uids) == 1 else particles_job_uid
+                
+                if not single_job_uid:
+                    raise ValueError("Either particles_job_uid or particles_job_uids must be provided")
+                
+                # Create 2D classification job with connections
+                # If particles_group_name is specified, use it; otherwise try different output labels
+                connection_errors = []
+                job = None
+                
+                if particles_group_name:
+                    # Use the specified group name
+                    output_label = particles_group_name
+                else:
+                    # Try different output labels from the extraction job
+                    output_label = "particles"
+                
+                
+                try:
+                    job = workspace.create_job(
+                        "class_2D",  # 2D classification job type
+                        params=job_params,
+                        connections={"particles": (single_job_uid, output_label)}
+                    )
+                    print(f"✅ Connected 2D classification to {single_job_uid}.{output_label}")
                 except Exception as exc:
                     connection_errors.append((output_label, exc))
                     job = None
-            
-            if job is None:
-                error_messages = ", ".join(
-                    f"output '{label}': {err}" for label, err in connection_errors
-                ) or "unknown"
-                raise RuntimeError(
-                    f"Unable to connect 2D classification to extraction job outputs: {error_messages}"
-                )
+                    raise RuntimeError(f"Unable to connect 2D classification to extraction job outputs: {exc}")
+                    
+                
+                if job is None:
+                    error_messages = ", ".join(
+                        f"output '{label}': {err}" for label, err in connection_errors
+                    ) or "unknown"
+                    raise RuntimeError(
+                        f"Unable to connect 2D classification to extraction job outputs: {error_messages}"
+                    )
             
             # Queue the job
             used_lane = lane
@@ -1317,12 +1389,25 @@ class CryoSPARCTools:
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid
             }
+            
+            # Build connections info for result
+            if particles_job_uids and len(particles_job_uids) > 1:
+                # Multiple connections
+                connections_info = {
+                    f"particles_{i}" if i > 0 else "particles": job_uid 
+                    for i, job_uid in enumerate(particles_job_uids)
+                }
+            else:
+                # Single connection (backward compatible)
+                single_job_uid = particles_job_uids[0] if particles_job_uids and len(particles_job_uids) == 1 else particles_job_uid
+                connections_info = {"particles": single_job_uid}
+            
             result = {
                 "job_uid": job.uid,
                 "job_type": "class_2D",
                 "status": "queued",
                 "params": job_params,
-                "connections": {"particles": particles_job_uid},
+                "connections": connections_info,
                 "lane": used_lane,
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid
@@ -1597,6 +1682,65 @@ class CryoSPARCTools:
         except Exception as e:
             raise RuntimeError(f"Failed to start 2D class selection: {e}")
     
+    def get_particle_count(
+        self,
+        project_uid: str,
+        particles_job_uid: str,
+        particles_group_name: str = "particles"
+    ) -> Dict[str, Any]:
+        """
+        Get the number of particles in a particles job.
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            particles_job_uid: UID of the particles job
+            particles_group_name: Name of the particles output group (default: "particles")
+            
+        Returns:
+            Dictionary with success, num_particles, and error if any
+        """
+        try:
+            project = self.cs.find_project(project_uid)
+            job = project.find_job(particles_job_uid)
+            job.refresh()
+            doc = getattr(job, "doc", {}) or {}
+            outputs = doc.get("output_result_groups", []) or []
+            
+            # Find the particles group
+            for group in outputs:
+                if group.get("name") == particles_group_name:
+                    num_items = group.get("num_items", 0)
+                    return {
+                        "success": True,
+                        "num_particles": num_items,
+                        "particles_group_name": particles_group_name,
+                        "job_uid": particles_job_uid
+                    }
+            
+            # If not found, try to infer
+            particles_slot = self._infer_particles_output_slot(project, particles_job_uid)
+            for group in outputs:
+                if group.get("name") == particles_slot:
+                    num_items = group.get("num_items", 0)
+                    return {
+                        "success": True,
+                        "num_particles": num_items,
+                        "particles_group_name": particles_slot,
+                        "job_uid": particles_job_uid
+                    }
+            
+            return {
+                "success": False,
+                "error": f"Could not find particles group '{particles_group_name}' or inferred slot in job {particles_job_uid}",
+                "num_particles": 0
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "num_particles": 0
+            }
+
     def template_picker(
         self,
         project_uid: str,

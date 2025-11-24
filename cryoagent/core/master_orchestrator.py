@@ -29,6 +29,7 @@ class WorkflowStage(Enum):
     """Enumeration of workflow stages."""
     PREPROCESSING = "preprocessing"
     PARTICLE_PICKING = "particle_picking"
+    OPTIMIZATION_2D = "optimization_2d"
     RECONSTRUCTION = "reconstruction"
     OPTIMIZATION = "optimization"
 
@@ -55,6 +56,7 @@ def check_stage_output_exists(stage: WorkflowStage, outputs_dir: str = "outputs"
     stage_patterns = {
         WorkflowStage.PREPROCESSING: "preprocessing_results_*.json",
         WorkflowStage.PARTICLE_PICKING: "particle_picking_results_*.json",
+        WorkflowStage.OPTIMIZATION_2D: "2d_optimization_results_*.json",
         WorkflowStage.RECONSTRUCTION: ["reconstruction_results_cryosparc_*.json", "3d_reconstruction_results_relion_*.json"],
         WorkflowStage.OPTIMIZATION: "optimization_results_*.json"
     }
@@ -825,7 +827,18 @@ class ReconstructionAgent(StageAgent):
             
             else:
                 # CryoSPARC path - original logic with context-aware lookup
-                particles_job_uid = self._resolve_particles_job_uid(context)
+                # Check if 2D optimization stage ran and use its output
+                optimization_2d_outputs = context.stage_outputs.get(WorkflowStage.OPTIMIZATION_2D)
+                if isinstance(optimization_2d_outputs, StageResult):
+                    optimization_2d_outputs = optimization_2d_outputs.stage_outputs
+                
+                # Prefer particles from 2D optimization if available
+                if optimization_2d_outputs and optimization_2d_outputs.get("final_particles_job_uid"):
+                    particles_job_uid = optimization_2d_outputs.get("final_particles_job_uid")
+                    self.logger.info(f"Using particles from 2D optimization stage: {particles_job_uid}")
+                else:
+                    # Fallback to particle picking stage
+                    particles_job_uid = self._resolve_particles_job_uid(context)
                 
                 if not particles_job_uid:
                     return StageResult(
@@ -1372,6 +1385,179 @@ class ReconstructionAgent(StageAgent):
         return str(output_file)
 
 
+class Optimizer2DAgent(StageAgent):
+    """Specialized agent for 2D classification optimization stage."""
+    
+    def __init__(self, config_path: str, master_config_path: Optional[str] = None):
+        super().__init__("optimization_2d", config_path, master_config_path)
+        self.backend_type = None  # Will be set during initialization
+    
+    def initialize(self) -> bool:
+        """Initialize the 2D optimization agent with modular architecture."""
+        try:
+            # Load basic configuration
+            config_loader = ConfigLoader(self.config_path, self.master_config_path)
+            self.config = config_loader.load_config()
+            
+            # 2D Optimization is only available for CryoSPARC
+            from .cryosparc_2Doptimize.optimizer_2d_agent import Optimizer2DAgent as ModularOptimizer2DAgent
+            from .cryosparc_2Doptimize.optimizer_2d_workflow import Optimizer2DWorkflow
+            
+            # Initialize CryoSPARC tools
+            self.cryosparc_tools = CryoSPARCTools(self.config.cryosparc)
+            
+            # Initialize modular 2D optimizer agent and workflow
+            self.modular_agent = ModularOptimizer2DAgent(self.cryosparc_tools, self.config)
+            self.modular_workflow = Optimizer2DWorkflow(self.modular_agent, self.config, stage_config_path=self.config_path)
+            self.backend_type = "CryoSPARC"
+            
+            # Set stage name and workflow type for conversation logging
+            self.modular_agent.stage_name = "optimization_2d"
+            self.modular_agent.workflow_type = "cryoem"
+            
+            self.logger.info(f"Stage agent {self.stage_name} initialized with {self.backend_type} backend")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize stage agent {self.stage_name}: {e}")
+            return False
+    
+    def execute_stage(self, context: WorkflowContext, conversation_id: Optional[str] = None) -> StageResult:
+        """
+        Execute the 2D optimization stage.
+        
+        Args:
+            context: Workflow context with previous stage outputs
+            conversation_id: Optional conversation identifier
+            
+        Returns:
+            StageResult with 2D optimization outputs
+        """
+        start_time = time.time()
+        try:
+            # Get required inputs from previous stages
+            stage_outputs_map = getattr(context, "stage_outputs", {}) or {}
+            picking_outputs = stage_outputs_map.get(WorkflowStage.PARTICLE_PICKING)
+            if isinstance(picking_outputs, StageResult):
+                picking_outputs = picking_outputs.stage_outputs
+            
+            # Get particles job UID from particle picking stage
+            particles_job_uid = (
+                picking_outputs.get("final_selection_job_uid")
+                or picking_outputs.get("selected_particles_job_uid")
+                or picking_outputs.get("classification_2d_job_uid")
+                or picking_outputs.get("extraction_job_uid")
+                or picking_outputs.get("blob_picker_job_uid")
+            )
+            
+            # Also check job_uids structure (from JSON files)
+            if not particles_job_uid:
+                job_uids = picking_outputs.get("job_uids", {})
+                if isinstance(job_uids, dict):
+                    particles_job_uid = (
+                        job_uids.get("final_selection")
+                        or job_uids.get("selected_particles")
+                        or job_uids.get("classified_particles")
+                        or job_uids.get("extracted_particles")
+                    )
+            
+            # Also check outputs structure
+            if not particles_job_uid:
+                outputs = picking_outputs.get("outputs", {})
+                if isinstance(outputs, dict):
+                    particles_job_uid = outputs.get("selected_particles_job_uid")
+            
+            if not particles_job_uid:
+                execution_time = time.time() - start_time
+                return StageResult(
+                    stage=WorkflowStage.OPTIMIZATION_2D,
+                    success=False,
+                    error="Missing required input: particles_job_uid from particle picking stage",
+                    stage_outputs={},
+                    execution_time=execution_time
+                )
+            
+            # Execute 2D optimization workflow
+            result = self.modular_workflow.execute_2d_optimization(
+                particles_job_uid=particles_job_uid,
+                conversation_id=conversation_id
+            )
+            
+            # Extract outputs
+            stage_outputs = {
+                "final_particles_job_uid": result.final_particles_job_uid,
+                "final_good_particles_count": result.final_good_particles_count,
+                "final_good_particles_percentage": result.final_good_particles_percentage,
+                "total_rounds": result.total_rounds,
+                "workflow_summary": result.workflow_summary
+            }
+            
+            # Calculate execution time
+            execution_time = time.time() - start_time
+            
+            # Save results
+            output_file = self._save_2d_optimization_results(stage_outputs, context, result.success, execution_time)
+            stage_outputs["output_file"] = output_file
+            
+            return StageResult(
+                stage=WorkflowStage.OPTIMIZATION_2D,
+                success=result.success,
+                error=result.error,
+                stage_outputs=stage_outputs,
+                execution_time=execution_time
+            )
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self.logger.error(f"Failed to execute 2D optimization stage: {e}")
+            return StageResult(
+                stage=WorkflowStage.OPTIMIZATION_2D,
+                success=False,
+                error=str(e),
+                stage_outputs={},
+                execution_time=execution_time
+            )
+    
+    def _save_2d_optimization_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True, execution_time: float = 0.0) -> str:
+        """Save 2D optimization results to a JSON file."""
+        import datetime
+        from pathlib import Path
+        
+        output_dir = Path("outputs")
+        output_dir.mkdir(exist_ok=True)
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        status = "completed" if success else "failed"
+        
+        optimization_results = {
+            "stage": "optimization_2d",
+            "status": status,
+            "timestamp": timestamp,
+            "agent_type": "cryosparc",
+            "project_uid": context.project_uid,
+            "workspace_uid": context.workspace_uid,
+            "execution_time": execution_time,
+            "final_particles_job_uid": stage_outputs.get("final_particles_job_uid"),
+            "final_good_particles_count": stage_outputs.get("final_good_particles_count"),
+            "final_good_particles_percentage": stage_outputs.get("final_good_particles_percentage"),
+            "total_rounds": stage_outputs.get("total_rounds"),
+            "workflow_summary": stage_outputs.get("workflow_summary", {})
+        }
+        
+        output_file = output_dir / f"2d_optimization_results_cryosparc_{timestamp}.json"
+        with open(output_file, 'w') as f:
+            json.dump(optimization_results, f, indent=2)
+        
+        self.logger.info(f"2D optimization results saved to {output_file}")
+        return str(output_file)
+    
+    def get_stage_description(self) -> str:
+        return "2D Classification Optimization: Iteratively refine particle selection using 2D classification and CryoSift until 90% good particles"
+    
+    def get_required_inputs(self) -> List[str]:
+        return ["particles_job_uid"]
+
+
 class OptimizerAgent(StageAgent):
     """Specialized agent for box size optimization stage."""
     
@@ -1430,13 +1616,15 @@ class OptimizerAgent(StageAgent):
             
             # Get final_volume_job_uid first (this is the key identifier)
             # Check both direct fields and nested job_uids/outputs structures (from JSON files)
-            final_volume_job_uid = (
-                reconstruction_outputs.get("final_volume_job_uid")
-                or (reconstruction_outputs.get("job_uids", {}).get("final_volume") if isinstance(reconstruction_outputs.get("job_uids"), dict) else None)
-                or (reconstruction_outputs.get("outputs", {}).get("final_volume_job_uid") if isinstance(reconstruction_outputs.get("outputs"), dict) else None)
-                or reconstruction_outputs.get("homogeneous_refinement_job_uid")
-                or (reconstruction_outputs.get("job_uids", {}).get("homogeneous_refinement") if isinstance(reconstruction_outputs.get("job_uids"), dict) else None)
-            )
+            final_volume_job_uid = None
+            if reconstruction_outputs:
+                final_volume_job_uid = (
+                    reconstruction_outputs.get("final_volume_job_uid")
+                    or (reconstruction_outputs.get("job_uids", {}).get("final_volume") if isinstance(reconstruction_outputs.get("job_uids"), dict) else None)
+                    or (reconstruction_outputs.get("outputs", {}).get("final_volume_job_uid") if isinstance(reconstruction_outputs.get("outputs"), dict) else None)
+                    or reconstruction_outputs.get("homogeneous_refinement_job_uid")
+                    or (reconstruction_outputs.get("job_uids", {}).get("homogeneous_refinement") if isinstance(reconstruction_outputs.get("job_uids"), dict) else None)
+                )
             
             # refinement_job_uid and volume_job_uid should both be the final_volume_job_uid
             # (the final refined volume is used both as the source of initial resolution/box size
@@ -1449,23 +1637,27 @@ class OptimizerAgent(StageAgent):
             if isinstance(picking_outputs, StageResult):
                 picking_outputs = picking_outputs.stage_outputs
             
-            particles_job_uid = (
-                picking_outputs.get("blob_picker_job_uid")
-                or picking_outputs.get("picking_job_uid")
-                or picking_outputs.get("particle_picking_job_uid")
-                or picking_outputs.get("final_selection_job_uid")  # From JSON: final_selection_job_uid
-                or picking_outputs.get("selected_particles_job_uid")
-            )
+            particles_job_uid = None
+            if picking_outputs:
+                particles_job_uid = (
+                    picking_outputs.get("blob_picker_job_uid")
+                    or picking_outputs.get("picking_job_uid")
+                    or picking_outputs.get("particle_picking_job_uid")
+                    or picking_outputs.get("final_selection_job_uid")  # From JSON: final_selection_job_uid
+                    or picking_outputs.get("selected_particles_job_uid")
+                )
             
             # Get micrographs job UID
             preprocessing_outputs = stage_outputs_map.get(WorkflowStage.PREPROCESSING)
             if isinstance(preprocessing_outputs, StageResult):
                 preprocessing_outputs = preprocessing_outputs.stage_outputs
             
-            micrographs_job_uid = (
-                preprocessing_outputs.get("micrograph_selection_job_uid")
-                or preprocessing_outputs.get("final_micrographs_job_uid")
-            )
+            micrographs_job_uid = None
+            if preprocessing_outputs:
+                micrographs_job_uid = (
+                    preprocessing_outputs.get("micrograph_selection_job_uid")
+                    or preprocessing_outputs.get("final_micrographs_job_uid")
+                )
             
             if not all([refinement_job_uid, particles_job_uid, micrographs_job_uid, volume_job_uid]):
                 missing = []
@@ -1631,6 +1823,8 @@ class MasterOrchestrator:
                     agent = PreprocessingAgent(config_path, self.master_config_path)
                 elif agent_class == "ParticlePickingAgent":
                     agent = ParticlePickingAgent(config_path, self.master_config_path)
+                elif agent_class == "Optimizer2DAgent":
+                    agent = Optimizer2DAgent(config_path, self.master_config_path)
                 elif agent_class == "ReconstructionAgent":
                     agent = ReconstructionAgent(config_path, self.master_config_path)
                 elif agent_class == "OptimizerAgent":
@@ -1788,6 +1982,26 @@ class MasterOrchestrator:
                 stage_outputs["transition_config_transitions"] = transition_transitions
             if transition_info:
                 stage_outputs["transition_info"] = transition_info
+
+        elif stage == WorkflowStage.OPTIMIZATION_2D:
+            final_particles_uid = data.get("final_particles_job_uid")
+            final_good_count = data.get("final_good_particles_count")
+            final_good_percentage = data.get("final_good_particles_percentage")
+            total_rounds = data.get("total_rounds")
+            workflow_summary = data.get("workflow_summary", {})
+            
+            if final_particles_uid:
+                stage_outputs["final_particles_job_uid"] = final_particles_uid
+                # Also set as selected_particles_job_uid for compatibility with reconstruction stage
+                stage_outputs["selected_particles_job_uid"] = final_particles_uid
+            if final_good_count is not None:
+                stage_outputs["final_good_particles_count"] = final_good_count
+            if final_good_percentage is not None:
+                stage_outputs["final_good_particles_percentage"] = final_good_percentage
+            if total_rounds is not None:
+                stage_outputs["total_rounds"] = total_rounds
+            if workflow_summary:
+                stage_outputs["workflow_summary"] = workflow_summary
 
         elif stage == WorkflowStage.RECONSTRUCTION:
             final_volume_dir = data.get("final_volume_directory")

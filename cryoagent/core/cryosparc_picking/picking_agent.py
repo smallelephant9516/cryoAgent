@@ -18,6 +18,9 @@ from ...config.config_loader import CryoAgentConfig
 class PickingAgent(BaseReActAgent):
     """ReAct-based agent for CryoEM particle picking operations."""
     
+    # Class-level lock to prevent concurrent classification job creation
+    _class_2d_lock = None
+    
     def __init__(
         self,
         cryosparc_tools: CryoSPARCTools,
@@ -32,6 +35,11 @@ class PickingAgent(BaseReActAgent):
             config: Complete configuration object
             llm: Language model for the agent
         """
+        # Initialize class-level lock if not already done
+        import threading
+        if PickingAgent._class_2d_lock is None:
+            PickingAgent._class_2d_lock = threading.Lock()
+        
         super().__init__(cryosparc_tools, config, llm)
         # Initialize logger for this agent
         self.logger = logging.getLogger("PickingAgent")
@@ -307,37 +315,57 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
     
     def _class_2d_tool(self, input_str: str) -> str:
         """Tool wrapper for 2D classification."""
-        params: Dict[str, Any] = {}
-        used_params: Dict[str, Any] = {}
-        try:
-            params = self._parse_tool_input(input_str)
-            project_uid = params.get("project_uid", self.config.workflow.project_uid)
-            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
-            
-            # Get num_classes from params or config (default 20)
-            num_classes = params.get("num_classes")
-            if not num_classes:
-                num_classes = self._get_stage_param("2d_classification", "num_classes", 20)
-            
-            used_params = {
-                "project_uid": project_uid,
-                "workspace_uid": workspace_uid,
-                "particles_job_uid": params.get("particles_job_uid"),
-                "num_classes": int(num_classes),
-                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
-                "timeout": int(params.get("timeout", self.config.job_management.default_timeout * 2)),  # 2D classification takes longer
-                "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
-            }
+        # Use lock to prevent concurrent job creation when LLM makes parallel tool calls
+        with PickingAgent._class_2d_lock:
+            params: Dict[str, Any] = {}
+            used_params: Dict[str, Any] = {}
+            try:
+                # Check if there's already a running classification job to prevent concurrent executions
+                recent_class_2d_jobs = [
+                    entry for entry in self.tool_execution_log[-10:]  # Check last 10 entries
+                    if entry.get("tool") == "class_2d"
+                ]
+                if recent_class_2d_jobs:
+                    last_job = recent_class_2d_jobs[-1]
+                    last_result = last_job.get("result")
+                    if isinstance(last_result, dict):
+                        last_status = last_result.get("status", "")
+                        if last_status in ("queued", "launched", "running", "waiting"):
+                            return f"❌ Error: A 2D classification job is already running (status: {last_status}, job: {last_result.get('job_uid', 'unknown')}). Wait for it to complete before starting a new one."
+                
+                params = self._parse_tool_input(input_str)
+                project_uid = params.get("project_uid", self.config.workflow.project_uid)
+                workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+                
+                # Support both particles_job_uid and job_uid (when LLM passes just "J88")
+                particles_job_uid = params.get("particles_job_uid") or params.get("job_uid")
+                if not particles_job_uid:
+                    return f"❌ Error: Missing required parameter: particles_job_uid (or job_uid)"
+                
+                # Get num_classes from params or config (default 20)
+                num_classes = params.get("num_classes")
+                if not num_classes:
+                    num_classes = self._get_stage_param("2d_classification", "num_classes", 20)
+                
+                used_params = {
+                    "project_uid": project_uid,
+                    "workspace_uid": workspace_uid,
+                    "particles_job_uid": particles_job_uid,
+                    "num_classes": int(num_classes),
+                    "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                    "timeout": int(params.get("timeout", self.config.job_management.default_timeout * 2)),  # 2D classification takes longer
+                    "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
+                }
 
-            result = self.cryosparc_tools.class_2d(**used_params)
-            self._record_tool_execution("class_2d", used_params, result=result)
-            
-            return f"✅ Successfully queued 2D classification job: {result['job_uid']} ({num_classes} classes)"
-            
-        except Exception as e:
-            context = used_params or params or {"raw_input": input_str}
-            self._record_tool_execution("class_2d", context, error=str(e))
-            return f"❌ Error starting 2D classification: {str(e)}"
+                result = self.cryosparc_tools.class_2d(**used_params)
+                self._record_tool_execution("class_2d", used_params, result=result)
+                
+                return f"✅ Successfully queued 2D classification job: {result['job_uid']} ({num_classes} classes)"
+                
+            except Exception as e:
+                context = used_params or params or {"raw_input": input_str}
+                self._record_tool_execution("class_2d", context, error=str(e))
+                return f"❌ Error starting 2D classification: {str(e)}"
     
     def _select_2d_classes_tool(self, input_str: str) -> str:
         """Tool wrapper for 2D class selection."""
@@ -363,10 +391,15 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             cryosift_python = params.get("cryosift_python_executable")
             cryosift_fallback = params.get("cryosift_fallback_strategy")
             
+            # Support both class_2d_job_uid and job_uid (when LLM passes just "J88")
+            class_2d_job_uid = params.get("class_2d_job_uid") or params.get("job_uid")
+            if not class_2d_job_uid:
+                return "❌ Error: class_2d_job_uid parameter is required for 2D class selection"
+            
             used_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
-                "class_2d_job_uid": params.get("class_2d_job_uid"),
+                "class_2d_job_uid": class_2d_job_uid,
                 "selection_mode": selection_mode,
                 "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
                 "timeout": int(params.get("timeout", 300)),
