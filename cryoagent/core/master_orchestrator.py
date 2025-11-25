@@ -32,6 +32,7 @@ class WorkflowStage(Enum):
     OPTIMIZATION_2D = "optimization_2d"
     RECONSTRUCTION = "reconstruction"
     OPTIMIZATION = "optimization"
+    POLISH = "polish"
 
 
 def check_stage_output_exists(stage: WorkflowStage, outputs_dir: str = "outputs") -> Optional[Dict[str, Any]]:
@@ -58,7 +59,8 @@ def check_stage_output_exists(stage: WorkflowStage, outputs_dir: str = "outputs"
         WorkflowStage.PARTICLE_PICKING: "particle_picking_results_*.json",
         WorkflowStage.OPTIMIZATION_2D: "2d_optimization_results_*.json",
         WorkflowStage.RECONSTRUCTION: ["reconstruction_results_cryosparc_*.json", "3d_reconstruction_results_relion_*.json"],
-        WorkflowStage.OPTIMIZATION: "optimization_results_*.json"
+        WorkflowStage.OPTIMIZATION: "optimization_results_*.json",
+        WorkflowStage.POLISH: "polish_results_*.json"
     }
     
     pattern = stage_patterns.get(stage)
@@ -1764,6 +1766,134 @@ class OptimizerAgent(StageAgent):
         return ["homogeneous_refinement_job_uid", "picked_particles", "micrograph_selection_job_uid", "volume_job_uid"]
 
 
+class PolishAgent(StageAgent):
+    """Specialized agent for polish refinement stage."""
+    
+    def __init__(self, config_path: str, master_config_path: Optional[str] = None):
+        super().__init__("polish", config_path, master_config_path)
+        self.backend_type = None  # Will be set during initialization
+    
+    def initialize(self) -> bool:
+        """Initialize the polish agent with modular architecture."""
+        try:
+            # Load basic configuration
+            config_loader = ConfigLoader(self.config_path, self.master_config_path)
+            self.config = config_loader.load_config()
+            
+            # Polish is only available for CryoSPARC
+            from .cryosparc_polish.polish_agent import PolishAgent as ModularPolishAgent
+            from .cryosparc_polish.polish_workflow import PolishWorkflow
+            
+            # Initialize CryoSPARC tools
+            self.cryosparc_tools = CryoSPARCTools(self.config.cryosparc)
+            
+            # Initialize modular polish agent and workflow
+            self.modular_agent = ModularPolishAgent(self.cryosparc_tools, self.config)
+            self.modular_workflow = PolishWorkflow(self.modular_agent, self.config, stage_config_path=self.config_path)
+            self.backend_type = "CryoSPARC"
+            
+            # Set stage name and workflow type for conversation logging
+            self.modular_agent.stage_name = "polish"
+            self.modular_agent.workflow_type = "cryoem"
+            
+            self.logger.info(f"Stage agent {self.stage_name} initialized with {self.backend_type} backend")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize stage agent {self.stage_name}: {e}")
+            return False
+    
+    def execute_stage(self, context: WorkflowContext, conversation_id: Optional[str] = None) -> StageResult:
+        """
+        Execute the polish stage.
+        
+        Args:
+            context: Workflow context with previous stage outputs
+            conversation_id: Optional conversation identifier
+            
+        Returns:
+            StageResult with polish outputs
+        """
+        start_time = time.time()
+        try:
+            # Polish stage verifies inputs internally by reading JSON files
+            # It needs optimization_results and preprocessing_results
+            
+            # Execute polish workflow (it will verify inputs internally)
+            results = self.modular_workflow.run(conversation_id=conversation_id)
+            
+            # Check if all steps completed successfully
+            all_successful = all(r.success for r in results)
+            
+            # Find final refinement result
+            final_refinement_result = None
+            for result in reversed(results):
+                if result.step.value == "final_refinement":
+                    final_refinement_result = result
+                    break
+            
+            best_job_uid = final_refinement_result.job_uid if final_refinement_result and final_refinement_result.success else None
+            
+            # Get final resolution from workflow summary
+            workflow_summary = self.modular_workflow.get_workflow_summary()
+            final_resolution = None
+            if best_job_uid:
+                try:
+                    fsc_info = self.cryosparc_tools.get_refinement_fsc_info(
+                        self.config.workflow.project_uid,
+                        best_job_uid
+                    )
+                    if fsc_info.get("success"):
+                        final_resolution = fsc_info.get("resolution_angstroms")
+                except Exception:
+                    pass
+            
+            # Extract outputs
+            stage_outputs = {
+                "best_job_uid": best_job_uid,
+                "final_resolution": final_resolution,
+                "workflow_summary": workflow_summary
+            }
+            
+            # Calculate execution time
+            execution_time = time.time() - start_time
+            
+            # Save results
+            output_file = self.modular_workflow.save_results(execution_time)
+            stage_outputs["output_file"] = output_file
+            
+            # Determine error message if any step failed
+            error = None
+            if not all_successful:
+                failed_steps = [r for r in results if not r.success]
+                error = f"Failed steps: {[r.step.value for r in failed_steps]}"
+            
+            return StageResult(
+                stage=WorkflowStage.POLISH,
+                success=all_successful,
+                error=error,
+                stage_outputs=stage_outputs,
+                execution_time=execution_time
+            )
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self.logger.error(f"Failed to execute polish stage: {e}")
+            return StageResult(
+                stage=WorkflowStage.POLISH,
+                success=False,
+                error=str(e),
+                stage_outputs={},
+                execution_time=execution_time
+            )
+    
+    def get_stage_description(self) -> str:
+        return "Polish Refinement: Final refinement steps with CTF refinement and motion correction to achieve best possible resolution"
+    
+    def get_required_inputs(self) -> List[str]:
+        return ["optimization_results", "preprocessing_results"]
+
+
 class MasterOrchestrator:
     """Master orchestrator for the complete cryoEM workflow."""
     
@@ -1829,6 +1959,8 @@ class MasterOrchestrator:
                     agent = ReconstructionAgent(config_path, self.master_config_path)
                 elif agent_class == "OptimizerAgent":
                     agent = OptimizerAgent(config_path, self.master_config_path)
+                elif agent_class == "PolishAgent":
+                    agent = PolishAgent(config_path, self.master_config_path)
                 else:
                     self.logger.error(f"Unknown agent class: {agent_class}")
                     return False

@@ -2479,38 +2479,82 @@ class CryoSPARCTools:
                     
                     print(f"ℹ️  Optimization mode: particles from {particles_job_uid}.{particles_slot}, volume from {volume_job_uid}.{volume_slot}")
                 else:
-                    # Normal case: both from same job (ab initio)
+                    # Normal case: both from same job
                     try:
                         source_job = project.find_job(volume_job_uid)
                         source_job_type = source_job.doc.get("type", "")
                         
-                        # Ab initio jobs (homo_abinit) use these slots:
-                        if "abinit" in source_job_type.lower():
+                        # Try to detect actual output slots from the job
+                        source_job.refresh()
+                        source_doc = getattr(source_job, "doc", {})
+                        source_outputs = source_doc.get("output_result_groups", [])
+                        
+                        # Find actual particles and volume slots
+                        detected_particles_slot = None
+                        detected_volume_slot = None
+                        
+                        for group in source_outputs:
+                            group_type = group.get("type", "").lower()
+                            group_name = group.get("name", "")
+                            if "particle" in group_type or "particle" in group_name.lower():
+                                detected_particles_slot = group_name
+                            elif "volume" in group_type or "volume" in group_name.lower():
+                                detected_volume_slot = group_name
+                        
+                        # Use detected slots if found, otherwise fall back to job type conventions
+                        if detected_particles_slot:
+                            particles_slot = detected_particles_slot
+                        elif "abinit" in source_job_type.lower():
                             particles_slot = "particles_all_classes"
-                            volume_slot = "volume_class_0"
-                        # Homogeneous reconstruction (homo_recon) might use these:
-                        elif "recon" in source_job_type.lower():
-                            # Try to detect actual output slots
-                            particles_slot = "particles"  # Common for homo_recon
-                            volume_slot = "volume"  # Common for homo_recon
+                        elif "refine" in source_job_type.lower() or "recon" in source_job_type.lower():
+                            particles_slot = "particles"  # Common for refinement/reconstruction jobs
                         else:
-                            # Default to ab initio convention
-                            particles_slot = "particles_all_classes"
+                            particles_slot = "particles"  # Default for other job types
+                        
+                        if detected_volume_slot:
+                            volume_slot = detected_volume_slot
+                        elif "abinit" in source_job_type.lower():
                             volume_slot = "volume_class_0"
+                        elif "refine" in source_job_type.lower() or "recon" in source_job_type.lower():
+                            volume_slot = "volume"  # Common for refinement/reconstruction jobs
+                        else:
+                            volume_slot = "volume"  # Default for other job types
                             
                         print(f"ℹ️  Detected source job type: {source_job_type}")
                         print(f"ℹ️  Using particles slot: '{particles_slot}', volume slot: '{volume_slot}'")
                     except Exception as e:
-                        # Fallback to ab initio convention
-                        particles_slot = "particles_all_classes"
-                        volume_slot = "volume_class_0"
-                        print(f"⚠️  Could not detect job type, using default slots: {e}")
+                        # Fallback: try to detect slots, otherwise use refinement convention
+                        try:
+                            source_job = project.find_job(volume_job_uid)
+                            source_job.refresh()
+                            source_doc = getattr(source_job, "doc", {})
+                            source_outputs = source_doc.get("output_result_groups", [])
+                            
+                            for group in source_outputs:
+                                group_type = group.get("type", "").lower()
+                                group_name = group.get("name", "")
+                                if "particle" in group_type:
+                                    particles_slot = group_name
+                                elif "volume" in group_type:
+                                    volume_slot = group_name
+                            print(f"ℹ️  Detected slots from job outputs: particles='{particles_slot}', volume='{volume_slot}'")
+                        except Exception:
+                            # Final fallback to refinement convention
+                            particles_slot = "particles"
+                            volume_slot = "volume"
+                            print(f"⚠️  Could not detect job type, using refinement convention: {e}")
             
             # Create homogeneous refinement job with comprehensive parameters
             job_params: Dict[str, Any] = {
                 "refine_do_init_scale_est": refine_do_init_scale_est,
                 "refine_symmetry_do_align": refine_symmetry_do_align
             }
+            
+            # Add CTF refinement parameters if provided
+            refine_defocus_refine = kwargs.get("refine_defocus_refine", True)
+            refine_ctf_global_refine = kwargs.get("refine_ctf_global_refine", True)
+            job_params["refine_defocus_refine"] = refine_defocus_refine
+            job_params["refine_ctf_global_refine"] = refine_ctf_global_refine
             
             # Add refinement resolution if specified
             if refinement_resolution is not None:
@@ -2591,6 +2635,180 @@ class CryoSPARCTools:
                 "error": str(e),
                 "job_type": "homogeneous_refinement",
                 "message": f"Failed to queue homogeneous refinement job: {str(e)}"
+            }
+    
+    def reference_motion_correction(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        micrographs_job_uid: str,
+        particles_job_uid: str,
+        volume_job_uid: str,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Run reference-based motion correction on particles using a reference volume.
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            workspace_uid: CryoSPARC workspace UID
+            micrographs_job_uid: UID of the micrograph job (from preprocessing)
+            particles_job_uid: UID of the particles job (from refinement)
+            volume_job_uid: UID of the volume job (from refinement)
+            lane: Compute lane to use
+            hostname: Specific hostname to run on
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            check_interval: Time between status checks in seconds
+            **kwargs: Additional parameters (all parameters from terminal selection can be passed here)
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+            
+            # Prepare job parameters - include all parameters from kwargs
+            job_params: Dict[str, Any] = {}
+            
+            # Add all parameters from kwargs (these match the params_base from the terminal selection)
+            # Common parameters that might be passed:
+            allowed_params = [
+                'max_processing_stage', 'num_reference_volumes', 'frame_start', 'frame_end',
+                'bfactor', 'output_f16', 'recenter_particles', 'skip_align', 'skip_mismatching_frames',
+                'align_cutoff_frac_hyp', 'hyparam_search_thoroughness', 'hypopt_minpcls', 'hypopt_rmax',
+                'override_h1', 'override_h2', 'override_h3', 'use_all_fcs_dosewt', 'dosewt_minpcls',
+                'use_all_fcs_opttraj', 'fcrop_box_size', 'output_fcrop_factor', 'compute_num_gpus',
+                'gpu_oversub_gb', 'mem_cache_sz', 'slicing_gpu_is_worker', 'random_seed', 'eer_numfractions'
+            ]
+            
+            for param in allowed_params:
+                if param in kwargs:
+                    job_params[param] = kwargs[param]
+            
+            # Add any other parameters from kwargs
+            for key, value in kwargs.items():
+                if key not in ['project_uid', 'workspace_uid', 'micrographs_job_uid', 
+                              'particles_job_uid', 'volume_job_uid', 'lane', 'hostname',
+                              'wait_for_completion', 'timeout', 'check_interval']:
+                    if key not in job_params:
+                        job_params[key] = value
+            
+            # Determine output slots
+            # Micrographs: typically "exposures_accepted" or "micrograph"
+            # Particles: typically "particles" or "particles_0"
+            # Volume: typically "volume" or "volume_0"
+            
+            micrograph_slot = "exposures_accepted"  # Default
+            particles_slot = "particles"  # Default
+            volume_slot = "volume"  # Default
+            
+            # Try to detect actual slots
+            try:
+                micrograph_job = project.find_job(micrographs_job_uid)
+                micrograph_job.refresh()
+                micrograph_doc = getattr(micrograph_job, "doc", {})
+                micrograph_outputs = micrograph_doc.get("output_result_groups", [])
+                for group in micrograph_outputs:
+                    if group.get("type") == "exposure":
+                        micrograph_slot = group.get("name", "exposures_accepted")
+                        break
+            except Exception:
+                pass
+            
+            try:
+                particles_job = project.find_job(particles_job_uid)
+                particles_job.refresh()
+                particles_doc = getattr(particles_job, "doc", {})
+                particles_outputs = particles_doc.get("output_result_groups", [])
+                for group in particles_outputs:
+                    if group.get("type") == "particle":
+                        particles_slot = group.get("name", "particles")
+                        break
+            except Exception:
+                pass
+            
+            try:
+                volume_job = project.find_job(volume_job_uid)
+                volume_job.refresh()
+                volume_doc = getattr(volume_job, "doc", {})
+                volume_outputs = volume_doc.get("output_result_groups", [])
+                for group in volume_outputs:
+                    if group.get("type") == "volume":
+                        volume_slot = group.get("name", "volume")
+                        break
+            except Exception:
+                pass
+            
+            # Create reference motion correction job
+            job = workspace.create_job(
+                "reference_motion_correction",
+                params=job_params,
+                connections={
+                    "micrograph": (micrographs_job_uid, micrograph_slot),
+                    "particles_0": (particles_job_uid, particles_slot),
+                    "volume_0": (volume_job_uid, volume_slot)
+                }
+            )
+            
+            # Queue the job
+            used_lane = lane
+            try:
+                job.queue(lane=lane, hostname=hostname)
+            except Exception as queue_error:
+                message = str(queue_error)
+                if (lane is None and hostname is None and "Must specify a lane" in message):
+                    try:
+                        lanes = self.cs.get_lanes()
+                        if not lanes:
+                            raise queue_error
+                        used_lane = lanes[0]["name"]
+                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
+                        job.queue(lane=used_lane)
+                    except Exception:
+                        raise queue_error
+                else:
+                    raise queue_error
+            
+            print(f"Queued reference motion correction job: {job.uid}")
+            
+            self._job_cache[job.uid] = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }
+            
+            result = {
+                "success": True,
+                "job_uid": job.uid,
+                "job_type": "reference_motion_correction",
+                "message": f"Reference motion correction job {job.uid} queued successfully",
+                "lane": used_lane
+            }
+            
+            if wait_for_completion:
+                status_result = self.wait_for_job_completion(
+                    project_uid=project_uid,
+                    job_uid=job.uid,
+                    workspace_uid=workspace_uid,
+                    timeout=timeout,
+                    check_interval=check_interval
+                )
+                result.update(status_result)
+            
+            return result
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "job_type": "reference_motion_correction",
+                "message": f"Failed to queue reference motion correction job: {str(e)}"
             }
     
     def heterogeneous_refinement(

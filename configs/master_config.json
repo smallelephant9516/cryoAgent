@@ -20,7 +20,7 @@
       {
         "name": "optimization_2d",
         "description": "2D classification optimization stage: Iteratively refine particle selection using 2D classification and CryoSift",
-        "enabled": true,
+        "enabled": false,
         "agent_group": "cryosparc",
         "agent_class": "Optimizer2DAgent"
       },
@@ -34,9 +34,16 @@
       {
         "name": "optimization",
         "description": "Box size optimization stage: Optimize box size/diameter for 3D reconstruction",
-        "enabled": false,
+        "enabled": true,
         "agent_group": "cryosparc",
         "agent_class": "OptimizerAgent"
+      },
+      {
+        "name": "polish",
+        "description": "Polish refinement stage: Final refinement steps with CTF refinement and motion correction to achieve best possible resolution",
+        "enabled": true,
+        "agent_group": "cryosparc",
+        "agent_class": "PolishAgent"
       }
     ],
     "execution_mode": "sequential",

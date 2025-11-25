@@ -16,7 +16,7 @@
   "microscope_parameters": {},
   "workflow": {
     "2d_optimization": {
-      "enable_function1_iterative": false,
+      "enable_function1_iterative": true,
       "enable_function1_iterative_description": "Enable Function 1: Iterative 2D classification until 90% good particles (default: true)",
       "enable_function2_rescue": true,
       "enable_function2_rescue_description": "Enable Function 2: Rescue good particles from excluded set (default: true)",

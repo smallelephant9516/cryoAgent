@@ -1,0 +1,128 @@
+{
+  "stage_info": {
+    "name": "polish",
+    "description": "Polish refinement stage: Final refinement steps with CTF refinement and motion correction to achieve best possible resolution, not recommend to use the agent run",
+    "version": "1.0.0"
+  },
+  "required_inputs": [
+    "optimization_results",
+    "preprocessing_results",
+    "best_job_uid",
+    "final_micrographs_job_uid"
+  ],
+  "outputs": [
+    "best_job_uid",
+    "final_resolution",
+    "polish_results"
+  ],
+  "microscope_parameters": {},
+  "workflow": {
+    "polish": {
+      "enable_ctf_refinement": true,
+      "enable_ctf_refinement_description": "Enable local and global CTF refinement during refinement steps",
+      "enable_motion_correction": true,
+      "enable_motion_correction_description": "Enable reference-based motion correction step",
+      "initial_refinement": {
+        "refine_defocus_refine": true,
+        "refine_defocus_refine_description": "Enable local CTF refinement (defocus) for initial refinement",
+        "refine_ctf_global_refine": true,
+        "refine_ctf_global_refine_description": "Enable global CTF refinement for initial refinement",
+        "refinement_resolution": null,
+        "refinement_resolution_description": "Target resolution in Angstroms (null = auto)",
+        "symmetry": "C1",
+        "symmetry_description": "Symmetry group (e.g., C1, C2, D7)"
+      },
+      "motion_correction": {
+        "max_processing_stage": null,
+        "num_reference_volumes": 1,
+        "frame_start": null,
+        "frame_end": null,
+        "bfactor": null,
+        "recenter_particles": true,
+        "skip_align": false
+      },
+      "final_refinement": {
+        "refine_defocus_refine": true,
+        "refine_defocus_refine_description": "Enable local CTF refinement (defocus) for final refinement",
+        "refine_ctf_global_refine": true,
+        "refine_ctf_global_refine_description": "Enable global CTF refinement for final refinement",
+        "refinement_resolution": null,
+        "refinement_resolution_description": "Target resolution in Angstroms (null = auto)",
+        "symmetry": "C1",
+        "symmetry_description": "Symmetry group (e.g., C1, C2, D7)"
+      }
+    }
+  },
+  "react_workflow": {
+    "steps": [
+      {
+        "name": "verify_inputs",
+        "description": "Verify that optimization and preprocessing stages are complete and read required job UIDs",
+        "required_params": [],
+        "optional_params": [],
+        "depends_on": [],
+        "notes": "Reads optimization_results_cryosparc_*.json and preprocessing_results_cryosparc_*.json files"
+      },
+      {
+        "name": "initial_refinement",
+        "description": "Initial homogeneous refinement with CTF refinement enabled",
+        "required_params": [
+          "particles_job_uid",
+          "volume_job_uid"
+        ],
+        "optional_params": [
+          "refinement_resolution",
+          "symmetry",
+          "refine_defocus_refine",
+          "refine_ctf_global_refine"
+        ],
+        "depends_on": [
+          "verify_inputs"
+        ],
+        "notes": "Uses particles and volume from best optimization job. Enables both local and global CTF refinement."
+      },
+      {
+        "name": "motion_correction",
+        "description": "Reference-based motion correction using reference volume",
+        "required_params": [
+          "micrographs_job_uid",
+          "particles_job_uid",
+          "volume_job_uid"
+        ],
+        "optional_params": [
+          "max_processing_stage",
+          "num_reference_volumes",
+          "frame_start",
+          "frame_end",
+          "bfactor",
+          "recenter_particles",
+          "skip_align"
+        ],
+        "depends_on": [
+          "initial_refinement"
+        ],
+        "notes": "Uses micrographs from preprocessing, particles and volume from initial refinement. Output particles group is 'particles_0'."
+      },
+      {
+        "name": "final_refinement",
+        "description": "Final homogeneous refinement with CTF refinement enabled",
+        "required_params": [
+          "particles_job_uid",
+          "volume_job_uid"
+        ],
+        "optional_params": [
+          "refinement_resolution",
+          "symmetry",
+          "refine_defocus_refine",
+          "refine_ctf_global_refine",
+          "particles_group_name"
+        ],
+        "depends_on": [
+          "motion_correction"
+        ],
+        "notes": "Uses motion-corrected particles (particles_0) from motion correction step and volume from initial refinement. This is the final best job."
+      }
+    ]
+  }
+}
+
