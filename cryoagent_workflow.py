@@ -259,10 +259,26 @@ class CryoAgentMasterWorkflow:
                 print("   ✅ All stages completed with proper monitoring")
                 print("   🔗 Stage dependencies properly handled")
                 print("   ⏱️ Each stage waited for completion before claiming success")
+                
+                # Display final report information if available
+                if 'final_report_path' in result:
+                    print(f"\n📊 Final Workflow Report:")
+                    print(f"   JSON: {result['final_report_path']}")
+                    md_report = result['final_report_path'].replace('.json', '.md')
+                    print(f"   Markdown: {md_report}")
+                
                 self.llm_logger.end_workflow_log(True, "Complete workflow executed successfully")
             else:
                 print("❌ Complete workflow failed!")
                 print("   ⚠️ One or more stages did not complete successfully")
+                
+                # Display final report information even if workflow failed
+                if 'final_report_path' in result:
+                    print(f"\n📊 Workflow Report (partial):")
+                    print(f"   JSON: {result['final_report_path']}")
+                    md_report = result['final_report_path'].replace('.json', '.md')
+                    print(f"   Markdown: {md_report}")
+                
                 self.llm_logger.end_workflow_log(False, "Workflow failed - one or more stages did not complete")
             
             return success

@@ -23,6 +23,7 @@ from ..config.microscope_override_updater import apply_microscope_overrides_if_e
 from ..tools.cryosparc_tools import CryoSPARCTools
 from ..utils.general_llm_logger import GeneralLLMLogger
 from .transition_agent import TransitionAgent
+from .summary_agent import SummaryAgent
 
 
 class WorkflowStage(Enum):
@@ -1912,6 +1913,7 @@ class MasterOrchestrator:
         self.start_time = None
         self.logger = logging.getLogger("MasterOrchestrator")
         self.transition_agent = None
+        self.summary_agent = SummaryAgent()
         
     def initialize(self) -> bool:
         """
@@ -2007,6 +2009,9 @@ class MasterOrchestrator:
             except Exception as e:
                 self.logger.warning(f"Failed to initialize transition agent: {e}")
                 self.transition_agent = None
+            
+            # Summary agent is already initialized in __init__
+            self.logger.info("Summary agent initialized")
             
             self.logger.info("Master orchestrator initialized successfully")
             return True
@@ -2210,6 +2215,9 @@ class MasterOrchestrator:
             except Exception:
                 pass
         
+        # Set workflow context in summary agent
+        self.summary_agent.set_workflow_context(self.workflow_context)
+        
         self.logger.info("Starting complete cryoEM workflow")
         print("🚀 Starting Complete CryoEM Workflow")
         print("=" * 60)
@@ -2324,6 +2332,12 @@ class MasterOrchestrator:
                     reasoning="Stage skipped - output already exists"
                 )
                 self.stage_results.append(stage_result)
+                
+                # Add stage summary to summary agent (even for cached stages)
+                if stage_name in self.stage_agents:
+                    stage_agent = self.stage_agents[stage_name]
+                    self.summary_agent.add_stage_summary(stage_result, stage_agent)
+                
                 self.workflow_context.stage_outputs[stage] = stage_result.stage_outputs
                 continue
             
@@ -2338,6 +2352,9 @@ class MasterOrchestrator:
             # Execute stage
             stage_result = stage_agent.execute_stage(self.workflow_context, conversation_id)
             self.stage_results.append(stage_result)
+            
+            # Add stage summary to summary agent
+            self.summary_agent.add_stage_summary(stage_result, stage_agent)
             
             # Update context with stage outputs
             if stage_result.success:
@@ -2389,12 +2406,23 @@ class MasterOrchestrator:
         # Collect conversation log files from all stages
         conversation_log_files = self._collect_conversation_logs()
         
+        # Set workflow end time for summary agent
+        workflow_end_time = time.time()
+        self.summary_agent.set_workflow_end_time(workflow_end_time)
+        
+        # Generate final comprehensive report
+        final_report_path = self.summary_agent.generate_final_report(conversation_id)
+        print(f"\n📊 Final workflow report generated: {final_report_path}")
+        
         # Generate workflow summary
-        total_time = time.time() - self.start_time
+        total_time = workflow_end_time - self.start_time
         summary = self._generate_workflow_summary(total_time)
         
         # Add conversation log files to summary
         summary['conversation_log_files'] = conversation_log_files
+        
+        # Add final report path to summary
+        summary['final_report_path'] = final_report_path
         
         # Display results
         self._display_workflow_results(summary)
@@ -2414,6 +2442,10 @@ class MasterOrchestrator:
         """
         self.start_time = time.time()
         self.stage_results = []
+        
+        # Initialize summary agent for this workflow
+        self.summary_agent.clear_summaries()
+        self.summary_agent.set_workflow_start_time(self.start_time)
         
         # Initialize workflow context
         self.workflow_context = WorkflowContext(
@@ -2442,6 +2474,9 @@ class MasterOrchestrator:
                         self.workflow_context.workspace_uid = getattr(cfg_workflow, "workspace_uid", self.workflow_context.workspace_uid)
             except Exception:
                 pass
+        
+        # Set workflow context in summary agent
+        self.summary_agent.set_workflow_context(self.workflow_context)
         
         self.logger.info(f"Starting partial workflow: {[s.value for s in stages]}")
         print(f"🚀 Starting Partial CryoEM Workflow")
@@ -2581,6 +2616,12 @@ class MasterOrchestrator:
                     reasoning="Stage skipped - output already exists"
                 )
                 self.stage_results.append(stage_result)
+                
+                # Add stage summary to summary agent (even for cached stages)
+                if stage_name in self.stage_agents:
+                    stage_agent = self.stage_agents[stage_name]
+                    self.summary_agent.add_stage_summary(stage_result, stage_agent)
+                
                 self.workflow_context.stage_outputs[stage] = stage_result.stage_outputs
                 continue
             
@@ -2595,6 +2636,9 @@ class MasterOrchestrator:
             # Execute stage
             stage_result = stage_agent.execute_stage(self.workflow_context, conversation_id)
             self.stage_results.append(stage_result)
+            
+            # Add stage summary to summary agent
+            self.summary_agent.add_stage_summary(stage_result, stage_agent)
             
             # Update context with stage outputs
             if stage_result.success:
@@ -2666,9 +2710,20 @@ class MasterOrchestrator:
                 print(f"❌ Stage {stage_name} failed: {stage_result.error}")
                 break
         
+        # Set workflow end time for summary agent
+        workflow_end_time = time.time()
+        self.summary_agent.set_workflow_end_time(workflow_end_time)
+        
+        # Generate final comprehensive report
+        final_report_path = self.summary_agent.generate_final_report(conversation_id)
+        print(f"\n📊 Final workflow report generated: {final_report_path}")
+        
         # Generate workflow summary
-        total_time = time.time() - self.start_time
+        total_time = workflow_end_time - self.start_time
         summary = self._generate_workflow_summary(total_time)
+        
+        # Add final report path to summary
+        summary['final_report_path'] = final_report_path
         
         # Display results
         self._display_workflow_results(summary)
@@ -2737,6 +2792,16 @@ class MasterOrchestrator:
             print("=" * 50)
             for stage_name, log_file in summary['conversation_log_files'].items():
                 print(f"   {stage_name.replace('_', ' ').title()}: {log_file}")
+            print()
+        
+        # Display final report path
+        if 'final_report_path' in summary:
+            print("\n📊 Final Workflow Report:")
+            print("=" * 50)
+            print(f"   JSON Report: {summary['final_report_path']}")
+            # Markdown report has same name but .md extension
+            md_report = summary['final_report_path'].replace('.json', '.md')
+            print(f"   Markdown Report: {md_report}")
             print()
     
     def get_workflow_status(self) -> Dict[str, Any]:

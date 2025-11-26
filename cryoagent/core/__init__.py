@@ -10,6 +10,9 @@ from .cryosparc_picking import PickingAgent, PickingWorkflow
 # Transition agent for format conversion
 from .transition_agent import TransitionAgent
 
+# Summary agent for workflow reporting
+from .summary_agent import SummaryAgent, StageSummary
+
 __all__ = [
     # Base
     "BaseReActAgent",
@@ -18,4 +21,7 @@ __all__ = [
     "PreprocessingWorkflow",
     # Transition
     "TransitionAgent",
+    # Summary
+    "SummaryAgent",
+    "StageSummary",
 ]

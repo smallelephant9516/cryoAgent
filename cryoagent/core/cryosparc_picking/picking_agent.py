@@ -92,7 +92,10 @@ You specialize in detecting, extracting, and classifying particles from preproce
 2. **ACTING**: Execute specific tools based on your reasoning
 3. **OBSERVING**: Analyze the results and update your understanding
 
-## Particle Picking Workflow (3 steps):
+## Particle Picking Workflow (Two-Round Advanced Workflow):
+The complete workflow consists of TWO ROUNDS of picking and classification:
+
+**ROUND 1: Initial Blob-Based Picking**
 1. **Blob Picker GPU**: Detect particles using GPU-accelerated Gaussian blob detection
    - Required: micrographs_job_uid (from micrograph selection), particle_diameter
    - Optional: diameter_max (defaults to 2.0 * particle_diameter), project_uid, workspace_uid
@@ -100,17 +103,42 @@ You specialize in detecting, extracting, and classifying particles from preproce
    - Particle diameter should be specified in Angstroms (this is the minimum diameter)
    - diameter_max specifies the maximum diameter to search for
 
-2. **Particle Extraction**: Extract particles from micrographs based on picked coordinates
-   - Required: particles_job_uid (from blob picker), box_size_angstroms
-   - Box size determines the size of the extracted particle images in Angstroms
+2. **Particle Extraction (Round 1)**: Extract particles from micrographs based on picked coordinates
+   - Required: particles_job_uid (from blob picker), micrographs_job_uid, box_size_pix
+   - Box size determines the size of the extracted particle images in pixels
    - Typically set to ~1.5-2x the particle diameter to include sufficient context
    - Creates particle stacks for downstream processing
 
-3. **2D Classification**: Group extracted particles into classes
-   - Required: particles_job_uid (from extraction)
+3. **2D Classification (Round 1)**: Group extracted particles into classes
+   - Required: particles_job_uid (from extraction step 2)
    - Optional: num_classes (default: 20)
    - Groups particles by similarity to identify different views and remove junk
    - Helps assess particle quality and data heterogeneity
+
+4. **Select 2D Classes**: Select best classes as templates for round 2
+   - Required: class_2d_job_uid (from step 3)
+   - Selects top classes or uses CryoSift to evaluate class quality
+
+**ROUND 2: Template-Based Refinement**
+5. **Template Picker**: Re-pick particles using class averages as templates
+   - Required: micrographs_job_uid, template_job_uid (from step 4)
+   - More accurate than blob picker - uses actual particle images as templates
+   - Produces higher quality particle picks
+
+6. **Particle Extraction (Round 2)**: Extract template-picked particles
+   - Required: particles_job_uid (from template picker), micrographs_job_uid, box_size_pix
+   - Same box size as round 1
+   - Creates refined particle stacks
+
+7. **2D Classification (Round 2)**: Classify refined particles
+   - Required: particles_job_uid (from extraction step 6)
+   - Optional: num_classes (same as round 1)
+   - **IMPORTANT**: This is the SECOND round of 2D classification. The first round (step 3) should already be completed.
+   - If you see an error about a 2D classification job already running, check if it's from round 1 - if that job is completed, you can proceed with round 2.
+
+8. **Select Final 2D Classes**: Select best classes from round 2
+   - Required: class_2d_job_uid (from step 7)
+   - These are the highest quality particles ready for 3D reconstruction
 
 ## ReAct Process:
 For each step, you MUST follow this pattern:
@@ -168,23 +196,18 @@ For each step, you MUST follow this pattern:
 ## Workflow Dependencies:
 1. Blob picker requires completed micrograph selection or CTF estimation job
 2. Particle extraction requires completed blob picker job
-3. 2D classification requires completed extraction job
-4. Each step must complete successfully before the next can begin
-5. Always verify job completion before proceeding to the next step
+3. 2D classification (Round 1) requires completed extraction job (Round 1)
+4. Template picker requires completed 2D class selection (Round 1)
+5. Particle extraction (Round 2) requires completed template picker job
+6. 2D classification (Round 2) requires completed extraction job (Round 2)
+7. Each step must complete successfully before the next can begin
+8. Always verify job completion before proceeding to the next step
 
 ## Current Configuration:
 - Project UID: {self.config.workflow.project_uid}
 - Workspace UID: {self.config.workflow.workspace_uid}
 
-## Example Workflow:
-1. Reason about the particle size and extraction parameters
-2. Execute blob_picker with appropriate diameter range
-3. Wait for blob picker to complete
-4. Execute extract_particles with appropriate box size
-5. Wait for extraction to complete
-6. Execute class_2d with desired number of classes
-7. Wait for classification to complete
-8. Observe the final results and report statistics
+
 
 Remember: Always follow the Thought → Action → Observation pattern and WAIT for each job to complete!"""
     
@@ -320,7 +343,14 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             params: Dict[str, Any] = {}
             used_params: Dict[str, Any] = {}
             try:
+                # Parse input once at the beginning
+                params = self._parse_tool_input(input_str)
+                project_uid = params.get("project_uid", self.config.workflow.project_uid)
+                workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+                
                 # Check if there's already a running classification job to prevent concurrent executions
+                # IMPORTANT: Allow a second round of 2D classification if the first round is completed
+                # We check the ACTUAL current status from CryoSPARC, not the cached status in the log
                 recent_class_2d_jobs = [
                     entry for entry in self.tool_execution_log[-10:]  # Check last 10 entries
                     if entry.get("tool") == "class_2d"
@@ -329,13 +359,45 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                     last_job = recent_class_2d_jobs[-1]
                     last_result = last_job.get("result")
                     if isinstance(last_result, dict):
-                        last_status = last_result.get("status", "")
-                        if last_status in ("queued", "launched", "running", "waiting"):
-                            return f"❌ Error: A 2D classification job is already running (status: {last_status}, job: {last_result.get('job_uid', 'unknown')}). Wait for it to complete before starting a new one."
-                
-                params = self._parse_tool_input(input_str)
-                project_uid = params.get("project_uid", self.config.workflow.project_uid)
-                workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+                        last_job_uid = last_result.get("job_uid")
+                        if last_job_uid:
+                            # Get the ACTUAL current status from CryoSPARC (not cached log status)
+                            # This fixes the issue where log shows "queued" but job is actually "completed"
+                            try:
+                                # Query CryoSPARC for the actual current status
+                                actual_status_info = self.cryosparc_tools.get_job_status(
+                                    last_job_uid,
+                                    project_uid=project_uid,
+                                    workspace_uid=workspace_uid
+                                )
+                                actual_status = actual_status_info.get("status", "")
+                                
+                                # Update the execution log entry with the fresh status
+                                # This ensures the log has accurate status for future checks
+                                if isinstance(last_result, dict):
+                                    last_result["status"] = actual_status
+                                    # Also update other status-related fields if available
+                                    if "progress" in actual_status_info:
+                                        last_result["progress"] = actual_status_info.get("progress")
+                                    if "message" in actual_status_info:
+                                        last_result["message"] = actual_status_info.get("message")
+                                
+                                # Only block if the previous job is actually still running (not completed)
+                                # This allows Round 2 to proceed after Round 1 completes
+                                if actual_status in ("queued", "launched", "running", "waiting"):
+                                    return f"❌ Error: A 2D classification job is already running (status: {actual_status}, job: {last_job_uid}). Wait for it to complete before starting a new one."
+                                # If the job is completed, failed, or cancelled, allow the new job to proceed
+                                # This enables Round 2 to start after Round 1 completes
+                            except Exception as status_check_error:
+                                # If we can't check the status, fall back to the cached status
+                                # But log a warning that we're using potentially stale data
+                                last_status = last_result.get("status", "")
+                                if last_status in ("queued", "launched", "running", "waiting"):
+                                    self.logger.warning(
+                                        f"Could not verify job {last_job_uid} status from CryoSPARC, "
+                                        f"using cached status '{last_status}'. Error: {status_check_error}"
+                                    )
+                                    return f"❌ Error: A 2D classification job may be running (cached status: {last_status}, job: {last_job_uid}). Wait for it to complete before starting a new one. If this is Round 2 and Round 1 is completed, check the job status to confirm."
                 
                 # Support both particles_job_uid and job_uid (when LLM passes just "J88")
                 particles_job_uid = params.get("particles_job_uid") or params.get("job_uid")

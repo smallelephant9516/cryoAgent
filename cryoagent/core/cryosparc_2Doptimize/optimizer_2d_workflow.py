@@ -1,6 +1,7 @@
 """ReAct-based 2D classification optimization workflow orchestrator."""
 
 import json
+import re
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from enum import Enum
@@ -184,21 +185,44 @@ Please report the current particle count from this job."""
             final_good_particles_percentage = None
             total_rounds = 0
             
+            # First, try to extract final particles job UID from LLM's response text
+            # The LLM often explicitly states the final job UID (e.g., "Final particles_job_uid: J521")
+            if result:
+                extracted_uid = self._extract_final_job_uid_from_text(result)
+                if extracted_uid:
+                    final_particles_job_uid = extracted_uid
+                    self.agent.logger.info(f"Extracted final particles job UID from LLM response: {final_particles_job_uid}")
+                    # Try to get particle count for the extracted job UID
+                    count_result = self._get_particle_count_from_log(
+                        tool_execution_log,
+                        final_particles_job_uid,
+                        "particles_selected"
+                    )
+                    if count_result:
+                        final_good_particles_count = count_result.get("num_particles")
+            
             # Track rounds by counting class_2d + select_2d_classes pairs
             class_2d_count = 0
             select_2d_count = 0
             
-            # Find the last select_2d_classes or merge_particles job
-            for tool_exec in reversed(tool_execution_log):
+            # First, count all jobs by iterating forward
+            for tool_exec in tool_execution_log:
                 tool_name = tool_exec.get("tool")
-                tool_result = tool_exec.get("result")
-                
                 if tool_name == "class_2d":
                     class_2d_count += 1
                 elif tool_name == "select_2d_classes":
                     select_2d_count += 1
+            
+            # Then, find the last (most recent) select_2d_classes or merge_particles job
+            # Iterate in reverse to find the most recent one first
+            for tool_exec in reversed(tool_execution_log):
+                tool_name = tool_exec.get("tool")
+                tool_result = tool_exec.get("result")
+                
+                if tool_name == "select_2d_classes":
                     # Always update to the last (most recent) select_2d_classes result
-                    if tool_result:
+                    # Since we iterate in reverse, the first valid one we find is the most recent
+                    if tool_result and final_particles_job_uid is None:
                         try:
                             if isinstance(tool_result, str):
                                 result_data = json.loads(tool_result)
@@ -206,6 +230,8 @@ Please report the current particle count from this job."""
                                 result_data = tool_result
                             
                             if result_data.get("success") and result_data.get("job_uid"):
+                                # Only set if we haven't found a final job yet
+                                # Since we iterate in reverse, first valid result is most recent
                                 final_particles_job_uid = result_data.get("job_uid")
                                 # Get particle count for selected particles
                                 count_result = self._get_particle_count_from_log(
@@ -219,7 +245,7 @@ Please report the current particle count from this job."""
                             pass
                 
                 elif tool_name == "merge_particles":
-                    if tool_result:
+                    if tool_result and final_particles_job_uid is None:
                         try:
                             if isinstance(tool_result, str):
                                 result_data = json.loads(tool_result)
@@ -227,6 +253,8 @@ Please report the current particle count from this job."""
                                 result_data = tool_result
                             
                             if result_data.get("success") and result_data.get("job_uid"):
+                                # Only set if we haven't found a final job yet
+                                # Since we iterate in reverse, first valid result is most recent
                                 final_particles_job_uid = result_data.get("job_uid")
                                 # Get particle count for merged particles
                                 count_result = self._get_particle_count_from_log(
@@ -311,6 +339,60 @@ Please report the current particle count from this job."""
                 error=str(e),
                 message=f"Failed to execute 2D optimization: {str(e)}"
             )
+    
+    def _extract_final_job_uid_from_text(self, text: str) -> Optional[str]:
+        """
+        Extract the final particles job UID from LLM's response text.
+        
+        The LLM often explicitly states the final job UID in patterns like:
+        
+        Args:
+            text: The LLM's response text
+            
+        Returns:
+            Job UID if found, None otherwise
+        """
+        if not text:
+            return None
+        
+        # Patterns to match job UIDs in various formats
+        patterns = [
+            r'(?:Final|final)\s+particles[_\s]?job[_\s]?uid[:\s]+(J\d+)',
+            r'(?:Final|final)\s+particles[:\s]+(J\d+)',
+            r'(?:Final|final)\s+job[:\s]+(J\d+)',
+            r'(?:Final|final)\s+result[:\s]+(J\d+)',
+            r'particles[_\s]?job[_\s]?uid[:\s]+(J\d+)',  # More general pattern
+            r'final[_\s]?particles[_\s]?job[_\s]?uid[:\s]+(J\d+)',
+        ]
+        
+        # Try each pattern
+        for pattern in patterns:
+            match = re.search(pattern, text, re.IGNORECASE)
+            if match:
+                job_uid = match.group(1)
+                # Validate it's a proper job UID format (J followed by digits)
+                if re.match(r'^J\d+$', job_uid):
+                    return job_uid
+        
+        # Also look for job UIDs mentioned near "final" keywords
+        # Find all job UIDs in the text
+        all_job_uids = re.findall(r'\b(J\d+)\b', text)
+        if all_job_uids:
+            # Look for the last job UID mentioned near "final" keywords
+            # Split text into sentences and find ones with "final"
+            sentences = re.split(r'[.!?\n]', text)
+            for sentence in reversed(sentences):  # Check from end
+                if re.search(r'\bfinal\b', sentence, re.IGNORECASE):
+                    # Extract job UID from this sentence
+                    job_match = re.search(r'\b(J\d+)\b', sentence)
+                    if job_match:
+                        return job_match.group(1)
+            
+            # If no "final" keyword found, return the last job UID mentioned
+            # (assuming the LLM mentions jobs in chronological order)
+            return all_job_uids[-1]
+        
+        return None
     
     def _get_particle_count_from_log(
         self,
