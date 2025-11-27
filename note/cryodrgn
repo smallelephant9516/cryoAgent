@@ -1,0 +1,30 @@
+# cs to star
+
+helicon images2star /home/daoyi/scratch/cryosparc_projects/CS-10076/J3/particles_selected.cs particles.star
+
+# cs to ctf.pkl
+
+cryodrgn parse_ctf_star ./particles.star -o ctf.pkl
+
+# downsample
+
+cryodrgn downsample particles.star -D 64 -o particles.64.mrcs --chunk 10000
+
+# generate config file
+
+drgnai setup --particles particles.64.txt --ctf ./ctf.pkl --capture-setup spa --reconstruction-type het --pose-estimation abinit ./test
+
+# running cryodrgn
+
+drgnai train ./test
+
+# cryodrgn 2
+
+cryodrgn abinit_het particles.64.txt --ctf ctf.pkl -n 25 --zdim 8 -o test_drgn2_64/
+
+# analyze the results using vision model
+
+
+
+
+

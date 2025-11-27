@@ -1405,14 +1405,49 @@ class TransitionAgent:
             self._initialize_tools()
     
     def _load_master_config(self):
-        """Load the master configuration file."""
+        """Load the master configuration file and merge with session.json if it exists."""
         try:
             with open(self.master_config_path, 'r') as f:
                 self.master_config = json.load(f)
             self.logger.info(f"Loaded master config from {self.master_config_path}")
+            
+            # Load and merge session.json if it exists (session.json takes precedence)
+            from pathlib import Path
+            session_config_path = Path(self.master_config_path).parent / "session.json"
+            if session_config_path.exists():
+                self.logger.info(f"Loading session configuration from {session_config_path}")
+                with open(session_config_path, 'r') as f:
+                    session_config = json.load(f)
+                # Merge session config into master config (session config takes precedence)
+                self.master_config = self._merge_configs(self.master_config, session_config)
+                self.logger.info("Session configuration merged successfully")
         except Exception as e:
             self.logger.error(f"Failed to load master config: {e}")
             raise
+    
+    def _merge_configs(self, master_config: Dict[str, Any], session_config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Merge session configuration into master configuration.
+        Session config takes precedence for overlapping keys.
+        
+        Args:
+            master_config: The master configuration dictionary
+            session_config: The session configuration dictionary to merge
+            
+        Returns:
+            Merged configuration dictionary
+        """
+        merged = master_config.copy()
+        
+        for key, value in session_config.items():
+            if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+                # Recursively merge nested dictionaries
+                merged[key] = self._merge_configs(merged[key], value)
+            else:
+                # Session config takes precedence
+                merged[key] = value
+        
+        return merged
     
     def _initialize_tools(self):
         """Initialize CryoSparc and Relion tools if needed."""

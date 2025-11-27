@@ -1933,6 +1933,18 @@ class MasterOrchestrator:
             with open(self.master_config_path, 'r') as f:
                 self.master_config = json.load(f)
             
+            # Load and merge session.json if it exists (session.json takes precedence)
+            session_config_path = Path(self.master_config_path).parent / "session.json"
+            if session_config_path.exists():
+                self.logger.info(f"Loading session configuration from {session_config_path}")
+                with open(session_config_path, 'r') as f:
+                    session_config = json.load(f)
+                # Merge session config into master config (session config takes precedence)
+                self.master_config = self._merge_configs(self.master_config, session_config)
+                self.logger.info("Session configuration merged successfully")
+            else:
+                self.logger.info(f"Session configuration not found at {session_config_path}, using master config only")
+            
             # Initialize stage agents (only for enabled stages)
             for stage_info in self.master_config["master_workflow"]["stages"]:
                 stage_name = stage_info["name"]
@@ -2019,6 +2031,30 @@ class MasterOrchestrator:
         except Exception as e:
             self.logger.error(f"Failed to initialize master orchestrator: {e}")
             return False
+    
+    def _merge_configs(self, master_config: Dict[str, Any], session_config: Dict[str, Any]) -> Dict[str, Any]:
+        """
+        Merge session configuration into master configuration.
+        Session config takes precedence for overlapping keys.
+        
+        Args:
+            master_config: The master configuration dictionary
+            session_config: The session configuration dictionary to merge
+            
+        Returns:
+            Merged configuration dictionary
+        """
+        merged = master_config.copy()
+        
+        for key, value in session_config.items():
+            if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+                # Recursively merge nested dictionaries
+                merged[key] = self._merge_configs(merged[key], value)
+            else:
+                # Session config takes precedence
+                merged[key] = value
+        
+        return merged
     
     def _reconstruct_stage_outputs_from_cache(self, stage: WorkflowStage, job_uids: Dict[str, str]) -> Dict[str, Any]:
         """

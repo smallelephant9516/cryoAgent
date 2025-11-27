@@ -25,7 +25,7 @@
       "good_particles_threshold": 0.9,
       "good_particles_threshold_description": "Threshold for good particles percentage (default: 0.9 = 90%)",
       "2d_classification": {
-        "num_classes": 50,
+        "num_classes": 200,
         "num_classes_description": "Number of 2D classes to generate for each classification round",
         "max_iterations": 20,
         "max_iterations_description": "Maximum number of classification iterations",

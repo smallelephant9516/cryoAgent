@@ -123,14 +123,14 @@ class OptimizerWorkflow:
         
         # Prepare prompt based on enabled optimizations
         if enable_box_size and enable_hetero:
-            prompt = f"""Optimize both box size and heterogeneous refinement for 3D reconstruction.
+            prompt = f"""Optimize both heterogeneous refinement (K values) and box size for 3D reconstruction.
 
 I have completed the first round of homogeneous refinement with job UID: {refinement_job_uid}
 The initial volume is from job: {volume_job_uid}
 Particles can be re-extracted from picking job: {particles_job_uid}
 Micrographs are available from job: {micrographs_job_uid}
 
-Please FIRST optimize the box size, then use the optimized refinement job for heterogeneous refinement optimization."""
+Please FIRST optimize the K value for heterogeneous refinement, then use the optimized refinement job for box size optimization."""
         elif enable_box_size:
             prompt = f"""Optimize the box size for 3D reconstruction.
 

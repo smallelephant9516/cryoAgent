@@ -33,8 +33,8 @@
     "gain_rot": 0,
     "gain_flip": 0,
     "dose": 30.648,
-    "particle_diameter": 180.0,
-    "symmetry": "D2"
+    "particle_diameter": 110.0,
+    "symmetry": "C4"
   },
   "workflow": {
     "import_movies": {

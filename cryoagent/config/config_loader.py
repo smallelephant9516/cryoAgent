@@ -324,6 +324,14 @@ class ConfigLoader:
                 with open(master_config_path, 'r') as f:
                     master_config_data = json.load(f)
                 
+                # Load and merge session.json if it exists (session.json takes precedence)
+                session_config_path = master_config_path.parent / "session.json"
+                if session_config_path.exists():
+                    with open(session_config_path, 'r') as f:
+                        session_config = json.load(f)
+                    # Merge session config into master config (session config takes precedence)
+                    master_config_data = self._merge_configs(master_config_data, session_config)
+                
                 # Merge master config with stage config (stage config takes precedence for overlapping keys)
                 config_data = self._merge_configs(master_config_data, config_data)
         

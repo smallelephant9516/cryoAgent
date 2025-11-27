@@ -5,7 +5,27 @@ import time
 from pathlib import Path
 from typing import Dict, Any, List, Optional, Callable, Sequence
 from abc import ABC, abstractmethod
-from langchain.agents import AgentExecutor, create_tool_calling_agent
+# Import AgentExecutor and create_tool_calling_agent
+# Note: langchain 1.0+ removed AgentExecutor - this code requires langchain < 1.0.0
+try:
+    from langchain.agents import AgentExecutor, create_tool_calling_agent
+except ImportError:
+    # Fallback for different import paths in langchain 0.x
+    try:
+        from langchain.agents.agent import AgentExecutor
+        from langchain.agents import create_tool_calling_agent
+    except ImportError:
+        try:
+            from langchain.agents import AgentExecutor
+            from langchain.agents.tool_calling import create_tool_calling_agent
+        except ImportError as e:
+            raise ImportError(
+                f"Failed to import AgentExecutor from langchain.agents. "
+                f"This code requires langchain >= 0.3.0, < 1.0.0. "
+                f"Please install a compatible version: pip install 'langchain>=0.3.0,<0.4.0'. "
+                f"Original error: {e}"
+            ) from e
+
 from langchain.tools import Tool
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.prompts import ChatPromptTemplate

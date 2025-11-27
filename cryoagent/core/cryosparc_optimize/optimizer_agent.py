@@ -52,7 +52,8 @@ class OptimizerAgent(BaseReActAgent):
             OptimizerTools.create_get_job_log_tool(self),
             OptimizerTools.create_reason_about_workflow_tool(self),
             OptimizerTools.create_get_hetero_class_resolutions_tool(self),
-            OptimizerTools.create_test_heterogeneous_refinement_tool(self)
+            OptimizerTools.create_test_heterogeneous_refinement_tool(self),
+            OptimizerTools.create_test_multi_round_3d_classification_tool(self)
         ]
     
     def _load_stage_config(self) -> Dict[str, Any]:
@@ -108,6 +109,10 @@ class OptimizerAgent(BaseReActAgent):
         enable_box_size = self._get_stage_param("optimization", "enable_box_size_optimization", True)
         enable_hetero = self._get_stage_param("optimization", "enable_heterogeneous_refinement", False)
         max_hetero_iterations = self._get_stage_param("optimization", "heterogeneous_refinement_max_iterations", 3)
+        enable_multi_round = self._get_stage_param("optimization", "enable_multi_round_3d_classification", False)
+        multi_round_num_classes = self._get_stage_param("optimization", "multi_round_3d_classification_num_classes", 4)
+        multi_round_max_rounds = self._get_stage_param("optimization", "multi_round_3d_classification_max_rounds", 5)
+        multi_round_improvement_threshold = self._get_stage_param("optimization", "multi_round_3d_classification_improvement_threshold", 0.1)
         
         # Determine what to optimize
         optimization_types = []
@@ -115,6 +120,8 @@ class OptimizerAgent(BaseReActAgent):
             optimization_types.append("box size/diameter")
         if enable_hetero:
             optimization_types.append("heterogeneous refinement (K values)")
+        if enable_multi_round:
+            optimization_types.append("multi-round 3D classification")
         
         optimization_desc = " and ".join(optimization_types) if optimization_types else "parameters"
         
@@ -124,7 +131,7 @@ class OptimizerAgent(BaseReActAgent):
             box_size_section = """
 ## Box Size Optimization Workflow:
 
-**Purpose**: After the first round of 3D homogeneous refinement, optimize the box size to achieve the best resolution.
+**Purpose**: Optimize the box size to achieve the best resolution. This should be done AFTER heterogeneous refinement optimization (if heterogeneous refinement is enabled), otherwise after the first round of 3D homogeneous refinement.
 
 **Agentic Optimization Process**:
 1. **Initial Assessment**: Get FSC resolution and box size from the original refinement job using `get_fsc_info`
@@ -232,7 +239,7 @@ You specialize in optimizing {optimization_desc} for 3D reconstruction by testin
 3. **OBSERVING**: Analyze the results and update your understanding
 
 ## Optimization Workflow Priority:
-{f'**IMPORTANT**: Both box size optimization and heterogeneous refinement are enabled. Complete box size optimization FIRST, then use the optimized box size refinement job for heterogeneous refinement.**' if enable_box_size and enable_hetero else ''}
+{f'**IMPORTANT**: Both heterogeneous refinement and box size optimization are enabled. Complete heterogeneous refinement (K optimization) FIRST, then use the optimized refinement job for box size optimization.**' if enable_box_size and enable_hetero else ''}
 {f'**CRITICAL: Box size optimization is DISABLED. DO NOT use test_box_size tool. Proceed directly to heterogeneous refinement using the refinement_job_uid provided.**' if not enable_box_size and enable_hetero else ''}
 {f'**Heterogeneous refinement is DISABLED**. Proceed with box size optimization only.**' if enable_box_size and not enable_hetero else ''}
 {box_size_section}
@@ -258,11 +265,12 @@ You specialize in optimizing {optimization_desc} for 3D reconstruction by testin
 - Workspace UID: {self.config.workflow.workspace_uid}
 - Box size optimization: {'ENABLED' if enable_box_size else 'DISABLED'}
 - Heterogeneous refinement: {'ENABLED' if enable_hetero else 'DISABLED'}
+- Multi-round 3D classification: {'ENABLED' if enable_multi_round else 'DISABLED'}
 
 ## Heterogeneous Refinement Optimization Workflow:
 {'' if not enable_hetero else f'''
 
-**Purpose**: After box size optimization (if enabled), optimize the number of classes (K) in heterogeneous refinement to achieve the best resolution.
+**Purpose**: Optimize the number of classes (K) in heterogeneous refinement to achieve the best resolution. This should be done BEFORE box size optimization (if box size optimization is enabled).
 
 **Agentic Optimization Process**:
 1. **Baseline**: Get FSC resolution from the final refinement job (K=1, which is homogeneous refinement)
@@ -385,18 +393,93 @@ Decision: Decide whether to:
 - The tool requires a single JSON string input, not multiple arguments
 '''}
 
-## Combined Workflow:
-{'' if not (enable_box_size and enable_hetero) else '''
-**If both optimizations are enabled**:
-1. **First**: Complete box size optimization (get best box size and refinement job)
-2. **Then**: Use the best refinement job from box size optimization as the input for heterogeneous refinement
-3. **Finally**: Report both optimizations' results
+## Multi-Round 3D Classification Optimization Workflow:
 
-**Example Combined Flow**:
-1. Optimize box size → Get best refinement job (e.g., J100)
-2. Use J100 as refinement_job_uid for heterogeneous refinement
-3. Optimize K values → Get best heterogeneous refinement result
-4. Report: best_box_size, best_box_resolution, best_hetero_k, best_hetero_resolution
+**Purpose**: Iteratively refine 3D structures using multi-round 3D classification to achieve the best resolution. This should be done AFTER heterogeneous refinement optimization (if enabled) and box size optimization (if enabled), or after the first round of 3D homogeneous refinement.
+
+**Agentic Optimization Process**:
+1. **Input**: Take volume and particles_job_uid from previous best homogeneous refinement
+2. **3D Classification**: Run 3D classification (heterogeneous refinement) with 4 classes (default)
+3. **Class Selection**: Select the best class based on resolution metric (lowest resolution is best)
+4. **3D Refinement**: Run 3D refinement (homogeneous refinement) on the selected class using volume and particles from that class
+5. **Resolution Check**: Check if resolution improved compared to previous round
+6. **Decision Making**:
+   - **If improved**: Continue the process using the refined result as input for the next round
+   - **If plateau or worse**: Stop the process and return the best refinement job
+7. **Iterative Process**: Repeat steps 2-6 until:
+   - Resolution plateaus or worsens
+   - Maximum number of rounds is reached
+   - Further rounds are unlikely to improve results
+
+**Tool Usage for Multi-Round 3D Classification**:
+
+- **test_multi_round_3d_classification**: Run multi-round 3D classification optimization
+  * **Input format: JSON string** (e.g., `{{"refinement_job_uid": "J357", "num_classes": 4, "max_rounds": 5}}`)
+  * Required parameters: refinement_job_uid (source of particles and volume from previous best homogeneous refinement, e.g., "J357")
+  * Optional parameters: num_classes (number of classes for 3D classification, default: 4), max_rounds (maximum number of rounds, default: 5), improvement_threshold (minimum improvement in resolution in Å to continue, default: 0.1)
+  * This tool automatically:
+    1. Gets initial resolution from refinement_job_uid
+    2. For each round: Runs 3D classification → Selects best class → Runs refinement → Checks improvement
+    3. Stops when resolution plateaus/worsens or max_rounds reached
+    4. Returns best_refinement_job_uid, best_resolution_angstroms, rounds_completed, and all_rounds_data
+  * Returns: best_refinement_job_uid, best_resolution_angstroms, initial_resolution_angstroms, total_improvement, rounds_completed, all_rounds_data (detailed data for each round)
+  * **Example**: Use JSON format: `{{"refinement_job_uid": "J357", "num_classes": 4, "max_rounds": 5}}`
+
+**Multi-Round 3D Classification Strategy Guidelines**:
+
+**When to Use**:
+- After completing heterogeneous refinement optimization (if enabled)
+- After completing box size optimization (if enabled)
+- After the first round of 3D homogeneous refinement (if other optimizations are disabled)
+- When you want to iteratively refine structures through multiple rounds of classification
+
+**Parameters**:
+- **num_classes**: Number of classes for 3D classification (default: 4). More classes may help identify better structures but take longer.
+- **max_rounds**: Maximum number of rounds to run (default: 5). Each round includes classification and refinement.
+- **improvement_threshold**: Minimum improvement in resolution (Å) to continue (default: 0.1). If improvement is less than this, the process may stop.
+
+**Stopping Conditions**:
+- Resolution plateaus or worsens (no improvement or worse resolution)
+- Maximum number of rounds reached
+- Improvement is below threshold for multiple consecutive rounds
+
+**Understanding Results**:
+- **best_refinement_job_uid**: The job UID of the best refinement result (use this for next stages)
+- **best_resolution_angstroms**: The best resolution achieved (lower is better)
+- **total_improvement**: Total improvement from initial to best resolution (positive means improvement)
+- **rounds_completed**: Number of rounds that were completed
+- **all_rounds_data**: Detailed information for each round including class selections and resolutions
+
+**CRITICAL: When calling test_multi_round_3d_classification, you MUST use JSON format with Action Input!**
+- Correct: Action Input: `{{"refinement_job_uid": "J357", "num_classes": 4, "max_rounds": 5}}`
+- Wrong: test_multi_round_3d_classification("J357", 4, 5) - this will fail!
+- The tool requires a single JSON string input, not multiple arguments
+{'' if not enable_multi_round else f'''
+
+**Multi-Round 3D Classification Configuration**:
+- Number of classes per round: {multi_round_num_classes}
+- Maximum rounds: {multi_round_max_rounds}
+- Improvement threshold: {multi_round_improvement_threshold} Å
+- **IMPORTANT**: Multi-round 3D classification is ENABLED. This should be done AFTER heterogeneous refinement (if enabled) and box size optimization (if enabled).
+'''}
+
+## Combined Workflow:
+{'' if not (enable_box_size or enable_hetero or enable_multi_round) else '''
+**Optimization Priority Order**:
+1. **First**: Complete heterogeneous refinement optimization (if enabled) - optimize K values, get best K and refinement job
+2. **Second**: Use the best refinement job from step 1 (or initial refinement if step 1 disabled) for box size optimization (if enabled)
+3. **Third**: Use the best refinement job from step 2 (or step 1, or initial refinement) for multi-round 3D classification (if enabled)
+4. **Finally**: Report all optimizations' results
+
+**Example Combined Flow** (if all enabled):
+1. Optimize K values → Get best heterogeneous refinement job (e.g., J100)
+2. Use J100 as refinement_job_uid for box size optimization → Get best box size refinement result (e.g., J200)
+3. Use J200 as refinement_job_uid for multi-round 3D classification → Get best multi-round refinement result (e.g., J300)
+4. Report: best_hetero_k, best_hetero_resolution, best_box_size, best_box_resolution, best_multi_round_resolution
+
+**If only multi-round 3D classification is enabled**:
+- Use the refinement_job_uid provided directly for multi-round 3D classification
+- Report: best_multi_round_refinement_job_uid, best_multi_round_resolution, rounds_completed
 '''}
 
 Remember: Always follow the Thought → Action → Observation pattern!
@@ -1517,6 +1600,254 @@ Think carefully about trends before deciding what to test next. Both optimizatio
         except Exception as e:
             error_result = {"success": False, "error": str(e)}
             self._record_tool_execution("test_heterogeneous_refinement", params if 'params' in locals() else {}, error=str(e))
+            return json.dumps(error_result)
+    
+    def _test_multi_round_3d_classification_tool(self, tool_input: str) -> str:
+        """
+        Run multi-round 3D classification optimization.
+        
+        This tool iteratively:
+        1. Runs 3D classification (heterogeneous refinement) with specified number of classes
+        2. Selects best class based on resolution metric
+        3. Runs 3D refinement (homogeneous refinement) on selected class
+        4. Checks if resolution improved
+        5. If improved, continues with refined result as input for next round
+        6. If plateau or worse, stops and returns best refinement job
+        """
+        try:
+            params = self._parse_tool_input(tool_input)
+            
+            # Extract required parameters
+            refinement_job_uid = params.get("refinement_job_uid")
+            num_classes = int(params.get("num_classes", 4))
+            max_rounds = int(params.get("max_rounds", 5))
+            improvement_threshold = float(params.get("improvement_threshold", 0.1))
+            
+            if not refinement_job_uid:
+                return json.dumps({
+                    "success": False,
+                    "error": "Missing required parameter: refinement_job_uid"
+                })
+            
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            
+            self.logger.info(f"🔄 Starting multi-round 3D classification optimization with {num_classes} classes, max {max_rounds} rounds")
+            
+            # Get initial resolution from the input refinement job
+            self.logger.info(f"📊 Getting initial resolution from refinement job {refinement_job_uid}...")
+            initial_fsc_info = self.cryosparc_tools.get_refinement_fsc_info(project_uid, refinement_job_uid)
+            if not initial_fsc_info.get("success"):
+                return json.dumps({
+                    "success": False,
+                    "error": f"Failed to get initial FSC info: {initial_fsc_info.get('error', 'Unknown error')}"
+                })
+            
+            initial_resolution = initial_fsc_info["resolution_angstroms"]
+            self.logger.info(f"✅ Initial resolution: {initial_resolution} Å")
+            
+            # Track best result and all rounds
+            best_refinement_job_uid = refinement_job_uid
+            best_resolution = initial_resolution
+            current_refinement_job_uid = refinement_job_uid
+            all_rounds_data = []
+            
+            # Iterate for max_rounds
+            for round_num in range(1, max_rounds + 1):
+                self.logger.info(f"🔄 Round {round_num}/{max_rounds}: Starting 3D classification...")
+                
+                # Step 1: Run 3D classification (heterogeneous refinement) with num_classes
+                # Repeat the volume from current refinement job num_classes times
+                volume_job_uids = [current_refinement_job_uid] * num_classes
+                symmetry = self._get_refinement_symmetry()
+                
+                self.logger.info(f"📦 Step 1/4: Running heterogeneous refinement with {num_classes} classes...")
+                hetero_params = {
+                    "project_uid": project_uid,
+                    "workspace_uid": workspace_uid,
+                    "particles_job_uid": current_refinement_job_uid,
+                    "volume_job_uids": volume_job_uids,
+                    "num_classes": num_classes,
+                    "symmetry": symmetry
+                }
+                self._record_tool_execution("heterogeneous_refinement", hetero_params)
+                hetero_result = self.cryosparc_tools.heterogeneous_refinement(
+                    **hetero_params,
+                    wait_for_completion=True,
+                    timeout=self.config.job_management.default_timeout,
+                    check_interval=self.config.job_management.status_check_interval
+                )
+                self._record_tool_execution("heterogeneous_refinement", hetero_params, result=hetero_result)
+                
+                if not hetero_result.get("success", False):
+                    error_msg = hetero_result.get("error") or "Unknown error"
+                    self.logger.error(f"❌ Heterogeneous refinement failed in round {round_num}: {error_msg}")
+                    break
+                
+                hetero_status = hetero_result.get("status", "unknown")
+                if hetero_status != "completed":
+                    error_msg = hetero_result.get("error") or f"Status: {hetero_status}"
+                    self.logger.error(f"❌ Heterogeneous refinement did not complete in round {round_num}: {error_msg}")
+                    break
+                
+                hetero_job_uid = hetero_result["job_uid"]
+                self.logger.info(f"✅ Step 1/4: Heterogeneous refinement completed, job: {hetero_job_uid}")
+                
+                # Step 2: Get resolutions for all classes and select best class
+                self.logger.info(f"📊 Step 2/4: Getting class resolutions and selecting best class...")
+                class_resolutions = self.cryosparc_tools.get_heterogeneous_refinement_class_resolutions(
+                    project_uid, hetero_job_uid
+                )
+                
+                if not class_resolutions.get("success"):
+                    error_msg = class_resolutions.get("error", "Unknown error")
+                    self.logger.error(f"❌ Failed to get class resolutions in round {round_num}: {error_msg}")
+                    break
+                
+                classes = class_resolutions.get("classes", [])
+                if not classes:
+                    self.logger.error(f"❌ No classes found in round {round_num}")
+                    break
+                
+                # Select best class: lowest resolution is best
+                # If resolution is the same (within tolerance), higher fsc_loosemask_last is better
+                best_class = None
+                best_class_resolution = float('inf')
+                best_fsc_last = -1.0
+                resolution_tolerance = 0.001
+                
+                for class_info in classes:
+                    resolution = class_info.get("resolution_angstroms")
+                    fsc_last = class_info.get("fsc_loosemask_last")
+                    
+                    if resolution is None:
+                        continue
+                    
+                    if resolution < best_class_resolution - resolution_tolerance:
+                        best_class = class_info
+                        best_class_resolution = resolution
+                        best_fsc_last = fsc_last if fsc_last is not None else -1.0
+                    elif abs(resolution - best_class_resolution) <= resolution_tolerance:
+                        if fsc_last is not None and fsc_last > best_fsc_last:
+                            best_class = class_info
+                            best_class_resolution = resolution
+                            best_fsc_last = fsc_last
+                
+                if best_class is None:
+                    self.logger.error(f"❌ Could not determine best class in round {round_num}")
+                    break
+                
+                best_class_id = best_class.get("class_id")
+                volume_group_name = best_class.get("group_name")  # e.g., "volume_class_0"
+                best_particles_group_name = volume_group_name.replace("volume_class_", "particles_class_")
+                
+                self.logger.info(f"✅ Step 2/4: Selected best class {best_class_id} with resolution {best_class_resolution:.3f} Å")
+                
+                # Step 3: Run homogeneous refinement on selected class
+                self.logger.info(f"🔧 Step 3/4: Running homogeneous refinement on selected class {best_class_id}...")
+                refine_params = {
+                    "project_uid": project_uid,
+                    "workspace_uid": workspace_uid,
+                    "particles_job_uid": hetero_job_uid,
+                    "volume_job_uid": hetero_job_uid,
+                    "symmetry": symmetry,
+                    "particles_group_name": best_particles_group_name,
+                    "volume_group_name": volume_group_name
+                }
+                self._record_tool_execution("homogeneous_refinement", refine_params)
+                refine_result = self.cryosparc_tools.homogeneous_refinement(
+                    **refine_params,
+                    wait_for_completion=True,
+                    timeout=self.config.job_management.default_timeout,
+                    check_interval=self.config.job_management.status_check_interval
+                )
+                self._record_tool_execution("homogeneous_refinement", refine_params, result=refine_result)
+                
+                if not refine_result.get("success", False):
+                    error_msg = refine_result.get("error") or "Unknown error"
+                    self.logger.error(f"❌ Homogeneous refinement failed in round {round_num}: {error_msg}")
+                    break
+                
+                refine_status = refine_result.get("status", "unknown")
+                if refine_status != "completed":
+                    error_msg = refine_result.get("error") or f"Status: {refine_status}"
+                    self.logger.error(f"❌ Homogeneous refinement did not complete in round {round_num}: {error_msg}")
+                    break
+                
+                refine_job_uid = refine_result["job_uid"]
+                self.logger.info(f"✅ Step 3/4: Homogeneous refinement completed, job: {refine_job_uid}")
+                
+                # Step 4: Get resolution from refinement
+                self.logger.info(f"📊 Step 4/4: Getting final resolution from refinement...")
+                fsc_info = self.cryosparc_tools.get_refinement_fsc_info(project_uid, refine_job_uid)
+                if not fsc_info.get("success"):
+                    error_msg = fsc_info.get("error", "Unknown error")
+                    self.logger.error(f"❌ Failed to get FSC info in round {round_num}: {error_msg}")
+                    break
+                
+                final_resolution = fsc_info["resolution_angstroms"]
+                improvement = best_resolution - final_resolution  # Positive improvement means lower resolution (better)
+                
+                self.logger.info(f"✅ Step 4/4: Round {round_num} final resolution: {final_resolution:.3f} Å")
+                self.logger.info(f"   Previous best: {best_resolution:.3f} Å, Improvement: {improvement:+.3f} Å")
+                
+                # Record round data
+                round_data = {
+                    "round": round_num,
+                    "hetero_job_uid": hetero_job_uid,
+                    "best_class_id": best_class_id,
+                    "best_class_resolution": best_class_resolution,
+                    "refine_job_uid": refine_job_uid,
+                    "final_resolution": final_resolution,
+                    "improvement": improvement,
+                    "all_classes": classes
+                }
+                all_rounds_data.append(round_data)
+                
+                # Check if resolution improved
+                if final_resolution < best_resolution:
+                    # Improved: update best and continue
+                    best_refinement_job_uid = refine_job_uid
+                    best_resolution = final_resolution
+                    current_refinement_job_uid = refine_job_uid
+                    
+                    if improvement >= improvement_threshold:
+                        self.logger.info(f"✅ Round {round_num}: Resolution improved by {improvement:.3f} Å (>= {improvement_threshold} Å threshold), continuing...")
+                    else:
+                        self.logger.info(f"⚠️  Round {round_num}: Resolution improved by {improvement:.3f} Å (< {improvement_threshold} Å threshold), but still continuing...")
+                else:
+                    # Plateau or worse: stop
+                    if final_resolution >= best_resolution:
+                        self.logger.info(f"🛑 Round {round_num}: Resolution did not improve (current: {final_resolution:.3f} Å, best: {best_resolution:.3f} Å). Stopping optimization.")
+                        break
+                    else:
+                        # This shouldn't happen, but handle it
+                        self.logger.warning(f"⚠️  Round {round_num}: Unexpected resolution comparison result")
+                        break
+            
+            result = {
+                "success": True,
+                "best_refinement_job_uid": best_refinement_job_uid,
+                "best_resolution_angstroms": best_resolution,
+                "initial_resolution_angstroms": initial_resolution,
+                "total_improvement": initial_resolution - best_resolution,
+                "rounds_completed": len(all_rounds_data),
+                "all_rounds_data": all_rounds_data
+            }
+            
+            self.logger.info(f"✅ Multi-round 3D classification optimization completed:")
+            self.logger.info(f"   Initial resolution: {initial_resolution:.3f} Å")
+            self.logger.info(f"   Best resolution: {best_resolution:.3f} Å")
+            self.logger.info(f"   Total improvement: {initial_resolution - best_resolution:.3f} Å")
+            self.logger.info(f"   Rounds completed: {len(all_rounds_data)}")
+            self.logger.info(f"   Best refinement job: {best_refinement_job_uid}")
+            
+            self._record_tool_execution("test_multi_round_3d_classification", params, result=result)
+            return json.dumps(result)
+            
+        except Exception as e:
+            error_result = {"success": False, "error": str(e)}
+            self._record_tool_execution("test_multi_round_3d_classification", params if 'params' in locals() else {}, error=str(e))
             return json.dumps(error_result)
     
     def _reason_about_workflow_tool(self, input_str: str) -> str:

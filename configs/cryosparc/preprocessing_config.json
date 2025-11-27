@@ -20,8 +20,8 @@
     "dose": 30.648,
     "gain_rot": 0,
     "gain_flip": 0,
-    "particle_diameter": 180.0,
-    "symmetry": "D2"
+    "particle_diameter": 110.0,
+    "symmetry": "C4"
   },
   "outputs": [
     "selected_micrographs",

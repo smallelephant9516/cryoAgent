@@ -95,8 +95,37 @@ def parse_args() -> argparse.Namespace:
 
 
 def load_master_config(config_path: Path) -> Dict:
+    """Load master config and merge with session.json if it exists."""
     with config_path.open("r") as handle:
-        return json.load(handle)
+        master_config = json.load(handle)
+    
+    # Load and merge session.json if it exists (session.json takes precedence)
+    session_config_path = config_path.parent / "session.json"
+    if session_config_path.exists():
+        with session_config_path.open("r") as handle:
+            session_config = json.load(handle)
+        # Merge session config into master config (session config takes precedence)
+        master_config = _merge_configs(master_config, session_config)
+    
+    return master_config
+
+
+def _merge_configs(master_config: Dict, session_config: Dict) -> Dict:
+    """
+    Merge session configuration into master configuration.
+    Session config takes precedence for overlapping keys.
+    """
+    merged = master_config.copy()
+    
+    for key, value in session_config.items():
+        if key in merged and isinstance(merged[key], dict) and isinstance(value, dict):
+            # Recursively merge nested dictionaries
+            merged[key] = _merge_configs(merged[key], value)
+        else:
+            # Session config takes precedence
+            merged[key] = value
+    
+    return merged
 
 
 def snapshot_files(root: Path) -> Set[Path]:

@@ -34,14 +34,14 @@
       {
         "name": "optimization",
         "description": "Box size optimization stage: Optimize box size/diameter for 3D reconstruction",
-        "enabled": true,
+        "enabled": false,
         "agent_group": "cryosparc",
         "agent_class": "OptimizerAgent"
       },
       {
         "name": "polish",
         "description": "Polish refinement stage: Final refinement steps with CTF refinement and motion correction to achieve best possible resolution",
-        "enabled": true,
+        "enabled": false,
         "agent_group": "cryosparc",
         "agent_class": "PolishAgent"
       }
@@ -135,10 +135,28 @@
         "temperature": 0.1,
         "timeout": 180
       }
+    },
+    "vision_models": {
+      "panshi": {
+        "api_key": "${PANSHI_API_KEY}",
+        "base_url": "https://uni-api.cstcloud.cn/v1",
+        "model_name": "qwen2.5-vl:72b",
+        "possible_models": ["qwen2.5-vl:72b"],
+        "temperature": 0.1,
+        "timeout": 60
+      },
+      "openai": {
+        "api_key": "${OPENAI_API_KEY}",
+        "base_url": "https://api.openai.com/v1",
+        "model_name": "gpt-4o",
+        "possible_models": ["gpt-4o", "gpt-4o-mini","gpt-5"],
+        "temperature": 0.1,
+        "timeout": 60
+      }
     }
   },
   "workflow": {
-    "project_uid": "P2",
+    "project_uid": "P8",
     "workspace_uid": "W1"
   },
   "job_management": {

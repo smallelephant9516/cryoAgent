@@ -175,4 +175,60 @@ class OptimizerTools:
                        "Returns: hetero_job_uid, regroup_job_uid, best_superclass_id, best_superclass_num_items, refine_job_uid, final_resolution_angstroms, and status.",
             args_schema=TestHeterogeneousRefinementInput
         )
+    
+    @staticmethod
+    def create_test_multi_round_3d_classification_tool(agent):
+        """Create tool for multi-round 3D classification optimization."""
+        # Define the input schema for StructuredTool
+        class TestMultiRound3DClassificationInput(BaseModel):
+            refinement_job_uid: str = Field(description="Source of particles and volume from previous best homogeneous refinement (e.g., 'J357')")
+            num_classes: int = Field(default=4, description="Number of classes for 3D classification (default: 4)")
+            max_rounds: int = Field(default=5, description="Maximum number of rounds to run (default: 5)")
+            improvement_threshold: float = Field(default=0.1, description="Minimum improvement in resolution (Å) to continue (default: 0.1)")
+            project_uid: str = Field(default="", description="Optional project UID")
+            workspace_uid: str = Field(default="", description="Optional workspace UID")
+        
+        # Create a wrapper function that converts structured input to string format
+        def test_multi_round_3d_classification_wrapper(
+            refinement_job_uid: str,
+            num_classes: int = 4,
+            max_rounds: int = 5,
+            improvement_threshold: float = 0.1,
+            project_uid: str = "",
+            workspace_uid: str = ""
+        ) -> str:
+            """Wrapper to convert structured input to JSON string format."""
+            import json
+            params = {
+                "refinement_job_uid": refinement_job_uid,
+                "num_classes": num_classes,
+                "max_rounds": max_rounds,
+                "improvement_threshold": improvement_threshold
+            }
+            if project_uid:
+                params["project_uid"] = project_uid
+            if workspace_uid:
+                params["workspace_uid"] = workspace_uid
+            # Convert to JSON string and call the original function
+            json_input = json.dumps(params)
+            return agent._test_multi_round_3d_classification_tool(json_input)
+        
+        return StructuredTool.from_function(
+            func=test_multi_round_3d_classification_wrapper,
+            name="test_multi_round_3d_classification",
+            description="Run multi-round 3D classification optimization. "
+                       "This tool iteratively: 1) Runs 3D classification (heterogeneous refinement) with specified number of classes, "
+                       "2) Selects best class based on resolution metric, "
+                       "3) Runs 3D refinement (homogeneous refinement) on selected class, "
+                       "4) Checks if resolution improved, "
+                       "5) If improved, continues with refined result as input for next round, "
+                       "6) If plateau or worse, stops and returns best refinement job. "
+                       "Required parameters: refinement_job_uid (source of particles and volume from previous best homogeneous refinement, e.g., 'J357'). "
+                       "Optional parameters: num_classes (number of classes for 3D classification, default: 4), "
+                       "max_rounds (maximum number of rounds, default: 5), "
+                       "improvement_threshold (minimum improvement in resolution in Å to continue, default: 0.1), "
+                       "project_uid, workspace_uid. "
+                       "Returns: best_refinement_job_uid, best_resolution_angstroms, rounds_completed, all_rounds_data, and status.",
+            args_schema=TestMultiRound3DClassificationInput
+        )
 

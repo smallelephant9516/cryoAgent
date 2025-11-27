@@ -17,7 +17,10 @@
     "tested_combinations",
     "best_hetero_k",
     "best_hetero_class_id",
-    "best_hetero_resolution"
+    "best_hetero_resolution",
+    "best_multi_round_refinement_job_uid",
+    "best_multi_round_resolution",
+    "multi_round_rounds_completed"
   ],
   "microscope_parameters": {},
   "workflow": {
@@ -28,8 +31,16 @@
       "box_size_variation_description": "Box size variation percentage (default: 0.1 = 10%)",
       "enable_box_size_optimization": true,
       "enable_heterogeneous_refinement": true,
+      "heterogeneous_refinement_max_iterations_description": "Maximum number of K values to test for heterogeneous refinement (default: 3)",
+      "enable_multi_round_3d_classification": false,
+      "enable_multi_round_3d_classification_description": "Enable multi-round 3D classification optimization (default: false). This should be done AFTER heterogeneous refinement and box size optimization.",
       "heterogeneous_refinement_max_iterations": 5,
-      "heterogeneous_refinement_max_iterations_description": "Maximum number of K values to test for heterogeneous refinement (default: 3)"
+      "multi_round_3d_classification_num_classes": 4,
+      "multi_round_3d_classification_num_classes_description": "Number of classes for 3D classification in each round (default: 4)",
+      "multi_round_3d_classification_max_rounds": 5,
+      "multi_round_3d_classification_max_rounds_description": "Maximum number of rounds to run (default: 5)",
+      "multi_round_3d_classification_improvement_threshold": 0.1,
+      "multi_round_3d_classification_improvement_threshold_description": "Minimum improvement in resolution (Å) to continue to next round (default: 0.1)"
     }
   }
 }
