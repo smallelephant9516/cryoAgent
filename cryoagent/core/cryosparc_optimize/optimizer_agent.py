@@ -99,6 +99,10 @@ class OptimizerAgent(BaseReActAgent):
         # Default to C1 if not found
         return "C1"
     
+    def _should_use_nonuniform_refinement(self) -> bool:
+        """Check if non-uniform refinement should be used instead of homogeneous refinement."""
+        return self.stage_workflow.get("optimization", {}).get("use_nonuniform_refinement", True)
+    
     def _get_stage_param(self, section: str, key: str, default: Optional[Any] = None) -> Optional[Any]:
         """Fetch a parameter from the stage workflow configuration."""
         return self.stage_workflow.get(section, {}).get(key, default)
@@ -658,8 +662,10 @@ Think carefully about trends before deciding what to test next. Both optimizatio
             extract_job_uid = extract_result["job_uid"]
             self.logger.info(f"✅ Step 1/3: Extraction completed for box_size {box_size_pix}, job: {extract_job_uid}")
             
-            # Step 2: Run homogeneous refinement
-            self.logger.info(f"🔧 Step 2/3: Starting refinement for box_size {box_size_pix}...")
+            # Step 2: Run refinement (non-uniform or homogeneous based on config)
+            use_nonuniform = self._should_use_nonuniform_refinement()
+            refinement_type = "non-uniform" if use_nonuniform else "homogeneous"
+            self.logger.info(f"🔧 Step 2/3: Starting {refinement_type} refinement for box_size {box_size_pix}...")
             symmetry = self._get_refinement_symmetry()
             refine_params = {
                 "project_uid": project_uid,
@@ -671,14 +677,23 @@ Think carefully about trends before deciding what to test next. Both optimizatio
             if refinement_resolution is not None:
                 refine_params["refinement_resolution"] = float(refinement_resolution)
             
-            self._record_tool_execution("homogeneous_refinement", refine_params)
-            refine_result = self.cryosparc_tools.homogeneous_refinement(
-                **refine_params,
-                wait_for_completion=True,
-                timeout=self.config.job_management.default_timeout,
-                check_interval=self.config.job_management.status_check_interval
-            )
-            self._record_tool_execution("homogeneous_refinement", refine_params, result=refine_result)
+            tool_name = "nonuniform_refine_new" if use_nonuniform else "homogeneous_refinement"
+            self._record_tool_execution(tool_name, refine_params)
+            if use_nonuniform:
+                refine_result = self.cryosparc_tools.nonuniform_refine_new(
+                    **refine_params,
+                    wait_for_completion=True,
+                    timeout=self.config.job_management.default_timeout,
+                    check_interval=self.config.job_management.status_check_interval
+                )
+            else:
+                refine_result = self.cryosparc_tools.homogeneous_refinement(
+                    **refine_params,
+                    wait_for_completion=True,
+                    timeout=self.config.job_management.default_timeout,
+                    check_interval=self.config.job_management.status_check_interval
+                )
+            self._record_tool_execution(tool_name, refine_params, result=refine_result)
             
             # Verify refinement completed successfully
             if not refine_result.get("success", False):
@@ -982,8 +997,10 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                             extract_job_uid = extract_result["job_uid"]
                             self.logger.info(f"✅ Step 1/3: Extraction completed for box_size {box_size_less}, job: {extract_job_uid}")
                             
-                            # Step 2: Run homogeneous refinement (wait for completion)
-                            self.logger.info(f"🔧 Step 2/3: Starting refinement for box_size {box_size_less}...")
+                            # Step 2: Run refinement (non-uniform or homogeneous based on config)
+                            use_nonuniform = self._should_use_nonuniform_refinement()
+                            refinement_type = "non-uniform" if use_nonuniform else "homogeneous"
+                            self.logger.info(f"🔧 Step 2/3: Starting {refinement_type} refinement for box_size {box_size_less}...")
                             # Get symmetry from reconstruction_config.json
                             symmetry = self._get_refinement_symmetry()
                             refine_params = {
@@ -993,17 +1010,26 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                                 "volume_job_uid": volume_job_uid,
                                 "symmetry": symmetry
                             }
-                            self._record_tool_execution("homogeneous_refinement", refine_params)
-                            refine_result = self.cryosparc_tools.homogeneous_refinement(
-                                **refine_params,
-                                wait_for_completion=True,
-                                timeout=self.config.job_management.default_timeout,
-                                check_interval=self.config.job_management.status_check_interval
-                            )
-                            self._record_tool_execution("homogeneous_refinement", refine_params, result=refine_result)
+                            tool_name = "nonuniform_refine_new" if use_nonuniform else "homogeneous_refinement"
+                            self._record_tool_execution(tool_name, refine_params)
+                            if use_nonuniform:
+                                refine_result = self.cryosparc_tools.nonuniform_refine_new(
+                                    **refine_params,
+                                    wait_for_completion=True,
+                                    timeout=self.config.job_management.default_timeout,
+                                    check_interval=self.config.job_management.status_check_interval
+                                )
+                            else:
+                                refine_result = self.cryosparc_tools.homogeneous_refinement(
+                                    **refine_params,
+                                    wait_for_completion=True,
+                                    timeout=self.config.job_management.default_timeout,
+                                    check_interval=self.config.job_management.status_check_interval
+                                )
+                            self._record_tool_execution(tool_name, refine_params, result=refine_result)
                             
                             # Verify refinement completed successfully
-                            # homogeneous_refinement returns "success" and updates with status_result
+                            # refinement returns "success" and updates with status_result
                             if not refine_result.get("success", False):
                                 error_msg = refine_result.get("error") or "Unknown error"
                                 self.logger.error(f"❌ Refinement failed for box_size {box_size_less}: {error_msg}")
@@ -1078,8 +1104,10 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                             extract_job_uid = extract_result["job_uid"]
                             self.logger.info(f"✅ Step 1/3: Extraction completed for box_size {box_size_more}, job: {extract_job_uid}")
                             
-                            # Step 2: Run homogeneous refinement (wait for completion)
-                            self.logger.info(f"🔧 Step 2/3: Starting refinement for box_size {box_size_more}...")
+                            # Step 2: Run refinement (non-uniform or homogeneous based on config)
+                            use_nonuniform = self._should_use_nonuniform_refinement()
+                            refinement_type = "non-uniform" if use_nonuniform else "homogeneous"
+                            self.logger.info(f"🔧 Step 2/3: Starting {refinement_type} refinement for box_size {box_size_more}...")
                             # Get symmetry from reconstruction_config.json
                             symmetry = self._get_refinement_symmetry()
                             refine_params = {
@@ -1089,17 +1117,26 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                                 "volume_job_uid": volume_job_uid,
                                 "symmetry": symmetry
                             }
-                            self._record_tool_execution("homogeneous_refinement", refine_params)
-                            refine_result = self.cryosparc_tools.homogeneous_refinement(
-                                **refine_params,
-                                wait_for_completion=True,
-                                timeout=self.config.job_management.default_timeout,
-                                check_interval=self.config.job_management.status_check_interval
-                            )
-                            self._record_tool_execution("homogeneous_refinement", refine_params, result=refine_result)
+                            tool_name = "nonuniform_refine_new" if use_nonuniform else "homogeneous_refinement"
+                            self._record_tool_execution(tool_name, refine_params)
+                            if use_nonuniform:
+                                refine_result = self.cryosparc_tools.nonuniform_refine_new(
+                                    **refine_params,
+                                    wait_for_completion=True,
+                                    timeout=self.config.job_management.default_timeout,
+                                    check_interval=self.config.job_management.status_check_interval
+                                )
+                            else:
+                                refine_result = self.cryosparc_tools.homogeneous_refinement(
+                                    **refine_params,
+                                    wait_for_completion=True,
+                                    timeout=self.config.job_management.default_timeout,
+                                    check_interval=self.config.job_management.status_check_interval
+                                )
+                            self._record_tool_execution(tool_name, refine_params, result=refine_result)
                             
                             # Verify refinement completed successfully
-                            # homogeneous_refinement returns "success" and updates with status_result
+                            # refinement returns "success" and updates with status_result
                             if not refine_result.get("success", False):
                                 error_msg = refine_result.get("error") or "Unknown error"
                                 self.logger.error(f"❌ Refinement failed for box_size {box_size_more}: {error_msg}")
@@ -1384,11 +1421,13 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                 self.logger.info(f"✅ Selected best class: {best_particles_group_name} (class {best_class_id})")
                 self.logger.info(f"   Using particles: {best_particles_group_name}, volume: {best_volume_group_name}")
                 
-                # Step 3: Run homogeneous refinement directly on the selected class from heterogeneous refinement
-                self.logger.info(f"🔧 Step 3/7: Running homogeneous refinement on selected class {best_class_id}...")
+                # Step 3: Run refinement directly on the selected class from heterogeneous refinement
+                use_nonuniform = self._should_use_nonuniform_refinement()
+                refinement_type = "non-uniform" if use_nonuniform else "homogeneous"
+                self.logger.info(f"🔧 Step 3/4: Running {refinement_type} refinement on selected class {best_class_id}...")
                 symmetry = self._get_refinement_symmetry()
                 
-                # For homogeneous refinement, we use particles and volume from the heterogeneous refinement job
+                # For refinement, we use particles and volume from the heterogeneous refinement job
                 refine_params = {
                     "project_uid": project_uid,
                     "workspace_uid": workspace_uid,
@@ -1398,6 +1437,7 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                     "particles_group_name": best_particles_group_name,  # e.g., "particles_class_0"
                     "volume_group_name": best_volume_group_name  # e.g., "volume_class_0"
                 }
+                tool_name = "nonuniform_refine_new" if use_nonuniform else "homogeneous_refinement"
             else:
                 # K>2 case: Normal regroup flow
                 regroup_status = regroup_result.get("status", "unknown")
@@ -1462,14 +1502,16 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                 # We'll use the volume from the regroup job that corresponds to the selected superclass
                 volume_group_name = f"volume_superclass_{best_superclass_id}"
                 
-                # Run homogeneous refinement on selected superclass particles and volumes
+                # Run refinement on selected superclass particles and volumes
                 # Both particles and volumes come from the regroup job
                 # - particles: particles_superclass_X from regroup job
                 # - volume: volume_superclass_X from regroup job
-                self.logger.info(f"🔧 Step 5/7: Running homogeneous refinement on superclass {best_superclass_id} particles and volumes...")
+                use_nonuniform = self._should_use_nonuniform_refinement()
+                refinement_type = "non-uniform" if use_nonuniform else "homogeneous"
+                self.logger.info(f"🔧 Step 5/7: Running {refinement_type} refinement on superclass {best_superclass_id} particles and volumes...")
                 symmetry = self._get_refinement_symmetry()
                 
-                # For homogeneous refinement, we need:
+                # For refinement, we need:
                 # - particles_job_uid: the regroup job, with group_name = particles_superclass_X
                 # - volume_job_uid: the regroup job, with group_name = volume_superclass_X
                 particles_group_name = best_superclass_group_name  # particles_superclass_X
@@ -1484,23 +1526,35 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                     "volume_group_name": volume_group_name  # Pass via kwargs: volume_superclass_X
                 }
                 best_class_id = best_superclass_id  # For consistency in logging
+                # use_nonuniform and refinement_type already set above
+                tool_name = "nonuniform_refine_new" if use_nonuniform else "homogeneous_refinement"
+                # Log message already set above for K>2 case
             
-            self._record_tool_execution("homogeneous_refinement", refine_params)
-            refine_result = self.cryosparc_tools.homogeneous_refinement(
-                **refine_params,
-                wait_for_completion=True,
-                timeout=self.config.job_management.default_timeout,
-                check_interval=self.config.job_management.status_check_interval
-            )
-            self._record_tool_execution("homogeneous_refinement", refine_params, result=refine_result)
+            # Common refinement execution for both K=2 and K>2 cases
+            self._record_tool_execution(tool_name, refine_params)
+            if use_nonuniform:
+                refine_result = self.cryosparc_tools.nonuniform_refine_new(
+                    **refine_params,
+                    wait_for_completion=True,
+                    timeout=self.config.job_management.default_timeout,
+                    check_interval=self.config.job_management.status_check_interval
+                )
+            else:
+                refine_result = self.cryosparc_tools.homogeneous_refinement(
+                    **refine_params,
+                    wait_for_completion=True,
+                    timeout=self.config.job_management.default_timeout,
+                    check_interval=self.config.job_management.status_check_interval
+                )
+            self._record_tool_execution(tool_name, refine_params, result=refine_result)
             
             # Verify refinement completed successfully
             if not refine_result.get("success", False):
                 error_msg = refine_result.get("error") or "Unknown error"
-                self.logger.error(f"❌ Homogeneous refinement failed for class {best_class_id}: {error_msg}")
+                self.logger.error(f"❌ {refinement_type.capitalize()} refinement failed for class {best_class_id}: {error_msg}")
                 error_data = {
                     "success": False,
-                    "error": f"Homogeneous refinement failed: {error_msg}",
+                    "error": f"{refinement_type.capitalize()} refinement failed: {error_msg}",
                     "k": k,
                     "hetero_job_uid": hetero_job_uid,
                     "best_class_id": best_class_id
@@ -1512,10 +1566,10 @@ Think carefully about trends before deciding what to test next. Both optimizatio
             refine_status = refine_result.get("status", "unknown")
             if refine_status != "completed":
                 error_msg = refine_result.get("error") or f"Status: {refine_status}"
-                self.logger.error(f"❌ Homogeneous refinement did not complete for class {best_class_id}: {error_msg}")
+                self.logger.error(f"❌ {refinement_type.capitalize()} refinement did not complete for class {best_class_id}: {error_msg}")
                 error_data = {
                     "success": False,
-                    "error": f"Homogeneous refinement did not complete: {error_msg}",
+                    "error": f"{refinement_type.capitalize()} refinement did not complete: {error_msg}",
                     "k": k,
                     "hetero_job_uid": hetero_job_uid,
                     "best_class_id": best_class_id
@@ -1530,7 +1584,7 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                 step_num = "3/4"  # K=2: Step 1=hetero, Step 2=select class, Step 3=refine, Step 4=FSC
             else:
                 step_num = "6/7"  # K>2: Normal flow
-            self.logger.info(f"✅ Step {step_num}: Homogeneous refinement completed for class {best_class_id}, job: {refine_job_uid}")
+            self.logger.info(f"✅ Step {step_num}: {refinement_type.capitalize()} refinement completed for class {best_class_id}, job: {refine_job_uid}")
             
             # Get final FSC resolution
             if regroup_job_type == "class_selection" and regroup_job_uid is None:
@@ -1894,8 +1948,10 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                 
                 self.logger.info(f"✅ Step 3/5: Selected best class {best_class_id} with resolution {best_class_resolution:.3f} Å")
                 
-                # Step 4: Run homogeneous refinement on selected class
-                self.logger.info(f"🔧 Step 4/5: Running homogeneous refinement on selected class {best_class_id}...")
+                # Step 4: Run refinement on selected class (non-uniform or homogeneous based on config)
+                use_nonuniform = self._should_use_nonuniform_refinement()
+                refinement_type = "non-uniform" if use_nonuniform else "homogeneous"
+                self.logger.info(f"🔧 Step 4/5: Running {refinement_type} refinement on selected class {best_class_id}...")
                 refine_params = {
                     "project_uid": project_uid,
                     "workspace_uid": workspace_uid,
@@ -1905,28 +1961,37 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                     "particles_group_name": best_particles_group_name,
                     "volume_group_name": volume_group_name
                 }
-                self._record_tool_execution("homogeneous_refinement", refine_params)
-                refine_result = self.cryosparc_tools.homogeneous_refinement(
-                    **refine_params,
-                    wait_for_completion=True,
-                    timeout=self.config.job_management.default_timeout,
-                    check_interval=self.config.job_management.status_check_interval
-                )
-                self._record_tool_execution("homogeneous_refinement", refine_params, result=refine_result)
+                tool_name = "nonuniform_refine_new" if use_nonuniform else "homogeneous_refinement"
+                self._record_tool_execution(tool_name, refine_params)
+                if use_nonuniform:
+                    refine_result = self.cryosparc_tools.nonuniform_refine_new(
+                        **refine_params,
+                        wait_for_completion=True,
+                        timeout=self.config.job_management.default_timeout,
+                        check_interval=self.config.job_management.status_check_interval
+                    )
+                else:
+                    refine_result = self.cryosparc_tools.homogeneous_refinement(
+                        **refine_params,
+                        wait_for_completion=True,
+                        timeout=self.config.job_management.default_timeout,
+                        check_interval=self.config.job_management.status_check_interval
+                    )
+                self._record_tool_execution(tool_name, refine_params, result=refine_result)
                 
                 if not refine_result.get("success", False):
                     error_msg = refine_result.get("error") or "Unknown error"
-                    self.logger.error(f"❌ Homogeneous refinement failed in round {round_num}: {error_msg}")
+                    self.logger.error(f"❌ {refinement_type.capitalize()} refinement failed in round {round_num}: {error_msg}")
                     break
                 
                 refine_status = refine_result.get("status", "unknown")
                 if refine_status != "completed":
                     error_msg = refine_result.get("error") or f"Status: {refine_status}"
-                    self.logger.error(f"❌ Homogeneous refinement did not complete in round {round_num}: {error_msg}")
+                    self.logger.error(f"❌ {refinement_type.capitalize()} refinement did not complete in round {round_num}: {error_msg}")
                     break
                 
                 refine_job_uid = refine_result["job_uid"]
-                self.logger.info(f"✅ Step 4/5: Homogeneous refinement completed, job: {refine_job_uid}")
+                self.logger.info(f"✅ Step 4/5: {refinement_type.capitalize()} refinement completed, job: {refine_job_uid}")
                 
                 # Step 5: Get resolution from refinement
                 self.logger.info(f"📊 Step 5/5: Getting final resolution from refinement...")

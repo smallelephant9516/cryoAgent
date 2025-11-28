@@ -26,6 +26,8 @@ vision model for reading clustering results
 
 cryodrgn implementation
 density comparision
+density difference analysis
+3D classification analysis
 
 # normal single particle dataset
 
@@ -45,11 +47,18 @@ ribosome dataset 10029
 
 TRPV1 dataset 10059
 
+resolution: 2.69 -> 2.74 (working)
+
 ## in progress
 
 feilab dataset
 
 # heterogeneous dataset
+
+## in progress
+10076 dataset
+
+# prefer oriented dataset
 
 ## in progress
 10076 dataset

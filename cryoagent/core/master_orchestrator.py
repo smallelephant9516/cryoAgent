@@ -1701,6 +1701,11 @@ class OptimizerAgent(StageAgent):
                 "iterations": len(result.tested_combinations) if result.tested_combinations else 0
             }
             
+            # Add final refinement job UID if available (non-uniform refinement with CTF refinement)
+            if result.final_refinement_job_uid:
+                stage_outputs["final_refinement_job_uid"] = result.final_refinement_job_uid
+                stage_outputs["final_refinement_resolution"] = result.final_refinement_resolution
+            
             # Calculate execution time
             execution_time = time.time() - start_time
             

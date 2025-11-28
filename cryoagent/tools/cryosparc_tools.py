@@ -2677,6 +2677,275 @@ class CryoSPARCTools:
                 "message": f"Failed to queue homogeneous refinement job: {str(e)}"
             }
     
+    def nonuniform_refine_new(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        particles_job_uid: str,
+        volume_job_uid: str,
+        refinement_resolution: Optional[float] = None,
+        symmetry: str = "C1",
+        # Advanced refinement parameters
+        refine_do_init_scale_est: bool = True,
+        refine_highpass_res: Optional[float] = None,
+        refine_num_final_iterations: Optional[int] = None,
+        refine_res_init: Optional[float] = None,
+        refine_symmetry_do_align: bool = True,
+        # Job control parameters
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Run non-uniform refinement to refine a single 3D structure.
+        
+        Note: For non-uniform refinement, both particles and volume come from the ab initio job.
+        The connections used are:
+        - particles: (volume_job_uid, "particles_all_classes")
+        - volume: (volume_job_uid, "volume_class_0")
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            workspace_uid: CryoSPARC workspace UID
+            particles_job_uid: UID of particles job (kept for compatibility, not used in connections)
+            volume_job_uid: UID of the ab initio job (used for both particles and volume)
+            refinement_resolution: Target resolution in Angstroms (optional)
+            symmetry: Symmetry group (e.g., C1, C2, D7) (default: C1)
+            # Advanced refinement parameters
+            refine_do_init_scale_est: Enable initial scale estimation (default: True)
+            refine_highpass_res: High-pass filter resolution in Angstroms (optional)
+            refine_num_final_iterations: Number of final refinement iterations (optional)
+            refine_res_init: Initial resolution for refinement in Angstroms (optional)
+            refine_symmetry_do_align: Enable symmetry alignment (default: True)
+            # Job control parameters
+            lane: Compute lane to use
+            hostname: Specific hostname to run on
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            check_interval: Time between status checks in seconds
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+            
+            # Check if group names are explicitly provided (e.g., from heterogeneous refinement)
+            particles_group_name = kwargs.get("particles_group_name")
+            volume_group_name = kwargs.get("volume_group_name")
+            
+            if particles_group_name and volume_group_name:
+                # Use explicitly provided group names (e.g., particles_class_X, volume_class_X)
+                particles_slot = particles_group_name
+                volume_slot = volume_group_name
+                print(f"ℹ️  Using explicit group names: particles={particles_slot}, volume={volume_slot}")
+            else:
+                # Determine the correct output slots
+                # For optimization: particles come from particles_job_uid (extraction), volume from volume_job_uid (reconstruction)
+                # For normal refinement: both come from volume_job_uid (ab initio)
+                
+                # Check if particles_job_uid is different from volume_job_uid (optimization case)
+                use_separate_particles = (particles_job_uid != volume_job_uid)
+                
+                if use_separate_particles:
+                    # Optimization case: particles from extraction job, volume from refinement job
+                    # Find particles output slot from extraction job
+                    try:
+                        extract_job = project.find_job(particles_job_uid)
+                        extract_job.refresh()
+                        extract_doc = getattr(extract_job, "doc", {})
+                        extract_outputs = extract_doc.get("output_result_groups", [])
+                        # Find particles output slot
+                        particles_slot = "particles"  # Default
+                        for group in extract_outputs:
+                            if group.get("type") == "particle":
+                                particles_slot = group.get("name", "particles")
+                                break
+                    except Exception as e:
+                        particles_slot = "particles"
+                        print(f"⚠️  Could not detect particles slot from extraction job, using default: {e}")
+                    
+                    # Find volume output slot from volume job (refinement job)
+                    try:
+                        volume_job = project.find_job(volume_job_uid)
+                        volume_job.refresh()
+                        volume_doc = getattr(volume_job, "doc", {})
+                        volume_outputs = volume_doc.get("output_result_groups", [])
+                        # Find volume output slot
+                        volume_slot = "volume"  # Default
+                        for group in volume_outputs:
+                            if group.get("type") == "volume":
+                                volume_slot = group.get("name", "volume")
+                                break
+                    except Exception as e:
+                        volume_slot = "volume"
+                        print(f"⚠️  Could not detect volume slot from volume job, using default: {e}")
+                    
+                    print(f"ℹ️  Optimization mode: particles from {particles_job_uid}.{particles_slot}, volume from {volume_job_uid}.{volume_slot}")
+                else:
+                    # Normal case: both from same job
+                    try:
+                        source_job = project.find_job(volume_job_uid)
+                        source_job_type = source_job.doc.get("type", "")
+                        
+                        # Try to detect actual output slots from the job
+                        source_job.refresh()
+                        source_doc = getattr(source_job, "doc", {})
+                        source_outputs = source_doc.get("output_result_groups", [])
+                        
+                        # Find actual particles and volume slots
+                        detected_particles_slot = None
+                        detected_volume_slot = None
+                        
+                        for group in source_outputs:
+                            group_type = group.get("type", "").lower()
+                            group_name = group.get("name", "")
+                            if "particle" in group_type or "particle" in group_name.lower():
+                                detected_particles_slot = group_name
+                            elif "volume" in group_type or "volume" in group_name.lower():
+                                detected_volume_slot = group_name
+                        
+                        # Use detected slots if found, otherwise fall back to job type conventions
+                        if detected_particles_slot:
+                            particles_slot = detected_particles_slot
+                        elif "abinit" in source_job_type.lower():
+                            particles_slot = "particles_all_classes"
+                        elif "refine" in source_job_type.lower() or "recon" in source_job_type.lower():
+                            particles_slot = "particles"  # Common for refinement/reconstruction jobs
+                        else:
+                            particles_slot = "particles"  # Default for other job types
+                        
+                        if detected_volume_slot:
+                            volume_slot = detected_volume_slot
+                        elif "abinit" in source_job_type.lower():
+                            volume_slot = "volume_class_0"
+                        elif "refine" in source_job_type.lower() or "recon" in source_job_type.lower():
+                            volume_slot = "volume"  # Common for refinement/reconstruction jobs
+                        else:
+                            volume_slot = "volume"  # Default for other job types
+                            
+                        print(f"ℹ️  Detected source job type: {source_job_type}")
+                        print(f"ℹ️  Using particles slot: '{particles_slot}', volume slot: '{volume_slot}'")
+                    except Exception as e:
+                        # Fallback: try to detect slots, otherwise use refinement convention
+                        try:
+                            source_job = project.find_job(volume_job_uid)
+                            source_job.refresh()
+                            source_doc = getattr(source_job, "doc", {})
+                            source_outputs = source_doc.get("output_result_groups", [])
+                            
+                            for group in source_outputs:
+                                group_type = group.get("type", "").lower()
+                                group_name = group.get("name", "")
+                                if "particle" in group_type:
+                                    particles_slot = group_name
+                                elif "volume" in group_type:
+                                    volume_slot = group_name
+                            print(f"ℹ️  Detected slots from job outputs: particles='{particles_slot}', volume='{volume_slot}'")
+                        except Exception:
+                            # Final fallback to refinement convention
+                            particles_slot = "particles"
+                            volume_slot = "volume"
+                            print(f"⚠️  Could not detect job type, using refinement convention: {e}")
+            
+            # Create non-uniform refinement job with comprehensive parameters
+            job_params: Dict[str, Any] = {
+                "refine_do_init_scale_est": refine_do_init_scale_est,
+                "refine_symmetry_do_align": refine_symmetry_do_align
+            }
+            
+            # Add CTF refinement parameters if provided
+            refine_defocus_refine = kwargs.get("refine_defocus_refine", True)
+            refine_ctf_global_refine = kwargs.get("refine_ctf_global_refine", True)
+            job_params["refine_defocus_refine"] = refine_defocus_refine
+            job_params["refine_ctf_global_refine"] = refine_ctf_global_refine
+            
+            # Add refinement resolution if specified
+            if refinement_resolution is not None:
+                job_params["refine_res"] = refinement_resolution
+            
+            # Add symmetry if specified and not C1
+            if symmetry and symmetry != "C1":
+                job_params["refine_symmetry"] = symmetry
+            
+            # Add high-pass filter resolution if specified
+            if refine_highpass_res is not None:
+                job_params["refine_highpass_res"] = refine_highpass_res
+            
+            # Add number of final iterations if specified
+            if refine_num_final_iterations is not None:
+                job_params["refine_num_final_iterations"] = refine_num_final_iterations
+            
+            # Add initial resolution if specified
+            if refine_res_init is not None:
+                job_params["refine_res_init"] = refine_res_init
+            
+            # Create the job - non-uniform refinement job type
+            job = workspace.create_job(
+                "nonuniform_refine_new",  # Non-uniform refinement job type
+                connections={
+                    "particles": (particles_job_uid, particles_slot),
+                    "volume": (volume_job_uid, volume_slot)
+                },
+                params=job_params
+            )
+            
+            # Queue the job with lane auto-detection
+            used_lane = lane
+            try:
+                job.queue(lane=lane, hostname=hostname)
+            except Exception as queue_error:
+                message = str(queue_error)
+                if (lane is None and hostname is None and "Must specify a lane" in message):
+                    try:
+                        lanes = self.cs.get_lanes()
+                        if not lanes:
+                            raise queue_error
+                        used_lane = lanes[0]["name"]
+                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
+                        job.queue(lane=used_lane)
+                    except Exception:
+                        raise queue_error
+                else:
+                    raise queue_error
+            print(f"Queued non-uniform refinement job: {job.uid}")
+            
+            job_uid = job.uid
+            
+            result = {
+                "success": True,
+                "job_uid": job_uid,
+                "job_type": "nonuniform_refine_new",
+                "message": f"Non-uniform refinement job {job_uid} queued successfully",
+                "symmetry": symmetry,
+                "refinement_resolution": refinement_resolution,
+                "lane": used_lane
+            }
+            
+            if wait_for_completion:
+                status_result = self.wait_for_job_completion(
+                    project_uid=project_uid,
+                    job_uid=job_uid,
+                    timeout=timeout,
+                    check_interval=check_interval
+                )
+                result.update(status_result)
+            
+            return result
+            
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "job_type": "nonuniform_refine_new",
+                "message": f"Failed to queue non-uniform refinement job: {str(e)}"
+            }
+    
     def reference_motion_correction(
         self,
         project_uid: str,

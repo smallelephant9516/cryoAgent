@@ -40,7 +40,9 @@
       "multi_round_3d_classification_max_rounds": 5,
       "multi_round_3d_classification_max_rounds_description": "Maximum number of rounds to run (default: 5)",
       "multi_round_3d_classification_improvement_threshold": 0.1,
-      "multi_round_3d_classification_improvement_threshold_description": "Minimum improvement in resolution (Å) to continue to next round (default: 0.1)"
+      "multi_round_3d_classification_improvement_threshold_description": "Minimum improvement in resolution (Å) to continue to next round (default: 0.1)",
+      "use_nonuniform_refinement": true,
+      "use_nonuniform_refinement_description": "Use non-uniform refinement (nonuniform_refine_new) instead of homogeneous refinement (homo_refine_new) for resolution verification (default: true)"
     }
   }
 }
