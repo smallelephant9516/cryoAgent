@@ -395,7 +395,7 @@ Decision: Decide whether to:
 
 ## Multi-Round 3D Classification Optimization Workflow:
 
-**Purpose**: Iteratively refine 3D structures using multi-round 3D classification to achieve the best resolution. This should be done AFTER heterogeneous refinement optimization (if enabled) and box size optimization (if enabled), or after the first round of 3D homogeneous refinement.
+**Purpose**: Iteratively refine 3D structures using multi-round 3D classification to achieve the best resolution. This should be done FIRST, before heterogeneous refinement optimization (if enabled) and box size optimization (if enabled), using the initial homogeneous refinement result.
 
 **Agentic Optimization Process**:
 1. **Input**: Take volume and particles_job_uid from previous best homogeneous refinement
@@ -406,7 +406,7 @@ Decision: Decide whether to:
 6. **Decision Making**:
    - **If improved**: Continue the process using the refined result as input for the next round
    - **If plateau or worse**: Stop the process and return the best refinement job
-7. **Iterative Process**: Repeat steps 2-6 until:
+7. **Iterative Process**: Repeat steps until:
    - Resolution plateaus or worsens
    - Maximum number of rounds is reached
    - Further rounds are unlikely to improve results
@@ -428,9 +428,9 @@ Decision: Decide whether to:
 **Multi-Round 3D Classification Strategy Guidelines**:
 
 **When to Use**:
-- After completing heterogeneous refinement optimization (if enabled)
-- After completing box size optimization (if enabled)
-- After the first round of 3D homogeneous refinement (if other optimizations are disabled)
+- FIRST, before heterogeneous refinement optimization (if enabled)
+- FIRST, before box size optimization (if enabled)
+- After the first round of 3D homogeneous refinement (use the initial refinement_job_uid)
 - When you want to iteratively refine structures through multiple rounds of classification
 
 **Parameters**:
@@ -460,22 +460,22 @@ Decision: Decide whether to:
 - Number of classes per round: {multi_round_num_classes}
 - Maximum rounds: {multi_round_max_rounds}
 - Improvement threshold: {multi_round_improvement_threshold} Å
-- **IMPORTANT**: Multi-round 3D classification is ENABLED. This should be done AFTER heterogeneous refinement (if enabled) and box size optimization (if enabled).
+- **IMPORTANT**: Multi-round 3D classification is ENABLED. This should be done FIRST, before heterogeneous refinement (if enabled) and box size optimization (if enabled).
 '''}
 
 ## Combined Workflow:
 {'' if not (enable_box_size or enable_hetero or enable_multi_round) else '''
 **Optimization Priority Order**:
-1. **First**: Complete heterogeneous refinement optimization (if enabled) - optimize K values, get best K and refinement job
-2. **Second**: Use the best refinement job from step 1 (or initial refinement if step 1 disabled) for box size optimization (if enabled)
-3. **Third**: Use the best refinement job from step 2 (or step 1, or initial refinement) for multi-round 3D classification (if enabled)
+1. **First**: Complete multi-round 3D classification (if enabled) - iteratively refine structures through multiple rounds
+2. **Second**: Use the best refinement job from step 1 (or initial refinement if step 1 disabled) for heterogeneous refinement optimization (if enabled) - optimize K values, get best K and refinement job
+3. **Third**: Use the best refinement job from step 2 (or step 1, or initial refinement) for box size optimization (if enabled)
 4. **Finally**: Report all optimizations' results
 
 **Example Combined Flow** (if all enabled):
-1. Optimize K values → Get best heterogeneous refinement job (e.g., J100)
-2. Use J100 as refinement_job_uid for box size optimization → Get best box size refinement result (e.g., J200)
-3. Use J200 as refinement_job_uid for multi-round 3D classification → Get best multi-round refinement result (e.g., J300)
-4. Report: best_hetero_k, best_hetero_resolution, best_box_size, best_box_resolution, best_multi_round_resolution
+1. Run multi-round 3D classification → Get best multi-round refinement result (e.g., J100)
+2. Use J100 as refinement_job_uid for heterogeneous refinement → Get best K and refinement job (e.g., J200)
+3. Use J200 as refinement_job_uid for box size optimization → Get best box size refinement result (e.g., J300)
+4. Report: best_multi_round_resolution, best_hetero_k, best_hetero_resolution, best_box_size, best_box_resolution
 
 **If only multi-round 3D classification is enabled**:
 - Use the refinement_job_uid provided directly for multi-round 3D classification
@@ -1619,9 +1619,19 @@ Think carefully about trends before deciding what to test next. Both optimizatio
             
             # Extract required parameters
             refinement_job_uid = params.get("refinement_job_uid")
-            num_classes = int(params.get("num_classes", 4))
-            max_rounds = int(params.get("max_rounds", 5))
-            improvement_threshold = float(params.get("improvement_threshold", 0.1))
+            
+            # Get num_classes from config if not provided in params
+            # Default to config value: multi_round_3d_classification_num_classes
+            config_num_classes = self._get_stage_param("optimization", "multi_round_3d_classification_num_classes", 4)
+            num_classes = int(params.get("num_classes", config_num_classes))
+            
+            # Get max_rounds from config if not provided in params
+            config_max_rounds = self._get_stage_param("optimization", "multi_round_3d_classification_max_rounds", 5)
+            max_rounds = int(params.get("max_rounds", config_max_rounds))
+            
+            # Get improvement_threshold from config if not provided in params
+            config_improvement_threshold = self._get_stage_param("optimization", "multi_round_3d_classification_improvement_threshold", 0.1)
+            improvement_threshold = float(params.get("improvement_threshold", config_improvement_threshold))
             
             if not refinement_job_uid:
                 return json.dumps({
@@ -1652,33 +1662,170 @@ Think carefully about trends before deciding what to test next. Both optimizatio
             current_refinement_job_uid = refinement_job_uid
             all_rounds_data = []
             
+            # Track the particles source for each round
+            # Round 1 uses initial refinement job, subsequent rounds use particles from the selected best class
+            particles_source_job_uid = refinement_job_uid
+            
             # Iterate for max_rounds
             for round_num in range(1, max_rounds + 1):
                 self.logger.info(f"🔄 Round {round_num}/{max_rounds}: Starting 3D classification...")
                 
-                # Step 1: Run 3D classification (heterogeneous refinement) with num_classes
-                # Repeat the volume from current refinement job num_classes times
-                volume_job_uids = [current_refinement_job_uid] * num_classes
                 symmetry = self._get_refinement_symmetry()
                 
-                self.logger.info(f"📦 Step 1/4: Running heterogeneous refinement with {num_classes} classes...")
-                hetero_params = {
+                # Step 1: In EVERY round, run ab initio reconstruction with num_classes
+                # Use particles from the selected best class that was refined with homogeneous refinement
+                # Round 1: Use particles from initial refinement job
+                # Round 2+: Use particles from previous round's homogeneous refinement (selected best class)
+                if round_num > 1:
+                    # For subsequent rounds, use particles from the previous round's homogeneous refinement
+                    # This ensures we're using particles from the selected best class
+                    particles_source_job_uid = current_refinement_job_uid
+                    self.logger.info(f"📦 Round {round_num}: Using particles from previous round's selected best class (refinement job: {particles_source_job_uid})")
+                else:
+                    # Round 1: Use particles from initial refinement job
+                    particles_source_job_uid = refinement_job_uid
+                    self.logger.info(f"📦 Round {round_num}: Using particles from initial refinement job: {particles_source_job_uid}")
+                
+                self.logger.info(f"📦 Step 1/5 (Round {round_num}): Running ab initio reconstruction with {num_classes} classes...")
+                
+                ab_initio_params = {
                     "project_uid": project_uid,
                     "workspace_uid": workspace_uid,
-                    "particles_job_uid": current_refinement_job_uid,
-                    "volume_job_uids": volume_job_uids,
+                    "particles_job_uid": particles_source_job_uid,
                     "num_classes": num_classes,
-                    "symmetry": symmetry
+                    "symmetry": symmetry,
+                    "initial_resolution": 20.0,
+                    "final_resolution": 10.0,
+                    "max_iterations": 50
                 }
-                self._record_tool_execution("heterogeneous_refinement", hetero_params)
-                hetero_result = self.cryosparc_tools.heterogeneous_refinement(
-                    **hetero_params,
+                self._record_tool_execution("ab_initio_reconstruction", ab_initio_params)
+                ab_initio_result = self.cryosparc_tools.ab_initio_reconstruction(
+                    **ab_initio_params,
                     wait_for_completion=True,
                     timeout=self.config.job_management.default_timeout,
                     check_interval=self.config.job_management.status_check_interval
                 )
-                self._record_tool_execution("heterogeneous_refinement", hetero_params, result=hetero_result)
+                self._record_tool_execution("ab_initio_reconstruction", ab_initio_params, result=ab_initio_result)
                 
+                if not ab_initio_result.get("success", False):
+                    error_msg = ab_initio_result.get("error") or "Unknown error"
+                    self.logger.error(f"❌ Ab initio reconstruction failed in round {round_num}: {error_msg}")
+                    break
+                
+                ab_initio_status = ab_initio_result.get("status", "unknown")
+                if ab_initio_status != "completed":
+                    error_msg = ab_initio_result.get("error") or f"Status: {ab_initio_status}"
+                    self.logger.error(f"❌ Ab initio reconstruction did not complete in round {round_num}: {error_msg}")
+                    break
+                
+                ab_initio_job_uid = ab_initio_result["job_uid"]
+                self.logger.info(f"✅ Step 1/5: Ab initio reconstruction completed, job: {ab_initio_job_uid}")
+                
+                # Step 2: Run heterogeneous refinement using all ab initio volumes (0 to n-1)
+                # For ab initio with multiple classes, volumes are in the same job with different group names
+                # (volume_class_0, volume_class_1, ..., volume_class_{n-1})
+                self.logger.info(f"📦 Step 2/5 (Round {round_num}): Running heterogeneous refinement with all ab initio classes (0 to {num_classes-1})...")
+                
+                # Create heterogeneous refinement with ab initio volumes
+                # We need to manually create connections with different volume group names
+                try:
+                    from cryosparc.tools import CryoSPARC
+                    project = self.cryosparc_tools.cs.find_project(project_uid)
+                    workspace = project.find_workspace(workspace_uid)
+                    
+                    # Get particles from ab initio job (particles_all_classes)
+                    # For ab initio with multiple classes, particles are in particles_all_classes group
+                    particles_slot = self.cryosparc_tools._infer_particles_output_slot(project, ab_initio_job_uid)
+                    # Ensure we use particles_all_classes if available (for multi-class ab initio)
+                    try:
+                        ab_initio_job = project.find_job(ab_initio_job_uid)
+                        ab_initio_job.refresh()
+                        ab_initio_doc = getattr(ab_initio_job, "doc", {}) or {}
+                        ab_initio_outputs = ab_initio_doc.get("output_result_groups", []) or []
+                        for group in ab_initio_outputs:
+                            name = group.get("name") or ""
+                            group_type = (group.get("type") or "").lower()
+                            if "particle" in group_type and "all_classes" in name.lower():
+                                particles_slot = name
+                                break
+                    except Exception:
+                        pass  # Fall back to inferred slot
+                    
+                    # Create volume connections: same ab initio job, different volume group names (0 to n-1)
+                    volume_connections = [
+                        (ab_initio_job_uid, f"volume_class_{i}") 
+                        for i in range(num_classes)
+                    ]
+                    
+                    connections = {
+                        "particles": (ab_initio_job_uid, particles_slot),
+                        "volume": volume_connections
+                    }
+                    
+                    self.logger.info(f"🔗 Connecting heterogeneous refinement:")
+                    self.logger.info(f"   Particles: from {ab_initio_job_uid} (group: {particles_slot})")
+                    self.logger.info(f"   Volumes: from {ab_initio_job_uid} (groups: {[f'volume_class_{i}' for i in range(num_classes)]})")
+                    
+                    # Do not impose symmetry in heterogeneous refinement (let it use default C1)
+                    # Symmetry will be applied only in the homogeneous refinement step
+                    job_params = {}
+                    
+                    hetero_job = workspace.create_job(
+                        "hetero_refine",
+                        connections=connections,
+                        params=job_params
+                    )
+                    
+                    # Queue the job
+                    used_lane = None
+                    try:
+                        hetero_job.queue()
+                    except Exception as queue_error:
+                        message = str(queue_error)
+                        if "Must specify a lane" in message:
+                            try:
+                                lanes = self.cryosparc_tools.cs.get_lanes()
+                                if lanes:
+                                    used_lane = lanes[0]["name"]
+                                    self.logger.info(f"⚙️ No lane specified; using lane '{used_lane}'")
+                                    hetero_job.queue(lane=used_lane)
+                            except Exception:
+                                raise queue_error
+                        else:
+                            raise queue_error
+                    
+                    hetero_job_uid = hetero_job.uid
+                    self.logger.info(f"✅ Queued heterogeneous refinement job: {hetero_job_uid}")
+                    
+                    # Wait for completion
+                    hetero_result = self.cryosparc_tools.wait_for_job_completion(
+                        project_uid=project_uid,
+                        job_uid=hetero_job_uid,
+                        timeout=self.config.job_management.default_timeout,
+                        check_interval=self.config.job_management.status_check_interval
+                    )
+                    
+                    hetero_status = hetero_result.get("status", "unknown")
+                    if hetero_status != "completed":
+                        error_msg = hetero_result.get("error") or f"Status: {hetero_status}"
+                        self.logger.error(f"❌ Heterogeneous refinement did not complete in round {round_num}: {error_msg}")
+                        break
+                    
+                    # Create a result dict similar to heterogeneous_refinement method
+                    hetero_result = {
+                        "success": True,
+                        "job_uid": hetero_job_uid,
+                        "status": "completed"
+                    }
+                    
+                    self.logger.info(f"✅ Step 2/5: Heterogeneous refinement completed, job: {hetero_job_uid}")
+                    
+                except Exception as e:
+                    self.logger.error(f"❌ Failed to create heterogeneous refinement with ab initio volumes: {str(e)}")
+                    hetero_result = {"success": False, "error": str(e)}
+                    break
+                
+                # Check if heterogeneous refinement was successful (common check for both branches)
                 if not hetero_result.get("success", False):
                     error_msg = hetero_result.get("error") or "Unknown error"
                     self.logger.error(f"❌ Heterogeneous refinement failed in round {round_num}: {error_msg}")
@@ -1690,11 +1837,15 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                     self.logger.error(f"❌ Heterogeneous refinement did not complete in round {round_num}: {error_msg}")
                     break
                 
-                hetero_job_uid = hetero_result["job_uid"]
-                self.logger.info(f"✅ Step 1/4: Heterogeneous refinement completed, job: {hetero_job_uid}")
+                # Ensure hetero_job_uid is set (it should be set in both branches, but add safety check)
+                if "hetero_job_uid" not in locals():
+                    hetero_job_uid = hetero_result.get("job_uid")
+                    if not hetero_job_uid:
+                        self.logger.error(f"❌ Could not get hetero_job_uid in round {round_num}")
+                        break
                 
-                # Step 2: Get resolutions for all classes and select best class
-                self.logger.info(f"📊 Step 2/4: Getting class resolutions and selecting best class...")
+                # Step 3: Get resolutions for all classes and select best class
+                self.logger.info(f"📊 Step 3/5: Getting class resolutions and selecting best class...")
                 class_resolutions = self.cryosparc_tools.get_heterogeneous_refinement_class_resolutions(
                     project_uid, hetero_job_uid
                 )
@@ -1741,10 +1892,10 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                 volume_group_name = best_class.get("group_name")  # e.g., "volume_class_0"
                 best_particles_group_name = volume_group_name.replace("volume_class_", "particles_class_")
                 
-                self.logger.info(f"✅ Step 2/4: Selected best class {best_class_id} with resolution {best_class_resolution:.3f} Å")
+                self.logger.info(f"✅ Step 3/5: Selected best class {best_class_id} with resolution {best_class_resolution:.3f} Å")
                 
-                # Step 3: Run homogeneous refinement on selected class
-                self.logger.info(f"🔧 Step 3/4: Running homogeneous refinement on selected class {best_class_id}...")
+                # Step 4: Run homogeneous refinement on selected class
+                self.logger.info(f"🔧 Step 4/5: Running homogeneous refinement on selected class {best_class_id}...")
                 refine_params = {
                     "project_uid": project_uid,
                     "workspace_uid": workspace_uid,
@@ -1775,10 +1926,10 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                     break
                 
                 refine_job_uid = refine_result["job_uid"]
-                self.logger.info(f"✅ Step 3/4: Homogeneous refinement completed, job: {refine_job_uid}")
+                self.logger.info(f"✅ Step 4/5: Homogeneous refinement completed, job: {refine_job_uid}")
                 
-                # Step 4: Get resolution from refinement
-                self.logger.info(f"📊 Step 4/4: Getting final resolution from refinement...")
+                # Step 5: Get resolution from refinement
+                self.logger.info(f"📊 Step 5/5: Getting final resolution from refinement...")
                 fsc_info = self.cryosparc_tools.get_refinement_fsc_info(project_uid, refine_job_uid)
                 if not fsc_info.get("success"):
                     error_msg = fsc_info.get("error", "Unknown error")
@@ -1788,12 +1939,13 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                 final_resolution = fsc_info["resolution_angstroms"]
                 improvement = best_resolution - final_resolution  # Positive improvement means lower resolution (better)
                 
-                self.logger.info(f"✅ Step 4/4: Round {round_num} final resolution: {final_resolution:.3f} Å")
+                self.logger.info(f"✅ Step 5/5: Round {round_num} final resolution: {final_resolution:.3f} Å")
                 self.logger.info(f"   Previous best: {best_resolution:.3f} Å, Improvement: {improvement:+.3f} Å")
                 
                 # Record round data
                 round_data = {
                     "round": round_num,
+                    "ab_initio_job_uid": ab_initio_job_uid,
                     "hetero_job_uid": hetero_job_uid,
                     "best_class_id": best_class_id,
                     "best_class_resolution": best_class_resolution,
@@ -1809,12 +1961,15 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                     # Improved: update best and continue
                     best_refinement_job_uid = refine_job_uid
                     best_resolution = final_resolution
+                    # Update current_refinement_job_uid for next round's ab initio (particles from selected best class)
                     current_refinement_job_uid = refine_job_uid
                     
                     if improvement >= improvement_threshold:
                         self.logger.info(f"✅ Round {round_num}: Resolution improved by {improvement:.3f} Å (>= {improvement_threshold} Å threshold), continuing...")
+                        self.logger.info(f"   Next round will use particles from this refinement job (selected best class)")
                     else:
                         self.logger.info(f"⚠️  Round {round_num}: Resolution improved by {improvement:.3f} Å (< {improvement_threshold} Å threshold), but still continuing...")
+                        self.logger.info(f"   Next round will use particles from this refinement job (selected best class)")
                 else:
                     # Plateau or worse: stop
                     if final_resolution >= best_resolution:

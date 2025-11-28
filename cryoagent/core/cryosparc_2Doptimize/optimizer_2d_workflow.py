@@ -126,7 +126,7 @@ Workflow:
 3. Step C (Function 1 - Iterative): Call class_2d ONCE to start iterative refinement until ≥{threshold_pct}% good particles (max {max_rounds} rounds)
 
 CRITICAL INSTRUCTIONS FOR STEP C:
-- After Step B, you will have two select_2d jobs (J157 from Step A and J159 from Step B)
+- After Step B, you will have two select_2d jobs (from Step A and Step B)
 - For Step C, call class_2d ONCE with any one of the job UIDs (e.g., J157)
 - The class_2d tool will AUTOMATICALLY detect and connect BOTH jobs in this SINGLE call
 - DO NOT call class_2d multiple times - ONE call handles both jobs automatically
@@ -270,6 +270,67 @@ Please report the current particle count from this job."""
             # Calculate total rounds (each round = class_2d + select_2d_classes)
             # The minimum of class_2d_count and select_2d_count gives us the number of complete rounds
             total_rounds = min(class_2d_count, select_2d_count)
+            
+            # Check if we should run select_2d to select all particles after the last round
+            enable_select_all = opt_config.get("enable_select_all_after_last_round", False)
+            if enable_select_all and class_2d_count > 0:
+                # Find the last class_2d job from the execution log
+                last_class_2d_job_uid = None
+                for tool_exec in reversed(tool_execution_log):
+                    if tool_exec.get("tool") == "class_2d":
+                        tool_result = tool_exec.get("result")
+                        if tool_result:
+                            try:
+                                if isinstance(tool_result, str):
+                                    result_data = json.loads(tool_result)
+                                else:
+                                    result_data = tool_result
+                                
+                                if result_data.get("success") and result_data.get("job_uid"):
+                                    last_class_2d_job_uid = result_data.get("job_uid")
+                                    break
+                            except (json.JSONDecodeError, TypeError, ValueError):
+                                pass
+                
+                if last_class_2d_job_uid:
+                    try:
+                        self.agent.logger.info(
+                            f"Option 'enable_select_all_after_last_round' is enabled. "
+                            f"Running select_2d job to select all particles from the last 2D classification job {last_class_2d_job_uid}"
+                        )
+                        
+                        # Run select_2d with "all" selection mode to select all particles
+                        select_result = self.agent.cryosparc_tools.select_2d_classes(
+                            project_uid=self.config.workflow.project_uid,
+                            workspace_uid=self.config.workflow.workspace_uid,
+                            class_2d_job_uid=last_class_2d_job_uid,
+                            selection_mode="all",
+                            wait_for_completion=True,
+                            timeout=self.config.job_management.default_timeout,
+                            check_interval=self.config.job_management.status_check_interval
+                        )
+                        
+                        if select_result.get("job_uid"):
+                            # Update final particles job to be this new select_2d job
+                            final_particles_job_uid = select_result.get("job_uid")
+                            self.agent.logger.info(
+                                f"Successfully created select_2d job {final_particles_job_uid} "
+                                f"to select all particles from the last round"
+                            )
+                            
+                            # Update workflow summary
+                            workflow_summary["select_all_after_last_round"] = True
+                            workflow_summary["select_all_job_uid"] = final_particles_job_uid
+                            workflow_summary["select_all_source_job_uid"] = last_class_2d_job_uid
+                        else:
+                            error_msg = select_result.get("error", "Unknown error")
+                            self.agent.logger.warning(
+                                f"Failed to create select_2d job to select all particles: {error_msg}"
+                            )
+                    except Exception as e:
+                        self.agent.logger.error(
+                            f"Error running select_2d to select all particles after last round: {e}"
+                        )
             
             # If we have a final particles job, try to get the count and calculate percentage
             if final_particles_job_uid:

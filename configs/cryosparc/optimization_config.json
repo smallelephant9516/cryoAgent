@@ -32,7 +32,7 @@
       "enable_box_size_optimization": true,
       "enable_heterogeneous_refinement": true,
       "heterogeneous_refinement_max_iterations_description": "Maximum number of K values to test for heterogeneous refinement (default: 3)",
-      "enable_multi_round_3d_classification": false,
+      "enable_multi_round_3d_classification": true,
       "enable_multi_round_3d_classification_description": "Enable multi-round 3D classification optimization (default: false). This should be done AFTER heterogeneous refinement and box size optimization.",
       "heterogeneous_refinement_max_iterations": 5,
       "multi_round_3d_classification_num_classes": 4,

@@ -1,0 +1,55 @@
+# basic agentic workflow
+
+## finished
+relion cryosparc tools implemented
+preprocessing -> particle picking -> 3D reconstruction
+
+3D optimization workflow: cryosparc done, relion wait
+2D optimization workflow: cryosparc done, relion wait
+polish workflow: cryosparc done, relion wait
+
+workflow summary report
+
+## in progress
+
+chatbot
+written report for method publication
+tree structure for the report
+
+# hetergeneous analysis
+
+## finished
+
+vision model for reading clustering results
+
+## in progress
+
+cryodrgn implementation
+density comparision
+
+# normal single particle dataset
+
+## finished
+
+relion tutorial: 2.9-> 2.73
+T20S tutorial: 2.89 -> 2.51
+
+## in progress
+
+relion 10240 dataset
+ribosome dataset 10029
+
+# membrane protein dataset
+
+## finished
+
+TRPV1 dataset 10059
+
+## in progress
+
+feilab dataset
+
+# heterogeneous dataset
+
+## in progress
+10076 dataset

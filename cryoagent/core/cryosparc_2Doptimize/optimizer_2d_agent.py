@@ -96,6 +96,7 @@ class Optimizer2DAgent(BaseReActAgent):
         enable_f2 = self._get_stage_param("2d_optimization", "enable_function2_rescue", True)
         max_rounds = self._get_stage_param("2d_optimization", "max_iterative_rounds", 5)
         threshold = self._get_stage_param("2d_optimization", "good_particles_threshold", 0.9)
+        enable_select_all = self._get_stage_param("2d_optimization", "enable_select_all_after_last_round", False)
         
         threshold_pct = int(threshold * 100)
         
@@ -114,6 +115,7 @@ You specialize in optimizing particle selection through iterative 2D classificat
 - Function 2 (Rescue): {'ENABLED' if enable_f2 else 'DISABLED'}
 - Max Iterative Rounds: {max_rounds}
 - Good Particles Threshold: {threshold_pct}%
+- Select All After Last Round: {'ENABLED' if enable_select_all else 'DISABLED'}
 
 ## Workflow Overview:
 
@@ -185,15 +187,20 @@ Iterative loop (max {max_rounds} rounds):
     - You don't need to specify both jobs manually - just call class_2d once normally and the tool handles connecting both
     - This connects both J157.particles_selected (from Step A) and J159.particles_selected (from Step B) directly instead of merging them first
 
-- **select_2d_classes**: Select good 2D classes using CryoSift
+- **select_2d_classes**: Select 2D classes using various selection modes
   * Required: class_2d_job_uid (e.g., "J123")
-  * Optional: selection_mode (default: "cryosift"), cryosift_threshold
+  * Optional: selection_mode (default: "cryosift", options: "cryosift", "top_n", "all"), cryosift_threshold
+  * Selection modes:
+    - "cryosift": Selects classes using CryoSift evaluation (default)
+    - "top_n": Selects top N classes by particle count
+    - "all": Selects all classes (useful for selecting all particles from a classification round)
   * Returns: job_uid, selected_template_indices, selection_metadata
   * **IMPORTANT**: The select_2D job outputs:
     - particles_selected: Good particles (selected classes) - use this group name when referencing selected particles
     - particles_excluded: Excluded particles (non-selected classes) - use this group name when referencing excluded particles
   * **For Function 2 (Rescue)**: To get excluded particles, use the select_2D job_uid with particles_group_name="particles_excluded" in get_particle_count, 
     and use the same job_uid with particles_excluded group when running class_2d on excluded particles
+  * **Note**: If "Select All After Last Round" is enabled, the workflow will automatically run a select_2d job with selection_mode="all" after the last round
 
 - **get_particle_count**: Get number of particles in a job
   * Required: particles_job_uid (e.g., "J123")

@@ -31,9 +31,10 @@ class Optimizer2DTools:
         """Create tool for selecting 2D classes using CryoSift."""
         return Tool(
             name="select_2d_classes",
-            description="Select good 2D classes using CryoSift evaluation. "
+            description="Select 2D classes using various selection modes. "
                        "Required parameters: class_2d_job_uid (e.g., 'J123'). "
-                       "Optional parameters: selection_mode (default: 'cryosift'), cryosift_threshold, project_uid, workspace_uid. "
+                       "Optional parameters: selection_mode (default: 'cryosift', options: 'cryosift', 'top_n', 'all'), cryosift_threshold, project_uid, workspace_uid. "
+                       "Selection modes: 'cryosift' (selects classes using CryoSift evaluation), 'top_n' (selects top N classes by particle count), 'all' (selects all classes). "
                        "Returns: job_uid, selected_template_indices, selection_metadata, and status.",
             func=agent._select_2d_classes_tool
         )

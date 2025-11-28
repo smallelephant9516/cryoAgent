@@ -1600,6 +1600,21 @@ class CryoSPARCTools:
                         else:
                             raise
 
+                if selection_mode.lower() == "all":
+                    # Select all classes
+                    if class_info:
+                        selected_indices = [int(entry.get("class_idx", -1)) for entry in class_info if entry.get("class_idx") is not None]
+                        selection_metadata.update(
+                            {
+                                "total_classes": len(class_info),
+                                "selected_classes": len(selected_indices),
+                                "selection_mode": "all",
+                            }
+                        )
+                        print(f"✅ Selected all {len(selected_indices)} classes via 'all' selection mode")
+                    else:
+                        selected_indices = []
+
                 if selection_mode.lower() == "top_n":
                     top_n = max(0, int(top_n_classes)) if top_n_classes is not None else 0
                     if top_n > 0 and class_info:
@@ -1621,7 +1636,8 @@ class CryoSPARCTools:
                             }
                         )
 
-                if selected_indices:
+                if selected_indices and selection_mode.lower() != "all":
+                    # Print detailed list for non-"all" modes (avoid printing very long lists for "all" mode)
                     print(f"✅ Selected classes via {selection_metadata.get('selection_mode', selection_mode)}: {selected_indices}")
 
                 if selected_indices and class_info:
@@ -2296,13 +2312,37 @@ class CryoSPARCTools:
             workspace = project.find_workspace(workspace_uid)
             
             # Create ab initio reconstruction job
-            # Note: Start with empty params - CryoSPARC will use defaults
-            # Parameter names may vary by CryoSPARC version
+            # Set parameters for homo_abinit job type
+            # CryoSPARC parameter names for homo_abinit (from CryoSPARC v4.7.1):
+            # - abinit_K: number of classes
+            # - abinit_init_res: initial resolution in Angstroms (starting frequency)
+            # - abinit_max_res: maximum resolution in Angstroms (maximum frequency)
+            # - abinit_num_init_iters: number of initial iterations before annealing
+            # - abinit_num_final_iters: number of final iterations after annealing
+            # - abinit_symmetry: symmetry group
             job_params: Dict[str, Any] = {}
             
-            # Try to add parameters only if we know they're valid
-            # These names might not be correct - let CryoSPARC use defaults for now
-            # TODO: Verify correct parameter names for your CryoSPARC version
+            # Set number of classes (K) - always set to ensure correct number of classes
+            job_params["abinit_K"] = num_classes
+            
+            # Set resolution parameters (correct parameter names)
+            job_params["abinit_init_res"] = initial_resolution
+            job_params["abinit_max_res"] = final_resolution
+            
+            # Set iteration parameters
+            # Note: CryoSPARC uses abinit_num_init_iters and abinit_num_final_iters
+            # We'll set abinit_num_final_iters based on max_iterations
+            # Default: abinit_num_init_iters=200, abinit_num_final_iters=300
+            # Total iterations ≈ abinit_num_init_iters + annealing + abinit_num_final_iters
+            # For simplicity, we'll set abinit_num_final_iters to approximate max_iterations
+            if max_iterations is not None:
+                # If max_iterations is provided, distribute it between init and final
+                # Default init iters is 200, so we'll set final iters to max_iterations - 200
+                # But ensure it's at least 100
+                final_iters = max(100, max_iterations - 200)
+                job_params["abinit_num_final_iters"] = final_iters
+            
+            # Set symmetry (only if not C1, otherwise CryoSPARC uses default)
             
             particles_output_slot = self._infer_particles_output_slot(project, particles_job_uid)
             

@@ -24,6 +24,8 @@
       "max_iterative_rounds_description": "Maximum number of iterative rounds for Function 1 (default: 5)",
       "good_particles_threshold": 0.9,
       "good_particles_threshold_description": "Threshold for good particles percentage (default: 0.9 = 90%)",
+      "enable_select_all_after_last_round": false,
+      "enable_select_all_after_last_round_description": "If enabled, after the last round of 2D classification, run a select_2d job to select all particles from that round (default: false)",
       "2d_classification": {
         "num_classes": 200,
         "num_classes_description": "Number of 2D classes to generate for each classification round",

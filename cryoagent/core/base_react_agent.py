@@ -14,17 +14,14 @@ except ImportError:
     try:
         from langchain.agents.agent import AgentExecutor
         from langchain.agents import create_tool_calling_agent
-    except ImportError:
-        try:
-            from langchain.agents import AgentExecutor
-            from langchain.agents.tool_calling import create_tool_calling_agent
-        except ImportError as e:
-            raise ImportError(
-                f"Failed to import AgentExecutor from langchain.agents. "
-                f"This code requires langchain >= 0.3.0, < 1.0.0. "
-                f"Please install a compatible version: pip install 'langchain>=0.3.0,<0.4.0'. "
-                f"Original error: {e}"
-            ) from e
+    
+    except ImportError as e:
+        raise ImportError(
+            f"Failed to import AgentExecutor from langchain.agents. "
+            f"This code requires langchain >= 0.3.0, < 1.0.0. "
+            f"Please install a compatible version: pip install 'langchain>=0.3.0,<0.4.0'. "
+            f"Original error: {e}"
+        ) from e
 
 from langchain.tools import Tool
 from langchain_core.language_models import BaseLanguageModel
