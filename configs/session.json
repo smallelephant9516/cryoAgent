@@ -39,7 +39,7 @@
       {
         "name": "polish",
         "description": "Polish refinement stage: Final refinement steps with CTF refinement and motion correction to achieve best possible resolution",
-        "enabled": false,
+        "enabled": true,
         "agent_group": "cryosparc",
         "agent_class": "PolishAgent"
       }
@@ -48,7 +48,7 @@
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
     "continue_job": true,
-    "relion_dir": "/home/daoyi/scratch/relion/relion_tutorial/ccc",
+    "relion_dir": "/home/daoyi/scratch/relion/10028/ccc",
     "backend_execution": {
       "enabled": true,
       "default_timeout": 84600,
@@ -59,7 +59,7 @@
     }
   },
   "workflow": {
-    "project_uid": "P8",
+    "project_uid": "P4",
     "workspace_uid": "W1"
   }
 }
