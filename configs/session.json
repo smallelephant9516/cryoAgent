@@ -48,7 +48,7 @@
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
     "continue_job": true,
-    "relion_dir": "/home/daoyi/scratch/relion/10028/ccc",
+    "relion_dir": "/home/daoyi/scratch/relion/10059/ccc",
     "backend_execution": {
       "enabled": true,
       "default_timeout": 84600,
@@ -59,7 +59,7 @@
     }
   },
   "workflow": {
-    "project_uid": "P4",
+    "project_uid": "P8",
     "workspace_uid": "W1"
   }
 }

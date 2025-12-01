@@ -236,10 +236,13 @@ Execute the 3D reconstruction workflow starting with {method_name.lower()}:
 2. **Homogeneous Refinement** - Refine the single 3D structure
    - Tool: homogeneous_refinement
    - Parameters:
-     * particles_job_uid=[from step 1]
-     * volume_job_uid=[from step 1]
+     * particles_job_uid=[ORIGINAL input - same particles_job_uid used in step 1, e.g., {particles_job_uid}]
+     * volume_job_uid=[from step 1 - the ab initio job UID that produced the volume]
      * symmetry={symmetry}
      * refinement_resolution={p['refinement_resolution'] if p['refinement_resolution'] else "auto"}
+   - CRITICAL: particles_job_uid and volume_job_uid must be DIFFERENT
+     - particles_job_uid: Use the ORIGINAL input particles (same as used in step 1)
+     - volume_job_uid: Use the ab initio job UID from step 1
    - Improves resolution and quality of the structure
    - Wait for completion and record job UID
 """

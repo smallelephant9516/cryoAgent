@@ -43,8 +43,8 @@ class ReconstructionTools:
         """Create tool for homogeneous refinement."""
         # Define the input schema for StructuredTool
         class HomogeneousRefinementInput(BaseModel):
-            particles_job_uid: str = Field(description="UID of particles job (from ab initio job, e.g., 'J425')")
-            volume_job_uid: str = Field(description="UID of volume job (from ab initio job, e.g., 'J425'). Both particles and volume typically come from the same ab initio job.")
+            particles_job_uid: str = Field(description="UID of particles job from the ORIGINAL input (Select 2D job or import particle job, e.g., 'J100'). This should be the SAME particles_job_uid that was used for ab initio reconstruction, NOT the ab initio job UID.")
+            volume_job_uid: str = Field(description="UID of volume job from ab initio reconstruction job (e.g., 'J425'). This is the ab initio job that produced the initial 3D volume. IMPORTANT: particles_job_uid and volume_job_uid should be DIFFERENT - particles from original input, volume from ab initio.")
             refinement_resolution: Optional[float] = Field(default=None, description="Target resolution in Angstroms (optional)")
             symmetry: Optional[str] = Field(default=None, description="Symmetry group (e.g., C1, C2, D7, default: C1)")
             refine_do_init_scale_est: Optional[bool] = Field(default=True, description="Enable initial scale estimation")
@@ -113,7 +113,8 @@ class ReconstructionTools:
             func=homogeneous_refinement_wrapper,
             name="homogeneous_refinement",
             description="Refine a single 3D structure with all particles. "
-                       "Required parameters: particles_job_uid, volume_job_uid (both from ab initio job, typically the same job UID). "
+                       "Required parameters: particles_job_uid (from ORIGINAL input - Select 2D job or import particle job), volume_job_uid (from ab initio reconstruction job). "
+                       "CRITICAL: particles_job_uid and volume_job_uid must be DIFFERENT - particles from original input, volume from ab initio. "
                        "Optional parameters: refinement_resolution (target resolution in Å), symmetry, "
                        "refine_do_init_scale_est (enable initial scale estimation), "
                        "refine_highpass_res (high-pass filter resolution in Å), "

@@ -34,7 +34,11 @@
         "initial_resolution": 12.0,
         "initial_resolution_description": "Initial resolution limit in Angstroms",
         "final_resolution": 6.0,
-        "final_resolution_description": "Final resolution limit in Angstroms"
+        "final_resolution_description": "Final resolution limit in Angstroms",
+        "force_max": true,
+        "force_max_description": "Force max over poses/shifts when aligning particles to references. If True, maximize over poses and shifts. If False, marginalize over poses and shifts to account for alignment uncertainty. Default: False (recommended for better results with small or low SNR particles, or when using fewer classes)",
+        "batchsize_per_class": 200,
+        "batchsize_per_class_description": "Number of particles per class to use during each iteration of online-EM. For small or low SNR particles, this can be increased to 200. Default: 200"
       },
       "select_2d_classes": {
         "selection_mode": "cryosift",

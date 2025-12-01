@@ -49,7 +49,7 @@ workspace_id = config.workflow.workspace_uid
 # 2. Inspect the job type to find the exact parameter name
 job_type = 'regroup_3D_new' 
 
-job = cs.find_job("P8", "J33")
+job = cs.find_job("P8", "J110")
 
 # 3. Inspect the 'params_base' dictionary
 # This contains the default key-value pairs for the job parameters.

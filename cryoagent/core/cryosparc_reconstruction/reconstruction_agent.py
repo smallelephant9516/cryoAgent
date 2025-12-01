@@ -53,7 +53,6 @@ class ReconstructionAgent(BaseReActAgent):
         """Create 3D reconstruction-specific tools."""
         return [
             ReconstructionTools.create_ab_initio_tool(self),
-            ReconstructionTools.create_homogeneous_reconstruction_tool(self),
             ReconstructionTools.create_homogeneous_refinement_tool(self),
             ReconstructionTools.create_heterogeneous_refinement_tool(self),
             ReconstructionTools.create_get_job_status_tool(self),
@@ -114,7 +113,10 @@ You specialize in generating and refining 3D structures from 2D particle images.
 
 ### Phase 2: Refinement (Optional)
 2. **Homogeneous Refinement**: Refine a single 3D structure
-   - Required: particles_job_uid, volume_job_uid (from ab initio)
+   - Required: particles_job_uid (from ORIGINAL input - Select 2D job or import particle job), volume_job_uid (from ab initio reconstruction job)
+   - CRITICAL: particles_job_uid and volume_job_uid must be DIFFERENT
+     * particles_job_uid: Use the SAME particles_job_uid that was used for ab initio reconstruction (the original input)
+     * volume_job_uid: Use the ab initio reconstruction job UID that produced the initial 3D volume
    - Use when all particles represent the same structure
    - Improves resolution through iterative refinement
    
@@ -187,16 +189,12 @@ CRITICAL: You MUST try at least 3 different parameter combinations before giving
   * Optional: symmetry (C1 for no symmetry, C2/D7 etc. if known)
   * Start the job, then wait for completion
   
-- **homogeneous_reconstruction**: Generate single 3D model (alternative to ab initio)
-  * Required: particles_job_uid (from 2D class selection or extraction)
-  * Optional: initial_resolution (20.0 Å is typical starting point)
-  * Optional: final_resolution (8.0 Å for initial models)
-  * Optional: symmetry (C1 for no symmetry, C2/D7 etc. if known)
-  * Often faster and more robust than ab initio for homogeneous datasets
-  * Start the job, then wait for completion
-  
 - **homogeneous_refinement**: Refine single structure
-  * Required: particles_job_uid, volume_job_uid (from ab initio)
+  * Required: particles_job_uid (from ORIGINAL input - Select 2D job or import particle job), volume_job_uid (from ab initio reconstruction job)
+  * CRITICAL: particles_job_uid and volume_job_uid must be DIFFERENT
+    - particles_job_uid: Use the SAME particles_job_uid that was used for ab initio reconstruction (the original input particles)
+    - volume_job_uid: Use the ab initio reconstruction job UID (e.g., if ab initio was J138, use J138 for volume_job_uid)
+  * Example: If ab initio used particles from J100 and produced volume in J138, then use particles_job_uid=J100, volume_job_uid=J138
   * Use after ab initio if only one good class emerges
   * Improves resolution and quality
   * Start the job, then wait for completion
@@ -262,17 +260,10 @@ CRITICAL: You MUST try at least 3 different parameter combinations before giving
 4. Wait for completion
 
 **Simple Homogeneous Case (Alternative)**:
-1. Run homogeneous_reconstruction
+1. Run homogeneous_refinement
 2. Wait for completion
 3. Run homogeneous_refinement with the resulting volume
 4. Wait for completion
-
-**Heterogeneous Case**:
-1. Run ab_initio_reconstruction with num_classes=3
-2. Wait for completion
-3. Analyze which classes are good
-4. Run heterogeneous_refinement with good volumes
-5. Wait for completion
 
 Remember: Always follow the Thought → Action → Observation pattern and WAIT for each job to complete!
 3D reconstruction jobs can take significant time, especially ab initio."""
@@ -350,66 +341,15 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             self._record_tool_execution("ab_initio_reconstruction", params if 'params' in locals() else {}, error=str(e))
             return json.dumps(error_result)
     
-    def _homogeneous_reconstruction_tool(self, tool_input: str) -> str:
-        """Execute homogeneous reconstruction."""
-        try:
-            params = self._parse_tool_input(tool_input)
-            
-            # Extract required parameters
-            # Support both "particles_job_uid" and "job_uid" for flexibility
-            particles_job_uid = params.get("particles_job_uid") or params.get("job_uid")
-            if not particles_job_uid:
-                return json.dumps({
-                    "success": False,
-                    "error": "Missing required parameter: particles_job_uid or job_uid"
-                })
-            
-            # Get project and workspace UIDs
-            project_uid = params.get("project_uid", self.config.workflow.project_uid)
-            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
-            
-            # Extract optional parameters
-            refinement_defaults = self.stage_workflow.get("refinement", {})
-            initial_resolution = params.get("initial_resolution", refinement_defaults.get("initial_resolution", 20.0))
-            final_resolution = params.get("final_resolution", refinement_defaults.get("final_resolution", 8.0))
-            symmetry = params.get("symmetry")
-            if not symmetry:
-                symmetry = self._get_microscope_parameter("symmetry") or refinement_defaults.get("symmetry") or "C1"
-            params["symmetry"] = symmetry
-            
-            # Job control parameters
-            wait_for_completion = params.get("wait_for_completion", "false").lower() == "true"
-            timeout = int(params.get("timeout", self.config.job_management.default_timeout))
-            check_interval = int(params.get("check_interval", self.config.job_management.status_check_interval))
-            
-            # Execute homogeneous reconstruction
-            result = self.cryosparc_tools.homogeneous_reconstruction(
-                project_uid=project_uid,
-                workspace_uid=workspace_uid,
-                particles_job_uid=particles_job_uid,
-                initial_resolution=initial_resolution,
-                final_resolution=final_resolution,
-                symmetry=symmetry,
-                wait_for_completion=wait_for_completion,
-                timeout=timeout,
-                check_interval=check_interval
-            )
-            
-            # Log the tool execution
-            self._record_tool_execution("homogeneous_reconstruction", params, result=result)
-            
-            return json.dumps(result)
-            
-        except Exception as e:
-            error_result = {"success": False, "error": str(e)}
-            self._record_tool_execution("homogeneous_reconstruction", params if 'params' in locals() else {}, error=str(e))
-            return json.dumps(error_result)
-    
     def _homogeneous_refinement_tool(self, tool_input: str) -> str:
         """Execute homogeneous refinement."""
+        
+        print(f"Homogeneous refinement tool input: {tool_input}")
 
         try:
             params = dict(self._parse_tool_input(tool_input))
+
+            print(f"Homogeneous refinement params: {params}")
             # Extract required parameters
             particles_job_uid = params.get("particles_job_uid")
             volume_job_uid = params.get("volume_job_uid")
@@ -427,6 +367,22 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 return json.dumps({
                     "success": False,
                     "error": f"Missing required parameters: {', '.join(missing)}"
+                })
+            
+            # CRITICAL VALIDATION: particles_job_uid and volume_job_uid should be DIFFERENT
+            if particles_job_uid == volume_job_uid:
+                error_msg = (
+                    f"ERROR: particles_job_uid and volume_job_uid cannot be the same (both are '{particles_job_uid}'). "
+                    f"For homogeneous refinement:\n"
+                    f"  - particles_job_uid should be from the ORIGINAL input (Select 2D job or import particle job)\n"
+                    f"  - volume_job_uid should be from the ab initio reconstruction job\n"
+                    f"Example: If ab initio used particles from J100 and produced volume in J138, "
+                    f"use particles_job_uid=J100, volume_job_uid=J138"
+                )
+                print(f"⚠️  {error_msg}")
+                return json.dumps({
+                    "success": False,
+                    "error": error_msg
                 })
             
             # Get project and workspace UIDs
@@ -466,7 +422,7 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 project_uid=project_uid,
                 workspace_uid=workspace_uid,
                 particles_job_uid=particles_job_uid,
-                particles_group_name='particles_all_classes',
+                particles_group_name='particles_selected',
                 volume_group_name='volume_class_0',
                 volume_job_uid=volume_job_uid,
                 refinement_resolution=refinement_resolution,
@@ -572,10 +528,19 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
 - **symmetry**: C1 (no symmetry) is safest default
 - Often faster and more robust than ab initio for single structure datasets
 
+**Homogeneous Refinement Parameters**:
+- **particles_job_uid**: From ORIGINAL input - Select 2D job or import particle job (the SAME particles_job_uid that was used for ab initio reconstruction)
+- **volume_job_uid**: From ab initio reconstruction job (the ab initio job UID that produced the initial 3D volume)
+- **refinement_resolution**: Target resolution in Angstroms (optional)
+- **symmetry**: C1 (no symmetry) is safest default
+- **CRITICAL**: particles_job_uid and volume_job_uid must be DIFFERENT
+  * Example: If ab initio used particles from J100 and produced volume in J138, use particles_job_uid=J100, volume_job_uid=J138
+  * DO NOT use the same job UID for both parameters
+
 **Next Steps Analysis**:
 - If no reconstruction jobs are running: Choose between:
   * ab_initio_reconstruction (standard approach, supports multiple classes)
-  * homogeneous_reconstruction (faster alternative for single structure)
+  * homogeneous_refinement (faster alternative for single structure)
 - If reconstruction is running: Wait for completion, then assess results
 - If initial model completed successfully: Decide on refinement strategy
   * Single good class → homogeneous refinement

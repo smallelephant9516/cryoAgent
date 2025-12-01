@@ -237,8 +237,15 @@ Iterative loop (max {max_rounds} rounds):
 
 - **Particle Count Calculation**: 
   - Good particles percentage = (selected_particles_count / input_particles_count) × 100
-  - Always use the CURRENT input particles count for percentage calculation
-  - After each round, the input becomes the selected particles from previous round
+  - **CRITICAL**: The "input_particles_count" is the count from the PREVIOUS round's selection, NOT the original input
+  - **Round 1**: Calculate percentage as (selected_count / original_input_count) × 100
+  - **Round 2+**: Calculate percentage as (selected_count / previous_round_selected_count) × 100
+  - **Example**: 
+    * Original input: 525,514 particles
+    * Round 1 selected: 300,000 particles → Percentage = (300,000 / 525,514) × 100 = 57.1%
+    * Round 2 selected: 280,000 particles → Percentage = (280,000 / 300,000) × 100 = 93.3% (NOT 280,000 / 525,514!)
+    * Round 3 selected: 275,000 particles → Percentage = (275,000 / 280,000) × 100 = 98.2% (NOT 275,000 / 525,514!)
+  - Always get the previous round's selected count using `get_particle_count` on the previous select_2d job before calculating percentage
 
 - **Excluded Particles**: 
   - Use particles_excluded group from select_2D job to get excluded particles
@@ -640,6 +647,20 @@ Think carefully about the workflow order and which functions are enabled before 
                     if not num_classes:
                         num_classes = self._get_stage_param("2d_classification", "num_classes", 50)
                     
+                    # Get force_max from params or config
+                    force_max = params.get("force_max")
+                    if force_max is None:
+                        force_max_config = self._get_stage_param("2d_classification", "force_max")
+                        if force_max_config is not None:
+                            force_max = bool(force_max_config)
+                    
+                    # Get batchsize_per_class from params or config
+                    batchsize_per_class = params.get("batchsize_per_class")
+                    if batchsize_per_class is None:
+                        batchsize_per_class_config = self._get_stage_param("2d_classification", "batchsize_per_class")
+                        if batchsize_per_class_config is not None:
+                            batchsize_per_class = int(batchsize_per_class_config)
+                    
                     used_params = {
                         "project_uid": project_uid,
                         "workspace_uid": workspace_uid,
@@ -648,6 +669,14 @@ Think carefully about the workflow order and which functions are enabled before 
                         "timeout": int(params.get("timeout", self.config.job_management.default_timeout * 2)),
                         "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
                     }
+                    
+                    # Add force_max if specified
+                    if force_max is not None:
+                        used_params["force_max"] = force_max
+                    
+                    # Add batchsize_per_class if specified
+                    if batchsize_per_class is not None:
+                        used_params["batchsize_per_class"] = batchsize_per_class
                     
                     if particles_job_uids:
                         # Multiple particle inputs - connect both jobs directly

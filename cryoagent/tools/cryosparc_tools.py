@@ -1240,6 +1240,8 @@ class CryoSPARCTools:
         wait_for_completion: bool = False,
         timeout: int = 7200,
         check_interval: int = 30,
+        force_max: Optional[bool] = None,
+        batchsize_per_class: Optional[int] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -1258,6 +1260,9 @@ class CryoSPARCTools:
             wait_for_completion: Whether to wait for job completion
             timeout: Maximum time to wait for completion in seconds
             check_interval: Time between status checks in seconds
+            force_max: If True, maximize over poses and shifts when aligning particles to references. 
+                      If False, marginalize over poses and shifts to account for alignment uncertainty.
+            batchsize_per_class: Number of particles per class to use during each iteration of online-EM.
             **kwargs: Additional parameters
             
         Returns:
@@ -1271,8 +1276,18 @@ class CryoSPARCTools:
             # Prepare job parameters for 2D classification
             job_params = {
                 "class2D_K": num_classes,  # Number of classes
-                **kwargs
             }
+            
+            # Add force_max parameter if provided
+            if force_max is not None:
+                job_params["class2D_force_max"] = force_max
+            
+            # Add batchsize_per_class parameter if provided
+            if batchsize_per_class is not None:
+                job_params["class2D_num_full_iter_batchsize_per_class"] = batchsize_per_class
+            
+            # Add any additional kwargs
+            job_params.update(kwargs)
             
             # Support multiple particle inputs (for connecting both J159 and J157 when both functions are enabled)
             if particles_job_uids and len(particles_job_uids) > 1:
@@ -2433,16 +2448,18 @@ class CryoSPARCTools:
         """
         Run homogeneous refinement to refine a single 3D structure.
         
-        Note: For homogeneous refinement, both particles and volume come from the ab initio job.
+        Note: For homogeneous refinement, particles and volume should come from different jobs:
+        - particles_job_uid: From Select 2D job or import particle job
+        - volume_job_uid: From ab initio reconstruction job
         The connections used are:
-        - particles: (volume_job_uid, "particles_all_classes")
-        - volume: (volume_job_uid, "volume_class_0")
+        - particles: (particles_job_uid, particles_output_slot)
+        - volume: (volume_job_uid, volume_output_slot)
         
         Args:
             project_uid: CryoSPARC project UID
             workspace_uid: CryoSPARC workspace UID
-            particles_job_uid: UID of particles job (kept for compatibility, not used in connections)
-            volume_job_uid: UID of the ab initio job (used for both particles and volume)
+            particles_job_uid: UID of particles job (from Select 2D job or import particle job)
+            volume_job_uid: UID of the ab initio reconstruction job (provides the initial volume)
             refinement_resolution: Target resolution in Angstroms (optional)
             symmetry: Symmetry group (e.g., C1, C2, D7) (default: C1)
             # Advanced refinement parameters
@@ -2477,15 +2494,15 @@ class CryoSPARCTools:
                 print(f"ℹ️  Using explicit group names: particles={particles_slot}, volume={volume_slot}")
             else:
                 # Determine the correct output slots
-                # For optimization: particles come from particles_job_uid (extraction), volume from volume_job_uid (reconstruction)
-                # For normal refinement: both come from volume_job_uid (ab initio)
+                # For homogeneous refinement: particles come from particles_job_uid (Select 2D/import), volume from volume_job_uid (ab initio)
+                # They should be different - particles from 2D selection/extraction, volume from ab initio reconstruction
                 
-                # Check if particles_job_uid is different from volume_job_uid (optimization case)
+                # Check if particles_job_uid is different from volume_job_uid
                 use_separate_particles = (particles_job_uid != volume_job_uid)
                 
                 if use_separate_particles:
-                    # Optimization case: particles from extraction job, volume from refinement job
-                    # Find particles output slot from extraction job
+                    # Homogeneous refinement case: particles from Select 2D/import job, volume from ab initio job
+                    # Find particles output slot from particles job (Select 2D or import particle job)
                     try:
                         extract_job = project.find_job(particles_job_uid)
                         extract_job.refresh()
@@ -2499,27 +2516,27 @@ class CryoSPARCTools:
                                 break
                     except Exception as e:
                         particles_slot = "particles"
-                        print(f"⚠️  Could not detect particles slot from extraction job, using default: {e}")
+                        print(f"⚠️  Could not detect particles slot from particles job, using default: {e}")
                     
-                    # Find volume output slot from volume job (refinement job)
+                    # Find volume output slot from volume job (ab initio reconstruction job)
                     try:
                         volume_job = project.find_job(volume_job_uid)
                         volume_job.refresh()
                         volume_doc = getattr(volume_job, "doc", {})
                         volume_outputs = volume_doc.get("output_result_groups", [])
                         # Find volume output slot
-                        volume_slot = "volume"  # Default
+                        volume_slot = "volume_class_0"  # Default for ab initio
                         for group in volume_outputs:
                             if group.get("type") == "volume":
-                                volume_slot = group.get("name", "volume")
+                                volume_slot = group.get("name", "volume_class_0")
                                 break
                     except Exception as e:
-                        volume_slot = "volume"
-                        print(f"⚠️  Could not detect volume slot from volume job, using default: {e}")
+                        volume_slot = "volume_class_0"
+                        print(f"⚠️  Could not detect volume slot from ab initio job, using default: {e}")
                     
-                    print(f"ℹ️  Optimization mode: particles from {particles_job_uid}.{particles_slot}, volume from {volume_job_uid}.{volume_slot}")
+                    print(f"ℹ️  Homogeneous refinement: particles from {particles_job_uid}.{particles_slot} (Select 2D/import), volume from {volume_job_uid}.{volume_slot} (ab initio)")
                 else:
-                    # Normal case: both from same job
+                    # Fallback case: both from same job (should be avoided, but kept for compatibility)
                     try:
                         source_job = project.find_job(volume_job_uid)
                         source_job_type = source_job.doc.get("type", "")
