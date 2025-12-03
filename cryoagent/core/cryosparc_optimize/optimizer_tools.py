@@ -71,7 +71,7 @@ class OptimizerTools:
         return Tool(
             name="get_fsc_info",
             description="Get FSC resolution and box size information from a refinement job. "
-                       "You can pass just the job UID (e.g., 'J357') or JSON with refinement_job_uid parameter. "
+                        "You can pass just the job UID (e.g., 'JXXX') or JSON with refinement_job_uid parameter. "
                        "Optional parameters: project_uid, workspace_uid. "
                        "Returns: box_size (in pixels), resolution_angstroms (FSC resolution), and success status.",
             func=agent._get_fsc_info_tool
@@ -126,7 +126,7 @@ class OptimizerTools:
         return Tool(
             name="get_hetero_class_resolutions",
             description="Get resolution information for each class in a heterogeneous refinement job. "
-                       "You can pass just the job UID (e.g., 'J357') or JSON with job_uid parameter. "
+                        "You can pass just the job UID (e.g., 'JXXX') or JSON with job_uid parameter. "
                        "Returns a list of classes with resolution_angstroms and fsc_loosemask_last for each class. "
                        "Optional parameters: project_uid, workspace_uid. "
                        "Returns: classes (list with class_id, resolution_angstroms, fsc_loosemask_last), num_classes, and success status.",
@@ -139,7 +139,7 @@ class OptimizerTools:
         # Define the input schema for StructuredTool
         class TestHeterogeneousRefinementInput(BaseModel):
             k: int = Field(description="Number of classes to test (e.g., 3 or 5)")
-            refinement_job_uid: str = Field(description="Source of particles and volume (e.g., 'J357')")
+            refinement_job_uid: str = Field(description="Source of particles and volume (e.g., 'JXXX')")
             project_uid: str = Field(default="", description="Optional project UID")
             workspace_uid: str = Field(default="", description="Optional workspace UID")
         
@@ -170,7 +170,7 @@ class OptimizerTools:
                        "5) Selects the superclass with more particles, "
                        "6) Runs homogeneous refinement on selected superclass particles and volumes, "
                        "7) Gets final FSC resolution. "
-                       "Required parameters: k (number of classes, e.g., 3 or 5), refinement_job_uid (source of particles and volume, e.g., 'J357'). "
+                        "Required parameters: k (number of classes, e.g., 3 or 5), refinement_job_uid (source of particles and volume, e.g., 'JXXX'). "
                        "Optional parameters: project_uid, workspace_uid. "
                        "Returns: hetero_job_uid, regroup_job_uid, best_superclass_id, best_superclass_num_items, refine_job_uid, final_resolution_angstroms, and status.",
             args_schema=TestHeterogeneousRefinementInput
@@ -181,7 +181,7 @@ class OptimizerTools:
         """Create tool for multi-round 3D classification optimization."""
         # Define the input schema for StructuredTool
         class TestMultiRound3DClassificationInput(BaseModel):
-            refinement_job_uid: str = Field(description="Source of particles and volume from previous best homogeneous refinement (e.g., 'J357')")
+            refinement_job_uid: str = Field(description="Source of particles and volume from previous best homogeneous refinement (e.g., 'JXXX')")
             num_classes: int = Field(default=4, description="Number of classes for 3D classification (default: 4)")
             max_rounds: int = Field(default=5, description="Maximum number of rounds to run (default: 5)")
             improvement_threshold: float = Field(default=0.1, description="Minimum improvement in resolution (Å) to continue (default: 0.1)")
@@ -223,7 +223,7 @@ class OptimizerTools:
                        "4) Checks if resolution improved, "
                        "5) If improved, continues with refined result as input for next round, "
                        "6) If plateau or worse, stops and returns best refinement job. "
-                       "Required parameters: refinement_job_uid (source of particles and volume from previous best homogeneous refinement, e.g., 'J357'). "
+                        "Required parameters: refinement_job_uid (source of particles and volume from previous best homogeneous refinement, e.g., 'JXXX'). "
                        "Optional parameters: num_classes (number of classes for 3D classification, default: 4), "
                        "max_rounds (maximum number of rounds, default: 5), "
                        "improvement_threshold (minimum improvement in resolution in Å to continue, default: 0.1), "

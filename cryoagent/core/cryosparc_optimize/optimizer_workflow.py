@@ -85,10 +85,14 @@ class OptimizerWorkflow:
         optimization_config = workflow_config.get("optimization", {})
         max_iterations = optimization_config.get("max_iterations", 5)
         box_size_variation = optimization_config.get("box_size_variation", 0.1)  # 10%
+        ab_initio_initial_resolution = optimization_config.get("ab_initio_initial_resolution", 9.0)
+        ab_initio_final_resolution = optimization_config.get("ab_initio_final_resolution", 7.0)
         
         return {
             "max_iterations": max_iterations,
-            "box_size_variation": box_size_variation
+            "box_size_variation": box_size_variation,
+            "ab_initio_initial_resolution": ab_initio_initial_resolution,
+            "ab_initio_final_resolution": ab_initio_final_resolution
         }
     
     def execute_optimization(
@@ -435,6 +439,11 @@ Please report the current resolution from this refinement job."""
                         self.agent.logger.info(f"   Source job: {best_homogeneous_refinement_job_uid}")
                         self.agent.logger.info(f"   Symmetry: {symmetry}")
                         
+                        # Get initial lowpass resolution from optimization config if available
+                        refine_res_init = None
+                        if hasattr(self.agent, '_get_refinement_res_init'):
+                            refine_res_init = self.agent._get_refinement_res_init()
+                        
                         # Run non-uniform refinement with local and global CTF refinement enabled
                         refine_result = self.agent.cryosparc_tools.nonuniform_refine_new(
                             project_uid=project_uid,
@@ -444,6 +453,7 @@ Please report the current resolution from this refinement job."""
                             symmetry=symmetry,
                             refine_defocus_refine=True,  # Enable local CTF refinement
                             refine_ctf_global_refine=True,  # Enable global CTF refinement
+                            refine_res_init=refine_res_init,  # Initial lowpass resolution if configured
                             wait_for_completion=True,
                             timeout=self.config.job_management.default_timeout,
                             check_interval=self.config.job_management.status_check_interval

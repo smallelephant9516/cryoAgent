@@ -1,0 +1,11 @@
+sudo apt update
+sudo apt install -y \
+    build-essential \
+    git \
+    cmake \
+    libfftw3-dev \
+    libeigen3-dev \
+    libflann-dev \
+    libpcl-dev \
+    libboost-all-dev
+

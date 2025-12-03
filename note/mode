@@ -1,0 +1,6 @@
+# single particle mode (default)
+
+# membrane protein mode
+1. 2D_optimizer: batch size 200
+2. 3D_optimizer: ab_initio_initial_resolution: 9.0 (default)
+                ab_initio_final_resolution: 7.0 (default)

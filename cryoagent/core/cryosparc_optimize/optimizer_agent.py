@@ -103,6 +103,10 @@ class OptimizerAgent(BaseReActAgent):
         """Check if non-uniform refinement should be used instead of homogeneous refinement."""
         return self.stage_workflow.get("optimization", {}).get("use_nonuniform_refinement", True)
     
+    def _get_refinement_res_init(self) -> Optional[float]:
+        """Get initial lowpass resolution for refinement from optimization config."""
+        return self._get_stage_param("optimization", "refine_res_init", None)
+    
     def _get_stage_param(self, section: str, key: str, default: Optional[Any] = None) -> Optional[Any]:
         """Fetch a parameter from the stage workflow configuration."""
         return self.stage_workflow.get(section, {}).get(key, default)
@@ -254,14 +258,14 @@ You specialize in optimizing {optimization_desc} for 3D reconstruction by testin
   * Returns: box_size (pixels), resolution_angstroms (FSC resolution)
   * Use this to get baseline information from any refinement job
 
-- **get_job_status**: Check status of a specific job (use job UID only, e.g., "J113")
-- **wait_for_job**: Wait for job completion (use job UID only, e.g., "J113")
+- **get_job_status**: Check status of a specific job (use job UID only, e.g., "JXXX")
+- **wait_for_job**: Wait for job completion (use job UID only, e.g., "JXXX")
 - **get_job_log**: Read and analyze job logs
 - **reason_about_workflow**: Analyze current optimization state and think about next steps
 
 ## Job UID Format:
-- Job UIDs are strings like "J113", "J114", etc.
-- When calling get_job_status, wait_for_job, or get_fsc_info, you can pass ONLY the job UID (e.g., "J357")
+- Job UIDs are strings like "JXXX", "JYYY", etc.
+- When calling get_job_status, wait_for_job, or get_fsc_info, you can pass ONLY the job UID (e.g., "JXXX")
 - For other tools, use JSON format with parameter names
 
 ## Current Configuration:
@@ -303,14 +307,14 @@ You specialize in optimizing {optimization_desc} for 3D reconstruction by testin
 **Tool Usage for Heterogeneous Refinement**:
 
 - **test_heterogeneous_refinement**: Test heterogeneous refinement with K classes
-  * **Input format: JSON string** (e.g., `{{"k": 3, "refinement_job_uid": "J357"}}`)
-  * Required parameters: k (number of classes, e.g., 3 or 5), refinement_job_uid (source of particles and volume, e.g., "J357")
+  * **Input format: JSON string** (e.g., `{{"k": 3, "refinement_job_uid": "JXXX"}}`)
+  * Required parameters: k (number of classes, e.g., 3 or 5), refinement_job_uid (source of particles and volume, e.g., "JXXX")
   * This tool: 1) Repeats the volume from refinement_job_uid K times, 2) Runs heterogeneous refinement,
     3) Gets resolution for each class, 4) Selects best class (smallest resolution value, or HIGHEST fsc_loosemask_last if tied - higher FSC is better), 
     5) Runs homogeneous refinement on selected class, 6) Returns final FSC resolution
   * Returns: hetero_job_uid, best_class_id, best_class_resolution, class_selection_reason, class_comparison (all classes data), refine_job_uid, final_resolution_angstroms, and all_classes
   * **Important**: The tool automatically selects the best class using an algorithm, but you should REASON about the class_comparison and class_selection_reason to verify the selection makes sense and understand why it was chosen.
-  * **Example**: Use JSON format: `{{"k": 3, "refinement_job_uid": "J357"}}` or `{{"k": 5, "refinement_job_uid": "J357"}}`
+  * **Example**: Use JSON format: `{{"k": 3, "refinement_job_uid": "JXXX"}}` or `{{"k": 5, "refinement_job_uid": "JXXX"}}`
 
 - **get_hetero_class_resolutions**: Get resolution for each class in a heterogeneous refinement job
   * Required: job_uid (heterogeneous refinement job UID)
@@ -392,8 +396,8 @@ Decision: Decide whether to:
 ```
 
 **CRITICAL: When calling test_heterogeneous_refinement, you MUST use JSON format with Action Input!**
-- Correct: Action Input: `{{"k": 3, "refinement_job_uid": "J357"}}`
-- Wrong: test_heterogeneous_refinement(3, "J357") - this will fail!
+- Correct: Action Input: `{{"k": 3, "refinement_job_uid": "JXXX"}}`
+- Wrong: test_heterogeneous_refinement(3, "JXXX") - this will fail!
 - The tool requires a single JSON string input, not multiple arguments
 '''}
 
@@ -418,8 +422,8 @@ Decision: Decide whether to:
 **Tool Usage for Multi-Round 3D Classification**:
 
 - **test_multi_round_3d_classification**: Run multi-round 3D classification optimization
-  * **Input format: JSON string** (e.g., `{{"refinement_job_uid": "J357", "num_classes": 4, "max_rounds": 5}}`)
-  * Required parameters: refinement_job_uid (source of particles and volume from previous best homogeneous refinement, e.g., "J357")
+  * **Input format: JSON string** (e.g., `{{"refinement_job_uid": "JXXX", "num_classes": 4, "max_rounds": 5}}`)
+  * Required parameters: refinement_job_uid (source of particles and volume from previous best homogeneous refinement, e.g., "JXXX")
   * Optional parameters: num_classes (number of classes for 3D classification, default: 4), max_rounds (maximum number of rounds, default: 5), improvement_threshold (minimum improvement in resolution in Å to continue, default: 0.1)
   * This tool automatically:
     1. Gets initial resolution from refinement_job_uid
@@ -427,7 +431,7 @@ Decision: Decide whether to:
     3. Stops when resolution plateaus/worsens or max_rounds reached
     4. Returns best_refinement_job_uid, best_resolution_angstroms, rounds_completed, and all_rounds_data
   * Returns: best_refinement_job_uid, best_resolution_angstroms, initial_resolution_angstroms, total_improvement, rounds_completed, all_rounds_data (detailed data for each round)
-  * **Example**: Use JSON format: `{{"refinement_job_uid": "J357", "num_classes": 4, "max_rounds": 5}}`
+  * **Example**: Use JSON format: `{{"refinement_job_uid": "JXXX", "num_classes": 4, "max_rounds": 5}}`
 
 **Multi-Round 3D Classification Strategy Guidelines**:
 
@@ -455,8 +459,8 @@ Decision: Decide whether to:
 - **all_rounds_data**: Detailed information for each round including class selections and resolutions
 
 **CRITICAL: When calling test_multi_round_3d_classification, you MUST use JSON format with Action Input!**
-- Correct: Action Input: `{{"refinement_job_uid": "J357", "num_classes": 4, "max_rounds": 5}}`
-- Wrong: test_multi_round_3d_classification("J357", 4, 5) - this will fail!
+- Correct: Action Input: `{{"refinement_job_uid": "JXXX", "num_classes": 4, "max_rounds": 5}}`
+- Wrong: test_multi_round_3d_classification("JXXX", 4, 5) - this will fail!
 - The tool requires a single JSON string input, not multiple arguments
 {'' if not enable_multi_round else f'''
 
@@ -476,9 +480,9 @@ Decision: Decide whether to:
 4. **Finally**: Report all optimizations' results
 
 **Example Combined Flow** (if all enabled):
-1. Run multi-round 3D classification → Get best multi-round refinement result (e.g., J100)
-2. Use J100 as refinement_job_uid for heterogeneous refinement → Get best K and refinement job (e.g., J200)
-3. Use J200 as refinement_job_uid for box size optimization → Get best box size refinement result (e.g., J300)
+1. Run multi-round 3D classification → Get best multi-round refinement result (e.g., JXXX)
+2. Use JXXX as refinement_job_uid for heterogeneous refinement → Get best K and refinement job (e.g., JYYY)
+3. Use JYYY as refinement_job_uid for box size optimization → Get best box size refinement result (e.g., JZZZ)
 4. Report: best_multi_round_resolution, best_hetero_k, best_hetero_resolution, best_box_size, best_box_resolution
 
 **If only multi-round 3D classification is enabled**:
@@ -515,7 +519,7 @@ Think carefully about trends before deciding what to test next. Both optimizatio
             params = self._parse_tool_input(tool_input)
             
             # Support both direct job UID string and JSON parameter
-            # _parse_tool_input converts "J357" to {"job_uid": "J357"}
+            # _parse_tool_input converts "JXXX" to {"job_uid": "JXXX"}
             refinement_job_uid = params.get("refinement_job_uid") or params.get("job_uid")
             
             # If still not found, try to extract from input string directly
@@ -533,7 +537,7 @@ Think carefully about trends before deciding what to test next. Both optimizatio
             if not refinement_job_uid:
                 return json.dumps({
                     "success": False,
-                    "error": "Missing required parameter: refinement_job_uid. You can pass just the job UID (e.g., 'J357') or JSON with refinement_job_uid parameter."
+                    "error": "Missing required parameter: refinement_job_uid. You can pass just the job UID (e.g., 'JXXX') or JSON with refinement_job_uid parameter."
                 })
             
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
@@ -676,6 +680,10 @@ Think carefully about trends before deciding what to test next. Both optimizatio
             }
             if refinement_resolution is not None:
                 refine_params["refinement_resolution"] = float(refinement_resolution)
+            # Add initial lowpass resolution if configured
+            refine_res_init = self._get_refinement_res_init()
+            if refine_res_init is not None:
+                refine_params["refine_res_init"] = float(refine_res_init)
             
             tool_name = "nonuniform_refine_new" if use_nonuniform else "homogeneous_refinement"
             self._record_tool_execution(tool_name, refine_params)
@@ -1010,6 +1018,10 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                                 "volume_job_uid": volume_job_uid,
                                 "symmetry": symmetry
                             }
+                            # Add initial lowpass resolution if configured
+                            refine_res_init = self._get_refinement_res_init()
+                            if refine_res_init is not None:
+                                refine_params["refine_res_init"] = float(refine_res_init)
                             tool_name = "nonuniform_refine_new" if use_nonuniform else "homogeneous_refinement"
                             self._record_tool_execution(tool_name, refine_params)
                             if use_nonuniform:
@@ -1117,6 +1129,10 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                                 "volume_job_uid": volume_job_uid,
                                 "symmetry": symmetry
                             }
+                            # Add initial lowpass resolution if configured
+                            refine_res_init = self._get_refinement_res_init()
+                            if refine_res_init is not None:
+                                refine_params["refine_res_init"] = float(refine_res_init)
                             tool_name = "nonuniform_refine_new" if use_nonuniform else "homogeneous_refinement"
                             self._record_tool_execution(tool_name, refine_params)
                             if use_nonuniform:
@@ -1223,7 +1239,7 @@ Think carefully about trends before deciding what to test next. Both optimizatio
             if not job_uid:
                 return json.dumps({
                     "success": False,
-                    "error": "Missing required parameter: job_uid. You can pass just the job UID (e.g., 'J357') or JSON with job_uid parameter."
+                    "error": "Missing required parameter: job_uid. You can pass just the job UID (e.g., 'JXXX') or JSON with job_uid parameter."
                 })
             
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
@@ -1274,7 +1290,7 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                 else:
                     return json.dumps({
                         "success": False,
-                        "error": "Invalid input format. Expected JSON string like {'k': 3, 'refinement_job_uid': 'J357'} or list with [k, job_uid]"
+                        "error": "Invalid input format. Expected JSON string like {'k': 3, 'refinement_job_uid': 'JXXX'} or list with [k, job_uid]"
                     })
             elif isinstance(tool_input, dict):
                 # Already a dict, use directly
@@ -1301,7 +1317,7 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                     missing.append("refinement_job_uid")
                 return json.dumps({
                     "success": False,
-                    "error": f"Missing required parameters: {', '.join(missing)}. Expected JSON format: {{'k': 3, 'refinement_job_uid': 'J357'}}"
+                    "error": f"Missing required parameters: {', '.join(missing)}. Expected JSON format: {{'k': 3, 'refinement_job_uid': 'JXXX'}}"
                 })
             
             k = int(k)
@@ -1437,6 +1453,10 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                     "particles_group_name": best_particles_group_name,  # e.g., "particles_class_0"
                     "volume_group_name": best_volume_group_name  # e.g., "volume_class_0"
                 }
+                # Add initial lowpass resolution if configured
+                refine_res_init = self._get_refinement_res_init()
+                if refine_res_init is not None:
+                    refine_params["refine_res_init"] = float(refine_res_init)
                 tool_name = "nonuniform_refine_new" if use_nonuniform else "homogeneous_refinement"
             else:
                 # K>2 case: Normal regroup flow
@@ -1525,6 +1545,10 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                     "particles_group_name": particles_group_name,  # Pass via kwargs: particles_superclass_X
                     "volume_group_name": volume_group_name  # Pass via kwargs: volume_superclass_X
                 }
+                # Add initial lowpass resolution if configured
+                refine_res_init = self._get_refinement_res_init()
+                if refine_res_init is not None:
+                    refine_params["refine_res_init"] = float(refine_res_init)
                 best_class_id = best_superclass_id  # For consistency in logging
                 # use_nonuniform and refinement_type already set above
                 tool_name = "nonuniform_refine_new" if use_nonuniform else "homogeneous_refinement"
@@ -1742,14 +1766,19 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                 
                 self.logger.info(f"📦 Step 1/5 (Round {round_num}): Running ab initio reconstruction with {num_classes} classes...")
                 
+                # Get resolution parameters from workflow defaults (set from config)
+                defaults = getattr(self, "workflow_defaults", {}) or {}
+                initial_resolution = defaults.get("ab_initio_initial_resolution", 9.0)
+                final_resolution = defaults.get("ab_initio_final_resolution", 7.0)
+                
                 ab_initio_params = {
                     "project_uid": project_uid,
                     "workspace_uid": workspace_uid,
                     "particles_job_uid": particles_source_job_uid,
                     "num_classes": num_classes,
                     "symmetry": symmetry,
-                    "initial_resolution": 20.0,
-                    "final_resolution": 10.0,
+                    "initial_resolution": initial_resolution,
+                    "final_resolution": final_resolution,
                     "max_iterations": 50
                 }
                 self._record_tool_execution("ab_initio_reconstruction", ab_initio_params)
@@ -1961,6 +1990,10 @@ Think carefully about trends before deciding what to test next. Both optimizatio
                     "particles_group_name": best_particles_group_name,
                     "volume_group_name": volume_group_name
                 }
+                # Add initial lowpass resolution if configured
+                refine_res_init = self._get_refinement_res_init()
+                if refine_res_init is not None:
+                    refine_params["refine_res_init"] = float(refine_res_init)
                 tool_name = "nonuniform_refine_new" if use_nonuniform else "homogeneous_refinement"
                 self._record_tool_execution(tool_name, refine_params)
                 if use_nonuniform:

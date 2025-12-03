@@ -41,8 +41,14 @@
       "multi_round_3d_classification_max_rounds_description": "Maximum number of rounds to run (default: 5)",
       "multi_round_3d_classification_improvement_threshold": 0.1,
       "multi_round_3d_classification_improvement_threshold_description": "Minimum improvement in resolution (Å) to continue to next round (default: 0.1)",
+      "ab_initio_initial_resolution": 9.0,
+      "ab_initio_initial_resolution_description": "Initial resolution (Å) for ab initio reconstruction in optimization steps (default: 9.0)",
+      "ab_initio_final_resolution": 7.0,
+      "ab_initio_final_resolution_description": "Final/maximum resolution (Å) for ab initio reconstruction in optimization steps (default: 7.0)",
       "use_nonuniform_refinement": true,
-      "use_nonuniform_refinement_description": "Use non-uniform refinement (nonuniform_refine_new) instead of homogeneous refinement (homo_refine_new) for resolution verification (default: true)"
+      "use_nonuniform_refinement_description": "Use non-uniform refinement (nonuniform_refine_new) instead of homogeneous refinement (homo_refine_new) for resolution verification (default: true)",
+      "refine_res_init": null,
+      "refine_res_init_description": "Initial lowpass resolution (Å) for refinement. Empirically, increasing this resolution (e.g., to a lower numerical value such as 15Å) may improve results for smaller targets. If null, uses CryoSPARC default (typically 30Å)."
     }
   }
 }
