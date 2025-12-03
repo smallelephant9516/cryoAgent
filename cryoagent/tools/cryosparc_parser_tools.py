@@ -57,6 +57,7 @@ class CryoSPARCPreprocessingParser:
         """
         stage_outputs = {
             "movies_job_uid": None,
+            "micrographs_job_uid": None,
             "motion_correction_job_uid": None,
             "ctf_job_uid": None,
             "micrograph_selection_job_uid": None,
@@ -70,6 +71,8 @@ class CryoSPARCPreprocessingParser:
             if result.success and result.job_uid:
                 if step_name == "import_movies":
                     stage_outputs["movies_job_uid"] = result.job_uid
+                elif step_name == "import_micrographs":
+                    stage_outputs["micrographs_job_uid"] = result.job_uid
                 elif step_name == "motion_correction":
                     stage_outputs["motion_correction_job_uid"] = result.job_uid
                 elif step_name == "ctf_estimation":
@@ -107,12 +110,32 @@ class CryoSPARCPreprocessingParser:
                 self.logger.debug(f"Could not confirm final micrograph selection output: {exc}")
         
         # Fallback – ensure the full chain of jobs ran
-        required_jobs = [
-            ("import_movies", stage_outputs.get("movies_job_uid")),
-            ("motion_correction", stage_outputs.get("motion_correction_job_uid")),
-            ("ctf_estimation", stage_outputs.get("ctf_job_uid")),
-            ("micrograph_selection", final_job_uid)
-        ]
+        # Check if import_micrographs was used (skips motion correction) or import_movies was used
+        micrographs_job_uid = stage_outputs.get("micrographs_job_uid")
+        movies_job_uid = stage_outputs.get("movies_job_uid")
+        
+        if micrographs_job_uid:
+            # Path 2: import_micrographs → ctf_estimation → micrograph_selection (motion correction skipped)
+            required_jobs = [
+                ("import_micrographs", micrographs_job_uid),
+                ("ctf_estimation", stage_outputs.get("ctf_job_uid")),
+                ("micrograph_selection", final_job_uid)
+            ]
+        elif movies_job_uid:
+            # Path 1: import_movies → motion_correction → ctf_estimation → micrograph_selection
+            required_jobs = [
+                ("import_movies", movies_job_uid),
+                ("motion_correction", stage_outputs.get("motion_correction_job_uid")),
+                ("ctf_estimation", stage_outputs.get("ctf_job_uid")),
+                ("micrograph_selection", final_job_uid)
+            ]
+        else:
+            # Neither import method was used
+            return {
+                "success": False,
+                "error": "Preprocessing workflow failed - neither import_movies nor import_micrographs was executed."
+            }
+        
         missing_jobs = [name for name, uid in required_jobs if not uid]
         if missing_jobs:
             return {

@@ -21,6 +21,20 @@ class PreprocessingTools:
         )
     
     @staticmethod
+    def create_import_micrographs_tool(agent) -> Tool:
+        """Create tool for importing micrographs directly."""
+        return Tool(
+            name="import_micrographs",
+            description="Import micrograph files directly into CryoSPARC (skips motion correction). "
+                       "Use this when you have already motion-corrected micrographs. "
+                       "Required parameters: None (all loaded from microscope_config.json). "
+                       "Optional parameters: project_uid, workspace_uid, wait_for_completion, timeout, check_interval. "
+                       "All microscope parameters (micrographs_path, pixel_size, voltage, cs_mm, dose) are automatically loaded from microscope_config.json. "
+                       "Note: When using import_micrographs, motion correction is NOT needed - proceed directly to CTF estimation.",
+            func=agent._import_micrographs_tool
+        )
+    
+    @staticmethod
     def create_motion_correction_tool(agent) -> Tool:
         """Create tool for motion correction."""
         return Tool(

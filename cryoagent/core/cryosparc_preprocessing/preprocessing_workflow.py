@@ -11,6 +11,7 @@ from ...config.config_loader import CryoAgentConfig
 class PreprocessingStep(Enum):
     """Enumeration of preprocessing workflow steps."""
     IMPORT_MOVIES = "import_movies"
+    IMPORT_MICROGRAPHS = "import_micrographs"
     MOTION_CORRECTION = "motion_correction"
     CTF_ESTIMATION = "ctf_estimation"
     MICROGRAPH_SELECTION = "micrograph_selection"
@@ -85,10 +86,15 @@ class PreprocessingWorkflow:
         # Get microscope config from the agent
         microscope_config = getattr(self.agent, 'microscope_config', {})
         
+        # Check if micrographs_path is available (indicates direct micrograph import)
+        micrographs_path = microscope_config.get('micrographs_path')
+        movies_path = microscope_config.get('movies_path', 'N/A')
+        
         return f"""
-Execute the complete cryoEM preprocessing workflow with these steps:
+Execute the complete cryoEM preprocessing workflow. Choose the appropriate path based on your input data:
 
-1. **Import Movies**: Import movie files from {microscope_config.get('movies_path', 'N/A')}
+**Option A: If you have raw movie files:**
+1. **Import Movies**: Import movie files from {movies_path}
    - Pixel size: {microscope_config.get('pixel_size', 'N/A')} Å
    - Voltage: {microscope_config.get('voltage', 'N/A')} kV
    - CS: {microscope_config.get('cs_mm', 'N/A')} mm
@@ -104,12 +110,28 @@ Execute the complete cryoEM preprocessing workflow with these steps:
    - Min resolution: {getattr(self.config.workflow, 'ctf_min_res', 30.0)} Å
    - Max resolution: {getattr(self.config.workflow, 'ctf_max_res', 4.0)} Å
 
+**Option B: If you have already motion-corrected micrographs:**
+1. **Import Micrographs**: Import micrograph files directly from {micrographs_path or movies_path}
+   - Pixel size: {microscope_config.get('pixel_size', 'N/A')} Å
+   - Voltage: {microscope_config.get('voltage', 'N/A')} kV
+   - CS: {microscope_config.get('cs_mm', 'N/A')} mm
+   - Dose: {microscope_config.get('dose', 'N/A')} e-/Å²
+   - Project: {self.config.workflow.project_uid}
+   - Workspace: {self.config.workflow.workspace_uid}
+   - **CRITICAL**: Skip motion correction and proceed directly to CTF estimation
+
+2. **CTF Estimation**: Estimate CTF parameters for micrographs
+   - Min resolution: {getattr(self.config.workflow, 'ctf_min_res', 30.0)} Å
+   - Max resolution: {getattr(self.config.workflow, 'ctf_max_res', 4.0)} Å
+
+**Common Final Step:**
 4. **Micrograph Selection**: Select micrographs with resolution better than 5 Å
    - Min resolution threshold: 5.0 Å
    - Filters out low-quality micrographs
 
 **Important**: 
 - Each step must complete successfully before the next begins
+- If using import_micrographs, DO NOT run motion_correction
 - Always check job status and wait for completion
 - Handle any errors gracefully
 - Provide clear status updates throughout the process
@@ -143,8 +165,9 @@ Start by reasoning about the workflow state and then proceed step by step.
                 if job_uid:
                     waits[job_uid] = entry["result"]
 
-        for step in [PreprocessingStep.IMPORT_MOVIES, PreprocessingStep.MOTION_CORRECTION, 
-                     PreprocessingStep.CTF_ESTIMATION, PreprocessingStep.MICROGRAPH_SELECTION]:
+        for step in [PreprocessingStep.IMPORT_MOVIES, PreprocessingStep.IMPORT_MICROGRAPHS, 
+                     PreprocessingStep.MOTION_CORRECTION, PreprocessingStep.CTF_ESTIMATION, 
+                     PreprocessingStep.MICROGRAPH_SELECTION]:
             records = tool_entries.get(step.value, [])
             if not records:
                 self.results.append(

@@ -239,6 +239,122 @@ class CryoSPARCTools:
         except Exception as e:
             raise RuntimeError(f"Failed to import movies: {e}")
 
+    def import_micrographs(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        micrographs_path: str,
+        pixel_size: float = 1.0,
+        voltage: float = 300.0,
+        cs_mm: float = 2.7,
+        dose: float = 1.0,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Import micrographs directly into CryoSPARC (skips motion correction).
+        
+        Args:
+            project_uid: CryoSPARC project UID
+            workspace_uid: CryoSPARC workspace UID
+            micrographs_path: Path to micrograph files
+            pixel_size: Pixel size in Angstroms
+            voltage: Acceleration voltage in kV
+            cs_mm: Spherical aberration in mm
+            dose: Total electron dose in e-/Å²
+            wait_for_completion: Whether to wait for job completion
+            timeout: Maximum time to wait for completion in seconds
+            check_interval: Interval between status checks in seconds
+            **kwargs: Additional parameters
+            
+        Returns:
+            Dictionary containing job information
+        """
+        try:
+            # Find project and workspace
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+            
+            # Prepare job parameters using correct CryoSPARC API format
+            job_params = {
+                "blob_paths": micrographs_path,
+                "psize_A": pixel_size,
+                "accel_kv": voltage,
+                "cs_mm": cs_mm,
+                "total_dose_e_per_A2": dose,
+            }
+            
+            if kwargs:
+                job_params.update(kwargs)
+            
+            # Create job using workspace.create_job()
+            job = workspace.create_job("import_micrographs", params=job_params)
+            
+            # Queue the job (handle lane requirement if needed)
+            try:
+                job.queue()
+            except Exception as queue_error:
+                message = str(queue_error)
+                if "Must specify a lane" in message:
+                    try:
+                        lanes = self.cs.get_lanes()
+                        if lanes:
+                            used_lane = lanes[0]["name"]
+                            print(f"No lane specified; using default lane '{used_lane}'")
+                            job.queue(lane=used_lane)
+                        else:
+                            raise queue_error
+                    except Exception:
+                        raise queue_error
+                else:
+                    raise queue_error
+            
+            print(f"Queued import micrographs job: {job.uid}")
+            
+            self._job_cache[job.uid] = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }
+            result = {
+                "job_uid": job.uid,
+                "job_type": "import_micrographs",
+                "status": "queued",
+                "params": job_params,
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid
+            }
+            
+            # Wait for completion if requested
+            if wait_for_completion:
+                print(f"⏳ Waiting for import micrographs job {job.uid} to complete...")
+                try:
+                    final_status = self.wait_for_job_completion(
+                        project_uid,
+                        job.uid,
+                        workspace_uid,
+                        timeout,
+                        check_interval
+                    )
+                    result["status"] = final_status["status"]
+                    result["final_status"] = final_status
+                    if final_status["status"] == "completed":
+                        print(f"✅ Import micrographs job {job.uid} completed successfully!")
+                    else:
+                        print(f"⚠️ Import micrographs job {job.uid} finished with status: {final_status['status']}")
+                except TimeoutError:
+                    result["status"] = "timeout"
+                    print(f"⏰ Import micrographs job {job.uid} timed out after {timeout} seconds")
+                except Exception as e:
+                    result["status"] = "error"
+                    print(f"❌ Error monitoring import micrographs job {job.uid}: {e}")
+            
+            return result
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to import micrographs: {e}")
+
     def import_particles_from_star(
         self,
         project_uid: str,
@@ -513,6 +629,7 @@ class CryoSPARCTools:
         project_uid: str,
         workspace_uid: str,
         micrographs_job_uid: str,
+        group_job_uid: Optional[str] = None,
         min_res: float = 30.0,
         max_res: float = 4.0,
         lane: Optional[str] = None,
@@ -547,12 +664,16 @@ class CryoSPARCTools:
             job_params = {
                 **kwargs
             }
-            
+
+            if group_job_uid is None:
+                group_job_uid = "micrographs"
+
+
             # Create job with connections - use job UID directly for connections
             job = workspace.create_job(
                 "patch_ctf_estimation_multi",
                 params=job_params,
-                connections={"exposures": (micrographs_job_uid, "micrographs")}
+                connections={"exposures": (micrographs_job_uid, group_job_uid)}
             )
             
             # Queue the job

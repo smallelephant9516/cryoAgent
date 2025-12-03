@@ -50,6 +50,8 @@ class PreprocessingAgent(BaseReActAgent):
         if isinstance(import_defaults, dict):
             stage_defaults.update(import_defaults)
         self.microscope_config = self._resolve_microscope_defaults(stage_defaults, update_cache=True)
+        # Track import method for determining group_job_uid in CTF estimation
+        self.import_micrographs_job_uid: Optional[str] = None
     
     def _load_preprocessing_config(self) -> Dict[str, Any]:
         """Load preprocessing workflow configuration from separate config file."""
@@ -142,6 +144,7 @@ class PreprocessingAgent(BaseReActAgent):
         """Create preprocessing-specific tools."""
         return [
             PreprocessingTools.create_import_movies_tool(self),
+            PreprocessingTools.create_import_micrographs_tool(self),
             PreprocessingTools.create_motion_correction_tool(self),
             PreprocessingTools.create_ctf_estimation_tool(self),
             PreprocessingTools.create_micrograph_selection_tool(self),
@@ -165,6 +168,10 @@ You specialize in the initial stages of cryoEM data processing: movie import, mo
 3. **OBSERVING**: Analyze the results and update your understanding
 
 ## Preprocessing Workflow Steps (in order):
+
+**IMPORTANT: Choose the appropriate import method based on your input data:**
+
+### Option A: Import Movies (for raw movie files)
 1. **Import Movies**: Import raw movie files into CryoSPARC
    - Required: None (all parameters loaded from microscope_config.json)
    - Optional: project_uid, workspace_uid
@@ -177,7 +184,19 @@ You specialize in the initial stages of cryoEM data processing: movie import, mo
 3. **CTF Estimation**: Estimate Contrast Transfer Function parameters
    - Required: micrographs_job_uid (from motion_correction)
    - Optional: min_res, max_res, project_uid, workspace_uid
+
+### Option B: Import Micrographs Directly (for already motion-corrected micrographs)
+1. **Import Micrographs**: Import already motion-corrected micrograph files directly into CryoSPARC
+   - Required: None (all parameters loaded from microscope_config.json)
+   - Optional: project_uid, workspace_uid
+   - Note: All microscope parameters (micrographs_path or movies_path, pixel_size, voltage, cs_mm, dose) are automatically loaded from microscope_config.json
+   - **CRITICAL**: When using import_micrographs, SKIP motion correction and proceed directly to CTF estimation
    
+2. **CTF Estimation**: Estimate Contrast Transfer Function parameters
+   - Required: micrographs_job_uid (from import_micrographs)
+   - Optional: min_res, max_res, project_uid, workspace_uid
+
+### Common Final Step:
 4. **Micrograph Selection**: Filter micrographs based on quality metrics
    - Required: ctf_job_uid (from ctf_estimation)
    - Optional: min_resolution, project_uid, workspace_uid
@@ -195,9 +214,12 @@ For each step, you MUST follow this pattern:
 - If a job fails, report the error and stop the workflow
 
 ## Tool Usage Guidelines:
-- import_movies: Start the import, then wait for completion
-- motion_correction: Requires movies_job_uid from completed import_movies job
-- ctf_estimation: Requires micrographs_job_uid from completed motion_correction job
+- import_movies: Start the import, then wait for completion (use for raw movie files)
+- import_micrographs: Start the import, then wait for completion (use for already motion-corrected micrographs - SKIP motion correction)
+- motion_correction: Requires movies_job_uid from completed import_movies job (ONLY use if you imported movies)
+- ctf_estimation: Requires micrographs_job_uid from either:
+  - completed motion_correction job (if you imported movies), OR
+  - completed import_micrographs job (if you imported micrographs directly)
 - micrograph_selection: Requires ctf_job_uid from completed ctf_estimation job
 - get_job_status: Check status of a specific job (use job UID only, e.g., "J81")
 - wait_for_job: Wait for job completion (use job UID only, e.g., "J81")
@@ -209,17 +231,27 @@ For each step, you MUST follow this pattern:
 - Do NOT use JSON format or complex parameters for these tools
 
 ## Workflow Dependencies:
-1. Import movies → Motion correction → CTF estimation → Micrograph selection
-2. Each step must complete successfully before the next can begin
-3. Always verify job completion before proceeding
+**Path 1 (Movies)**: Import movies → Motion correction → CTF estimation → Micrograph selection
+**Path 2 (Micrographs)**: Import micrographs → CTF estimation → Micrograph selection (SKIP motion correction)
+
+**CRITICAL RULES**:
+- If you use import_micrographs, DO NOT run motion_correction - proceed directly to ctf_estimation
+- If you use import_movies, you MUST run motion_correction before ctf_estimation
+- Each step must complete successfully before the next can begin
+- Always verify job completion before proceeding
 
 ## Current Configuration:
 - Project UID: {self.config.workflow.project_uid}
 - Workspace UID: {self.config.workflow.workspace_uid}
 - Movies Path: {microscope_config.get('movies_path', 'N/A')}
+- Micrographs Path: {microscope_config.get('micrographs_path', 'N/A') if microscope_config.get('micrographs_path') else 'Not set (will use movies_path)'}
 - Gain Ref Path: {microscope_config.get('gain_ref_path', 'N/A')}
 - Pixel Size: {microscope_config.get('pixel_size', 'N/A')} Å
 - Voltage: {microscope_config.get('voltage', 'N/A')} kV
+
+## IMPORTANT: Choosing the Right Import Method
+- If micrographs_path is set in the config: Use import_micrographs (skip motion correction)
+- If only movies_path is set: Use import_movies (requires motion correction)
 
 Remember: Always follow the Thought → Action → Observation pattern and WAIT for each job to complete!"""
     
@@ -288,6 +320,49 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             self._record_tool_execution("import_movies", context, error=str(e))
             return f"❌ Error importing movies: {str(e)}"
     
+    def _import_micrographs_tool(self, input_str: str) -> str:
+        """Tool wrapper for importing micrographs directly."""
+        params: Dict[str, Any] = {}
+        used_params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            
+            # Safely get microscope config values, handling case where it might not be set yet
+            microscope_config = getattr(self, 'microscope_config', {})
+            
+            # Use micrographs_path if provided, otherwise fall back to movies_path
+            micrographs_path = params.get("micrographs_path", 
+                                         microscope_config.get("micrographs_path") or 
+                                         microscope_config.get("movies_path", "/path/to/micrographs/*.mrc"))
+            
+            tool_params = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+                "micrographs_path": micrographs_path,
+                "pixel_size": float(params.get("pixel_size", microscope_config.get("pixel_size", 0.6575))),
+                "voltage": float(params.get("voltage", microscope_config.get("voltage", 300.0))),
+                "cs_mm": float(params.get("cs_mm", microscope_config.get("cs_mm", 2.7))),
+                "dose": float(params.get("dose", microscope_config.get("dose", 53.0))),
+                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
+                "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
+            }
+
+            result = self.cryosparc_tools.import_micrographs(**tool_params)
+            used_params = dict(tool_params)
+            # Track the import_micrographs job UID for use in CTF estimation
+            if result.get('job_uid'):
+                self.import_micrographs_job_uid = result['job_uid']
+            self._record_tool_execution("import_micrographs", used_params, result=result)
+            return f"✅ Successfully queued import micrographs job: {result['job_uid']}. Note: Motion correction is NOT needed - proceed directly to CTF estimation."
+            
+        except Exception as e:
+            context = used_params or params or {"raw_input": input_str}
+            self._record_tool_execution("import_micrographs", context, error=str(e))
+            return f"❌ Error importing micrographs: {str(e)}"
+    
     def _motion_correction_tool(self, input_str: str) -> str:
         """Tool wrapper for motion correction."""
         params: Dict[str, Any] = {}
@@ -334,10 +409,27 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             preprocessing_config = getattr(self, 'preprocessing_config', {}).get('workflow', {})
             ctf_config = preprocessing_config.get('ctf_estimation', {})
             
+            # Determine group_job_uid:
+            # 1. If specified in params, use it
+            # 2. If not specified and previous job was import_micrographs, use import_micrographs job UID
+            # 3. Otherwise, default to "micrographs"
+            group_job_uid = params.get("group_job_uid")
+            if group_job_uid is None:
+                # Check if we have an import_micrographs job UID and if the micrographs_job_uid matches it
+                micrographs_job_uid = params.get("micrographs_job_uid")
+                if (self.import_micrographs_job_uid and 
+                    micrographs_job_uid == self.import_micrographs_job_uid):
+                    # Previous job was import_micrographs, use its job UID as group_job_uid
+                    group_job_uid = "imported_micrographs"
+                else:
+                    # Default to "micrographs"
+                    group_job_uid = "micrographs"
+            
             used_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
                 "micrographs_job_uid": params.get("micrographs_job_uid"),
+                "group_job_uid": group_job_uid,
                 "min_res": float(params.get("min_res", ctf_config.get("min_res", 30.0))),
                 "max_res": float(params.get("max_res", ctf_config.get("max_res", 4.0))),
                 "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
@@ -390,12 +482,15 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
 **Current State**: {input_str}
 
 **Workflow Dependencies**:
-1. Import Movies → Motion Correction → CTF Estimation → Micrograph Selection
-2. Each step must complete before the next can begin
+**Path 1 (Movies)**: Import Movies → Motion Correction → CTF Estimation → Micrograph Selection
+**Path 2 (Micrographs)**: Import Micrographs → CTF Estimation → Micrograph Selection (SKIP motion correction)
 
 **Next Steps Analysis**:
-- If no jobs are running: Start with import_movies
-- If import job is running: Wait for completion, then start motion_correction
+- If no jobs are running: 
+  - Choose import_movies if you have raw movie files
+  - Choose import_micrographs if you have already motion-corrected micrographs
+- If import_movies job is running: Wait for completion, then start motion_correction
+- If import_micrographs job is running: Wait for completion, then start ctf_estimation (SKIP motion correction)
 - If motion correction is running: Wait for completion, then start ctf_estimation
 - If CTF estimation is running: Wait for completion, then start micrograph_selection
 - If micrograph selection is running: Wait for completion, preprocessing is done
@@ -404,6 +499,7 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
 - Always check job status before proceeding
 - Use wait_for_job for critical dependencies
 - Verify each step completes successfully before moving to the next
+- If you used import_micrographs, DO NOT run motion_correction
 """
             self._record_tool_execution("reason_about_workflow", {"input": input_str}, result={"analysis": reasoning})
             return reasoning

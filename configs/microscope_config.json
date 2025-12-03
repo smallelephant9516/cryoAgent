@@ -6,17 +6,19 @@
     "version": "1.0.0"
   },
   "microscope_parameters": {
-    "pixel_size": 0.88,
+    "pixel_size": 0.455,
     "voltage": 200,
-    "cs_mm": 1.4,
-    "dose": 61.4,
-    "particle_diameter": 180,
+    "cs_mm": 2.7,
+    "dose": 68,
+    "particle_diameter": 100,
     "symmetry": "D2",
-    "movies_path": "/home/daoyi/scratch/cryoEM_dataset/10204/data/*.tif",
-    "gain_ref_path": "/home/daoyi/scratch/cryoEM_dataset/10204/data/K2-gain170629.mrc",
-    "gain_rot": 1,
-    "gain_flip": 1
+    "movies_path": "/home/daoyi/cryoEM_dataset/ftp.empiar-china.org/10181/data/*.frames.mrc",
+    "micrographs_path": null,
+    "gain_ref_path": "/home/daoyi/cryoEM_dataset/ftp.empiar-china.org/10181/data/norm-gatandata-0.mrc",
+    "gain_rot": 0,
+    "gain_flip": 0
   },
+
   "parameter_descriptions": {
     "pixel_size": "Physical pixel size in Angstroms",
     "voltage": "Accelerating voltage in kV",
@@ -25,6 +27,7 @@
     "particle_diameter": "Estimated particle diameter in Angstroms used to auto-derive picking and reconstruction defaults",
     "symmetry": "Default point-group symmetry for reconstruction and refinement stages (e.g., C1, D7)",
     "movies_path": "Path to movie files (supports wildcards like *.tif)",
+    "micrographs_path": "Path to already motion-corrected micrograph files (supports wildcards like *.mrc). If provided, use import_micrographs instead of import_movies (motion correction will be skipped)",
     "gain_ref_path": "Path to gain reference file (.mrc format)",
     "gain_rot": "Clockwise rotation to apply to gain reference before use (units: 90° increments, values 0-3)",
     "gain_flip": "RELION gain flip code (0 = none, 1 = flip Y, 2 = flip X). CryoSPARC flip flags are derived automatically."
