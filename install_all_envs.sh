@@ -100,13 +100,20 @@ echo "============================="
 echo "1️⃣  Setting up cryoagent env"
 echo "============================="
 
-CRYOAGENT_DIR="$SCRIPT_DIR"
+CRYOAGENT_DIR="$SCRIPT_DIR/cryoagent"
+CRYOAGENT_REPO="https://gitee.com/fei_sun_lab/cryoagent.git"
 CRYOAGENT_ENV_NAME="cryoagent"
 
-# Assume cryoagent repository is already cloned (script is in the repo)
+if [ ! -d "$CRYOAGENT_DIR" ]; then
+    echo "📥 Cloning cryoagent from $CRYOAGENT_REPO"
+    git clone "$CRYOAGENT_REPO" "$CRYOAGENT_DIR"
+else
+    echo "🔄 cryoagent directory already exists, pulling latest changes..."
+    git -C "$CRYOAGENT_DIR" pull
+fi
+
 if [ ! -f "$CRYOAGENT_DIR/environment.yml" ]; then
     echo "⛔ ERROR: environment.yml not found in $CRYOAGENT_DIR"
-    echo "   Make sure you're running this script from the cryoagent repository root."
     exit 1
 fi
 
@@ -204,8 +211,114 @@ fi
 echo "✅ magellon2DAssess environment ready."
 echo
 
+
+
 #############################################
-# 4. Activate cryoagent environment at the end
+# 4. Configure API keys and license
+#############################################
+
+echo "==============================================="
+echo "🔑 Configuring API Keys and License"
+echo "==============================================="
+echo
+echo "Please enter your API keys and license information."
+echo "You can press Enter to skip any field (you can add them later)."
+echo
+
+BASHRC_FILE="$HOME/.bashrc"
+
+# Helper: add or update environment variable in .bashrc
+add_to_bashrc () {
+    local var_name="$1"
+    local var_value="$2"
+    local bashrc_file="$3"
+    
+    # Create .bashrc if it doesn't exist
+    if [ ! -f "$bashrc_file" ]; then
+        touch "$bashrc_file"
+        echo "   📝 Created ~/.bashrc"
+    fi
+    
+    # Escape special characters in the value for bash
+    local escaped_value=$(printf '%s\n' "$var_value" | sed "s/'/'\\\\''/g")
+    
+    # Check if the variable already exists in .bashrc
+    if grep -q "^export ${var_name}=" "$bashrc_file" 2>/dev/null; then
+        # Update existing entry
+        if [[ "$OSTYPE" == "darwin"* ]]; then
+            # macOS uses BSD sed
+            sed -i '' "s|^export ${var_name}=.*|export ${var_name}='${escaped_value}'|" "$bashrc_file"
+        else
+            # Linux uses GNU sed
+            sed -i "s|^export ${var_name}=.*|export ${var_name}='${escaped_value}'|" "$bashrc_file"
+        fi
+        echo "   ✅ Updated ${var_name} in ~/.bashrc"
+    else
+        # Add new entry
+        echo "export ${var_name}='${escaped_value}'" >> "$bashrc_file"
+        echo "   ✅ Added ${var_name} to ~/.bashrc"
+    fi
+}
+
+# Prompt for DEEPSEEK_API_KEY
+read -p "Enter DEEPSEEK_API_KEY (or press Enter to skip): " DEEPSEEK_API_KEY_INPUT
+if [ -n "$DEEPSEEK_API_KEY_INPUT" ]; then
+    add_to_bashrc "DEEPSEEK_API_KEY" "$DEEPSEEK_API_KEY_INPUT" "$BASHRC_FILE"
+    export DEEPSEEK_API_KEY="$DEEPSEEK_API_KEY_INPUT"
+fi
+
+# Prompt for OPENAI_API_KEY
+read -p "Enter OPENAI_API_KEY (or press Enter to skip): " OPENAI_API_KEY_INPUT
+if [ -n "$OPENAI_API_KEY_INPUT" ]; then
+    add_to_bashrc "OPENAI_API_KEY" "$OPENAI_API_KEY_INPUT" "$BASHRC_FILE"
+    export OPENAI_API_KEY="$OPENAI_API_KEY_INPUT"
+fi
+
+# Prompt for PANSHI_API_KEY
+read -p "Enter PANSHI_API_KEY (or press Enter to skip): " PANSHI_API_KEY_INPUT
+if [ -n "$PANSHI_API_KEY_INPUT" ]; then
+    add_to_bashrc "PANSHI_API_KEY" "$PANSHI_API_KEY_INPUT" "$BASHRC_FILE"
+    export PANSHI_API_KEY="$PANSHI_API_KEY_INPUT"
+fi
+
+# Prompt for LICENSE_ID
+read -p "Enter LICENSE_ID (or press Enter to skip): " LICENSE_ID_INPUT
+if [ -n "$LICENSE_ID_INPUT" ]; then
+    add_to_bashrc "LICENSE_ID" "$LICENSE_ID_INPUT" "$BASHRC_FILE"
+    export LICENSE_ID="$LICENSE_ID_INPUT"
+    
+    # Update master_config.json with LICENSE_ID
+    echo "📝 Updating master_config.json with LICENSE_ID..."
+    update_json_config_with_arg "license_id" "$LICENSE_ID_INPUT" ".cryosparc.license_id = \$license_id"
+fi
+
+echo
+echo "🔄 Loading updated environment variables from ~/.bashrc..."
+# Source .bashrc to load the new environment variables
+# Use a subshell approach to avoid issues with set -e
+if [ -f "$BASHRC_FILE" ]; then
+    set +e  # Temporarily disable exit on error for sourcing
+    source "$BASHRC_FILE" 2>/dev/null || true
+    set -e  # Re-enable exit on error
+    echo "✅ Environment variables loaded."
+else
+    echo "⚠️  WARNING: ~/.bashrc not found, skipping source."
+fi
+
+echo
+echo "==============================================="
+echo "✅ Configuration complete!"
+echo "==============================================="
+echo
+echo "🟢 cryoagent environment activated."
+echo "You are now ready to use CryoAgent!"
+echo
+echo "💡 Note: The API keys and LICENSE_ID have been added to ~/.bashrc"
+echo "   They will be automatically loaded in new terminal sessions."
+echo "   For the current session, they are already exported."
+
+#############################################
+# 5. Activate cryoagent environment at the end
 #############################################
 
 echo "==============================================="
@@ -220,4 +333,4 @@ echo "==============================================="
 conda activate "$CRYOAGENT_ENV_NAME"
 
 echo "🟢 cryoagent environment activated."
-echo "You are now ready to use CryoAgent!"
+echo
