@@ -53,20 +53,36 @@ def setup_logging(verbose: bool = False):
     )
 
 
-def check_stage_output_exists(stage: WorkflowStage, outputs_dir: str = "outputs") -> Optional[Dict[str, Any]]:
+def check_stage_output_exists(stage: WorkflowStage, outputs_dir: Optional[str] = None, default_outputs_dir: str = "outputs") -> Optional[Dict[str, Any]]:
     """
     Check if output file for a given stage already exists.
     
     Args:
         stage: The workflow stage to check
-        outputs_dir: Directory where output files are stored
+        outputs_dir: Custom directory where output files are stored (checked first)
+        default_outputs_dir: Default directory to check if outputs_dir is None or files not found
         
     Returns:
         Dictionary with output file information if exists, None otherwise
     """
-    outputs_path = Path(outputs_dir)
+    # First check the custom outputs directory if provided
+    if outputs_dir:
+        outputs_path = Path(outputs_dir)
+        if outputs_path.exists():
+            result = _check_output_in_directory(stage, outputs_path)
+            if result:
+                return result
+    
+    # Fall back to default outputs directory
+    outputs_path = Path(default_outputs_dir)
     if not outputs_path.exists():
         return None
+    
+    return _check_output_in_directory(stage, outputs_path)
+
+
+def _check_output_in_directory(stage: WorkflowStage, outputs_path: Path) -> Optional[Dict[str, Any]]:
+    """Helper function to check for outputs in a specific directory."""
     
     # Map stage names to output file patterns
     stage_patterns = {
@@ -115,14 +131,16 @@ def check_stage_output_exists(stage: WorkflowStage, outputs_dir: str = "outputs"
 class CryoAgentMasterWorkflow:
     """Main master workflow orchestrator for CryoAgent."""
     
-    def __init__(self, master_config_path: str = "configs/master_config.json"):
+    def __init__(self, master_config_path: str = "configs/master_config.json", outputs_dir: str = "outputs"):
         """
         Initialize the CryoAgent master workflow.
         
         Args:
             master_config_path: Path to the master configuration file
+            outputs_dir: Directory where output files will be saved
         """
         self.master_config_path = master_config_path
+        self.outputs_dir = outputs_dir
         self.orchestrator = None
         self.start_time = None
         self.llm_logger = GeneralLLMLogger()
@@ -140,7 +158,7 @@ class CryoAgentMasterWorkflow:
             
             # Initialize master orchestrator
             print("🎭 Initializing master orchestrator...")
-            self.orchestrator = MasterOrchestrator(self.master_config_path)
+            self.orchestrator = MasterOrchestrator(self.master_config_path, outputs_dir=self.outputs_dir)
             
             if not self.orchestrator.initialize():
                 print("❌ Failed to initialize master orchestrator")
@@ -229,7 +247,7 @@ class CryoAgentMasterWorkflow:
                 enabled_stages = list(WorkflowStage)
             
             for stage in enabled_stages:
-                existing_output = check_stage_output_exists(stage)
+                existing_output = check_stage_output_exists(stage, outputs_dir=self.outputs_dir)
                 if existing_output:
                     stages_to_skip.append(stage)
                     print(f"   ✅ {stage.value.replace('_', ' ').title()}: Already completed ({existing_output['timestamp']})")
@@ -395,7 +413,7 @@ class CryoAgentMasterWorkflow:
             stages_to_skip = []
             stages_to_run = []
             for stage in workflow_stages:
-                existing_output = check_stage_output_exists(stage)
+                existing_output = check_stage_output_exists(stage, outputs_dir=self.outputs_dir)
                 if existing_output:
                     stages_to_skip.append(stage)
                     print(f"   ✅ {stage.value.replace('_', ' ').title()}: Already completed ({existing_output['timestamp']})")
@@ -533,13 +551,24 @@ Examples:
         help="Show what would be done without executing"
     )
     
+    parser.add_argument(
+        "--conversation-id",
+        help="Optional custom conversation ID for this workflow run (default: auto-generated)"
+    )
+    
+    parser.add_argument(
+        "--outputs-dir",
+        default="outputs",
+        help="Directory where output files will be saved (default: outputs)"
+    )
+    
     args = parser.parse_args()
     
     # Setup logging
     setup_logging(args.verbose)
     
-    # Initialize master workflow
-    master_workflow = CryoAgentMasterWorkflow(args.config)
+            # Initialize master workflow
+    master_workflow = CryoAgentMasterWorkflow(args.config, outputs_dir=args.outputs_dir)
     
     if not master_workflow.initialize():
         print("❌ Failed to initialize CryoAgent master workflow")
@@ -553,13 +582,13 @@ Examples:
             success = master_workflow.test_setup()
             
         elif args.workflow == "complete":
-            # Use a unique conversation ID to ensure fresh start
-            conversation_id = f"complete_workflow_{int(time.time())}"
+            # Use provided conversation ID or generate a unique one to ensure fresh start
+            conversation_id = args.conversation_id or f"complete_workflow_{int(time.time())}"
             success = master_workflow.run_complete_workflow(args.dry_run, conversation_id)
             
         elif args.workflow == "preprocessing":
-            # Use a unique conversation ID to ensure fresh start
-            conversation_id = f"preprocessing_workflow_{int(time.time())}"
+            # Use provided conversation ID or generate a unique one to ensure fresh start
+            conversation_id = args.conversation_id or f"preprocessing_workflow_{int(time.time())}"
             success = master_workflow.run_preprocessing_workflow(args.dry_run, conversation_id)
             
         

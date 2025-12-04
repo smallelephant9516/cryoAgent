@@ -1,0 +1,66 @@
+{
+  "master_workflow": {
+    "stages": [
+      {
+        "name": "preprocessing",
+        "description": "Pre-processing stage: Import movies, motion correction, CTF estimation, and micrograph selection",
+        "enabled": true,
+        "agent_group": "cryosparc",
+        "agent_class": "PreprocessingAgent"
+      },
+      {
+        "name": "particle_picking",
+        "description": "Particle picking stage: Detect and extract particles from micrographs",
+        "enabled": true,
+        "agent_group": "cryosparc",
+        "agent_class": "ParticlePickingAgent"
+      },
+      {
+        "name": "optimization_2d",
+        "description": "2D classification optimization stage: Iteratively refine particle selection using 2D classification and CryoSift",
+        "enabled": true,
+        "agent_group": "cryosparc",
+        "agent_class": "Optimizer2DAgent"
+      },
+      {
+        "name": "reconstruction",
+        "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
+        "enabled": true,
+        "agent_group": "cryosparc",
+        "agent_class": "ReconstructionAgent"
+      },
+      {
+        "name": "optimization",
+        "description": "Box size optimization stage: Optimize box size/diameter for 3D reconstruction",
+        "enabled": true,
+        "agent_group": "cryosparc",
+        "agent_class": "OptimizerAgent"
+      },
+      {
+        "name": "polish",
+        "description": "Polish refinement stage: Final refinement steps with CTF refinement and motion correction to achieve best possible resolution",
+        "enabled": true,
+        "agent_group": "cryosparc",
+        "agent_class": "PolishAgent"
+      }
+    ]
+  },
+  "relion": {
+    "relion_exe": "/usr/local/bin/relion",
+    "continue_job": true,
+    "relion_dir": "/home/daoyi/scratch/relion/10204/ccc",
+    "backend_execution": {
+      "enabled": true,
+      "default_timeout": 84600,
+      "check_interval": 10,
+      "max_concurrent_jobs": 3,
+      "auto_cleanup": true,
+      "conda_env": "relion-5.0"
+    }
+  },
+  "workflow": {
+    "project_uid": "P12",
+    "workspace_uid": "W1"
+  }
+}
+

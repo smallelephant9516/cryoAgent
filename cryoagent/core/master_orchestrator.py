@@ -36,20 +36,37 @@ class WorkflowStage(Enum):
     POLISH = "polish"
 
 
-def check_stage_output_exists(stage: WorkflowStage, outputs_dir: str = "outputs") -> Optional[Dict[str, Any]]:
+def check_stage_output_exists(stage: WorkflowStage, outputs_dir: Optional[str] = None, default_outputs_dir: str = "outputs") -> Optional[Dict[str, Any]]:
     """
     Check if output file for a given stage already exists.
+    Checks custom outputs_dir first, then falls back to default_outputs_dir.
     
     Args:
         stage: The workflow stage to check
-        outputs_dir: Directory where output files are stored
+        outputs_dir: Custom directory where output files are stored (checked first)
+        default_outputs_dir: Default directory to check if outputs_dir is None or files not found
         
     Returns:
         Dictionary with output file information if exists, None otherwise
     """
-    outputs_path = Path(outputs_dir)
+    # First check custom outputs directory if provided
+    if outputs_dir:
+        outputs_path = Path(outputs_dir)
+        if outputs_path.exists():
+            result = _check_output_in_directory_orch(stage, outputs_path)
+            if result:
+                return result
+    
+    # Fall back to default outputs directory
+    outputs_path = Path(default_outputs_dir)
     if not outputs_path.exists():
         return None
+    
+    return _check_output_in_directory_orch(stage, outputs_path)
+
+
+def _check_output_in_directory_orch(stage: WorkflowStage, outputs_path: Path) -> Optional[Dict[str, Any]]:
+    """Helper function to check for outputs in a specific directory."""
     
     # Map stage names to output file patterns
     # Note: Reconstruction files are named:
@@ -1903,14 +1920,16 @@ class PolishAgent(StageAgent):
 class MasterOrchestrator:
     """Master orchestrator for the complete cryoEM workflow."""
     
-    def __init__(self, master_config_path: str):
+    def __init__(self, master_config_path: str, outputs_dir: str = "outputs"):
         """
         Initialize the master orchestrator.
         
         Args:
             master_config_path: Path to the master configuration file
+            outputs_dir: Directory where output files will be saved
         """
         self.master_config_path = master_config_path
+        self.outputs_dir = outputs_dir
         self.master_config = None
         self.stage_agents = {}
         self.stage_results = []
@@ -1918,7 +1937,7 @@ class MasterOrchestrator:
         self.start_time = None
         self.logger = logging.getLogger("MasterOrchestrator")
         self.transition_agent = None
-        self.summary_agent = SummaryAgent()
+        self.summary_agent = SummaryAgent(outputs_dir=outputs_dir)
         
     def initialize(self) -> bool:
         """
@@ -2288,8 +2307,8 @@ class MasterOrchestrator:
             print(f"\n🎯 Executing Stage: {stage_name.replace('_', ' ').title()}")
             print("-" * 40)
             
-            # Check if stage output already exists
-            existing_output = check_stage_output_exists(stage)
+            # Check if stage output already exists (check custom outputs_dir first, then default)
+            existing_output = check_stage_output_exists(stage, self.outputs_dir)
             if existing_output:
                 self.logger.info(f"Stage {stage_name} already completed, skipping execution")
                 print(f"✅ Stage {stage_name} already completed!")
@@ -2531,8 +2550,8 @@ class MasterOrchestrator:
             print(f"\n🎯 Executing Stage: {stage_name.replace('_', ' ').title()}")
             print("-" * 40)
             
-            # Check if stage output already exists
-            existing_output = check_stage_output_exists(stage)
+            # Check if stage output already exists (check custom outputs_dir first, then default)
+            existing_output = check_stage_output_exists(stage, self.outputs_dir)
             if existing_output:
                 self.logger.info(f"Stage {stage_name} already completed, skipping execution")
                 print(f"✅ Stage {stage_name} already completed!")
