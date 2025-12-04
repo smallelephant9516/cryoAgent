@@ -452,3 +452,112 @@ def _value_or_none(value: MicroscopeValue) -> Optional[Union[str, float, int]]:
     return value
 
 
+def apply_cryosift_overrides_if_enabled(base_path: Optional[Path] = None) -> None:
+    """
+    Apply CryoSift configuration from master_config.json to relevant stage configuration files.
+    
+    This propagates cryosift_weights_path and cryosift_env from master_config.json
+    to optimization_2d_config.json and particle_picking_config.json.
+    
+    Args:
+        base_path: Optional base directory of the project workspace. Defaults to CWD.
+    """
+    base_dir = Path(base_path).resolve() if base_path else Path.cwd()
+    master_config_path = base_dir / "configs" / "master_config.json"
+    
+    master_config = _load_json(master_config_path)
+    if not master_config:
+        return
+    
+    # Check if cryosift section exists
+    cryosift_config = master_config.get("cryosift", {})
+    if not cryosift_config:
+        LOGGER.debug("CryoSift configuration not found in master_config.json.")
+        return
+    
+    # Extract CryoSift parameters
+    cryosift_weights_path = cryosift_config.get("cryosift_weights_path")
+    cryosift_env = cryosift_config.get("cryosift_env")
+    
+    # If neither is set, nothing to propagate
+    if not cryosift_weights_path and not cryosift_env:
+        LOGGER.debug("No CryoSift parameters to propagate from master_config.json.")
+        return
+    
+    # Stage configuration files to update
+    stage_config_paths = {
+        "optimization_2d": base_dir / "configs" / "cryosparc" / "optimization_2d_config.json",
+        "particle_picking": base_dir / "configs" / "cryosparc" / "particle_picking_config.json",
+    }
+    
+    for stage_name, cfg_path in stage_config_paths.items():
+        try:
+            _apply_cryosift_overrides_to_stage(stage_name, cfg_path, cryosift_weights_path, cryosift_env)
+        except Exception as exc:  # pragma: no cover - defensive logging
+            LOGGER.warning("Failed to apply CryoSift overrides to %s: %s", cfg_path, exc)
+
+
+def _apply_cryosift_overrides_to_stage(
+    stage_name: str,
+    cfg_path: Path,
+    cryosift_weights_path: Optional[str],
+    cryosift_env: Optional[str]
+) -> None:
+    """Apply CryoSift overrides to a specific stage configuration file."""
+    config_data = _load_json(cfg_path)
+    if config_data is None:
+        return
+    
+    updated = False
+    if stage_name == "optimization_2d":
+        updated = _update_optimization_2d_cryosift(config_data, cryosift_weights_path, cryosift_env)
+    elif stage_name == "particle_picking":
+        updated = _update_particle_picking_cryosift(config_data, cryosift_weights_path, cryosift_env)
+    
+    if updated:
+        _save_json(cfg_path, config_data)
+        LOGGER.info("Applied CryoSift overrides to %s", cfg_path)
+
+
+def _update_optimization_2d_cryosift(
+    config_data: Dict[str, Any],
+    cryosift_weights_path: Optional[str],
+    cryosift_env: Optional[str]
+) -> bool:
+    """Update CryoSift settings in optimization_2d_config.json."""
+    paths_to_update = []
+    
+    if cryosift_weights_path is not None:
+        paths_to_update.append(
+            (["workflow", "2d_optimization", "select_2d_classes", "cryosift_weights_path"], cryosift_weights_path)
+        )
+    
+    if cryosift_env is not None:
+        paths_to_update.append(
+            (["workflow", "2d_optimization", "select_2d_classes", "cryosift_env"], cryosift_env)
+        )
+    
+    return _bulk_update(config_data, paths_to_update)
+
+
+def _update_particle_picking_cryosift(
+    config_data: Dict[str, Any],
+    cryosift_weights_path: Optional[str],
+    cryosift_env: Optional[str]
+) -> bool:
+    """Update CryoSift settings in particle_picking_config.json."""
+    paths_to_update = []
+    
+    if cryosift_weights_path is not None:
+        paths_to_update.append(
+            (["workflow", "select_2d_classes", "cryosift_weights_path"], cryosift_weights_path)
+        )
+    
+    if cryosift_env is not None:
+        paths_to_update.append(
+            (["workflow", "select_2d_classes", "cryosift_env"], cryosift_env)
+        )
+    
+    return _bulk_update(config_data, paths_to_update)
+
+

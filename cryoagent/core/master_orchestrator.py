@@ -19,7 +19,7 @@ from enum import Enum
 
 # Import modular agents (imported dynamically to support both RELION and CryoSPARC)
 from ..config.config_loader import ConfigLoader, CryoAgentConfig
-from ..config.microscope_override_updater import apply_microscope_overrides_if_enabled
+from ..config.microscope_override_updater import apply_microscope_overrides_if_enabled, apply_cryosift_overrides_if_enabled
 from ..tools.cryosparc_tools import CryoSPARCTools
 from ..utils.general_llm_logger import GeneralLLMLogger
 from .transition_agent import TransitionAgent
@@ -1952,6 +1952,12 @@ class MasterOrchestrator:
                 apply_microscope_overrides_if_enabled()
             except Exception as override_exc:
                 self.logger.warning(f"Failed to apply microscope overrides: {override_exc}")
+            
+            # Apply CryoSift overrides from master_config.json to stage configs
+            try:
+                apply_cryosift_overrides_if_enabled()
+            except Exception as cryosift_exc:
+                self.logger.warning(f"Failed to apply CryoSift overrides: {cryosift_exc}")
 
             # Load master configuration
             with open(self.master_config_path, 'r') as f:
