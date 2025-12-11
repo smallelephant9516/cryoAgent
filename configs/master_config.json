@@ -1,7 +1,7 @@
 {
   "master_workflow": {
     "name": "CryoEM Master Workflow",
-    "description": "Complete 3-stage cryoEM processing pipeline",
+    "description": "Complete multi-stage cryoEM processing pipeline",
     "stages": [
       {
         "name": "preprocessing",
@@ -20,7 +20,7 @@
       {
         "name": "optimization_2d",
         "description": "2D classification optimization stage: Iteratively refine particle selection using 2D classification and CryoSift",
-        "enabled": true,
+        "enabled": false,
         "agent_group": "cryosparc",
         "agent_class": "Optimizer2DAgent"
       },
@@ -34,7 +34,7 @@
       {
         "name": "optimization",
         "description": "Box size optimization stage: Optimize box size/diameter for 3D reconstruction",
-        "enabled": false,
+        "enabled": true,
         "agent_group": "cryosparc",
         "agent_class": "OptimizerAgent"
       },
@@ -52,11 +52,11 @@
     "max_retries": 2
   },
   "cryosparc": {
-    "host": "localhost",
+    "host": "192.168.125.96",
     "base_port": 39000,
-    "username": "lidaoyi16@hotmail.com",
-    "password": "Password123",
-    "license_id": "${LICENSE_ID}"
+    "username": "feilab@ibp.ac.cn",
+    "password": "123456",
+    "license_id": "8d2aa694-dfbf-11ee-8a59-837cd2b78154"
   },
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
@@ -96,13 +96,15 @@
     }
   },
   "cryosift": {
-    "cryosift_weights_path": "/home/daoyi/tools/cryosift/2dclass_evaluator/CNNTraining/final_model/final_model_cont.pth",
+    "cryosift_weights_path": "/home/daoyi/Github/cryoagent/Magellon/Sandbox/2dclass_evaluator/CNNTraining/final_model/final_model_cont.pth",
     "cryosift_weights_path_description": "Path to the CryoSift neural network weights file. This can be overridden by stage-specific configs.",
+    "cryosift_evaluator_script_path": "/home/daoyi/tools/cryosift/2dclass_evaluator/CNNTraining/output_class_list.py",
+    "cryosift_evaluator_script_path_description": "Path to the CryoSift evaluator script (output_class_list.py). This can be overridden by stage-specific configs.",
     "cryosift_env": "magellon2DAssess",
     "cryosift_env_description": "Conda environment used to run CryoSift evaluation. This can be overridden by stage-specific configs."
   },
   "agent": {
-    "provider": "deepseek", 
+    "provider": "deepseek",
     "temperature": 0.1,
     "max_iterations": 50,
     "verbose": true,
@@ -121,7 +123,10 @@
         "api_key": "${DEEPSEEK_API_KEY}",
         "base_url": "https://api.deepseek.com",
         "model_name": "deepseek-chat",
-        "possible_models": ["deepseek-chat", "deepseek-reasoner"],
+        "possible_models": [
+          "deepseek-chat",
+          "deepseek-reasoner"
+        ],
         "temperature": 0.1,
         "timeout": 60
       },
@@ -129,7 +134,11 @@
         "api_key": "${OPENAI_API_KEY}",
         "base_url": "https://api.openai.com/v1",
         "model_name": "gpt-4o",
-        "possible_models": ["gpt-4o", "gpt-4o-mini","gpt-5"],
+        "possible_models": [
+          "gpt-4o",
+          "gpt-4o-mini",
+          "gpt-5"
+        ],
         "temperature": 0.1,
         "timeout": 60
       },
@@ -137,7 +146,12 @@
         "api_key": "${PANSHI_API_KEY}",
         "base_url": "https://uni-api.cstcloud.cn/v1",
         "model_name": "deepseek-v3:671b",
-        "possible_models": ["deepseek-v3:671b", "deepseek-r1:32b","qwen2.5-vl:72b","S1-Base-Lite"],
+        "possible_models": [
+          "deepseek-v3:671b",
+          "deepseek-r1:32b",
+          "qwen2.5-vl:72b",
+          "S1-Base-Lite"
+        ],
         "temperature": 0.1,
         "timeout": 180
       }
@@ -147,7 +161,9 @@
         "api_key": "${PANSHI_API_KEY}",
         "base_url": "https://uni-api.cstcloud.cn/v1",
         "model_name": "qwen2.5-vl:72b",
-        "possible_models": ["qwen2.5-vl:72b"],
+        "possible_models": [
+          "qwen2.5-vl:72b"
+        ],
         "temperature": 0.1,
         "timeout": 60
       },
@@ -155,14 +171,18 @@
         "api_key": "${OPENAI_API_KEY}",
         "base_url": "https://api.openai.com/v1",
         "model_name": "gpt-4o",
-        "possible_models": ["gpt-4o", "gpt-4o-mini","gpt-5"],
+        "possible_models": [
+          "gpt-4o",
+          "gpt-4o-mini",
+          "gpt-5"
+        ],
         "temperature": 0.1,
         "timeout": 60
       }
     }
   },
   "workflow": {
-    "project_uid": "P8",
+    "project_uid": "P15",
     "workspace_uid": "W1"
   },
   "job_management": {

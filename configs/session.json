@@ -18,7 +18,7 @@
       {
         "name": "optimization_2d",
         "description": "2D classification optimization stage: Iteratively refine particle selection using 2D classification and CryoSift",
-        "enabled": true,
+        "enabled": false,
         "agent_group": "cryosparc",
         "agent_class": "Optimizer2DAgent"
       },
@@ -39,7 +39,7 @@
       {
         "name": "polish",
         "description": "Polish refinement stage: Final refinement steps with CTF refinement and motion correction to achieve best possible resolution",
-        "enabled": true,
+        "enabled": false,
         "agent_group": "cryosparc",
         "agent_class": "PolishAgent"
       }
@@ -48,7 +48,7 @@
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
     "continue_job": true,
-    "relion_dir": "/home/daoyi/scratch/relion/10059/ccc",
+    "relion_dir": "/lustre2/daoyi/relion/agent_test/ccc",
     "backend_execution": {
       "enabled": true,
       "default_timeout": 84600,
@@ -59,7 +59,7 @@
     }
   },
   "workflow": {
-    "project_uid": "P11",
+    "project_uid": "P15",
     "workspace_uid": "W1"
   }
 }

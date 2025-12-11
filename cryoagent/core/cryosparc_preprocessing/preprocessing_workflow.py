@@ -125,8 +125,8 @@ Execute the complete cryoEM preprocessing workflow. Choose the appropriate path 
    - Max resolution: {getattr(self.config.workflow, 'ctf_max_res', 4.0)} Å
 
 **Common Final Step:**
-4. **Micrograph Selection**: Select micrographs with resolution better than 5 Å
-   - Min resolution threshold: 5.0 Å
+4. **Micrograph Selection**: Select micrographs with resolution better than {getattr(self.config.workflow, 'min_resolution', 5.0)} Å
+   - Min resolution threshold: {getattr(self.config.workflow, 'min_resolution', 5.0)} Å
    - Filters out low-quality micrographs
 
 **Important**: 

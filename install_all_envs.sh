@@ -15,7 +15,10 @@ if ! command -v conda &> /dev/null; then
 fi
 
 # Initialize conda in this script
+# Temporarily disable unbound variable check for conda initialization
+set +u
 eval "$(conda shell.bash hook)"
+set -u
 
 # Work in the directory where this script lives
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -62,11 +65,12 @@ update_json_config () {
 }
 
 # Helper: update JSON config with argument (safer for paths with special characters)
+# Usage: update_json_config_with_arg <arg_name> <arg_value> <jq_expr> [config_file_path]
 update_json_config_with_arg () {
-    local config_file="$SCRIPT_DIR/configs/master_config.json"
     local arg_name="$1"
     local arg_value="$2"
     local jq_expr="$3"
+    local config_file="${4:-$SCRIPT_DIR/configs/master_config.json}"
     
     if ! command -v jq &> /dev/null; then
         echo "⚠️  WARNING: 'jq' command not found. Cannot update config file automatically."
@@ -100,16 +104,24 @@ echo "============================="
 echo "1️⃣  Setting up cryoagent env"
 echo "============================="
 
-CRYOAGENT_DIR="$SCRIPT_DIR/cryoagent"
-CRYOAGENT_REPO="https://gitee.com/fei_sun_lab/cryoagent.git"
 CRYOAGENT_ENV_NAME="cryoagent"
 
-if [ ! -d "$CRYOAGENT_DIR" ]; then
-    echo "📥 Cloning cryoagent from $CRYOAGENT_REPO"
-    git clone "$CRYOAGENT_REPO" "$CRYOAGENT_DIR"
+# Check if we're already in the cryoagent repository (by checking for environment.yml in current dir)
+if [ -f "environment.yml" ]; then
+    echo "✅ Already in cryoagent repository. Using current directory."
+    CRYOAGENT_DIR="."
 else
-    echo "🔄 cryoagent directory already exists, pulling latest changes..."
-    git -C "$CRYOAGENT_DIR" pull
+    # Fallback: check for subdirectory or clone (for users who don't have it yet)
+    CRYOAGENT_REPO="https://gitee.com/fei_sun_lab/cryoagent.git"
+    if [ -d "./cryoagent" ]; then
+        echo "🔄 cryoagent subdirectory already exists, pulling latest changes..."
+        CRYOAGENT_DIR="./cryoagent"
+        git -C "$CRYOAGENT_DIR" pull
+    else
+        echo "📥 Cloning cryoagent from $CRYOAGENT_REPO"
+        CRYOAGENT_DIR="./cryoagent"
+        git clone "$CRYOAGENT_REPO" "$CRYOAGENT_DIR"
+    fi
 fi
 
 if [ ! -f "$CRYOAGENT_DIR/environment.yml" ]; then
@@ -146,9 +158,13 @@ else
 fi
 
 echo "📥 Installing helicon[all] from GitHub into '$HELICON_ENV_NAME'"
+set +u  # Temporarily disable unbound variable check for conda activation
 conda activate "$HELICON_ENV_NAME"
+set -u  # Re-enable unbound variable check
 pip install "helicon[all] @ git+https://github.com/jianglab/helicon"
+set +u  # Temporarily disable for conda deactivate
 conda deactivate
+set -u  # Re-enable
 
 echo "📝 Updating master_config.json with helicon environment name..."
 update_json_config '.transition.micrograph_conversion.helicon.conda_env = "helicon" | .transition.particle_conversion.helicon.conda_env = "helicon"'
@@ -192,18 +208,51 @@ if [ ! -f "$MAGELLON_REQ_PATH" ]; then
 fi
 
 echo "📥 Installing Magellon 2D evaluator requirements into '$MAGELLON_ENV_NAME'"
+set +u  # Temporarily disable unbound variable check for conda activation
 conda activate "$MAGELLON_ENV_NAME"
+set -u  # Re-enable unbound variable check
 pip install -r "$MAGELLON_REQ_PATH"
+set +u  # Temporarily disable for conda deactivate
 conda deactivate
+set -u  # Re-enable
 
-# Update config with cryosift weights path and environment name
+# Update config with cryosift weights path, evaluator script path, and environment name
 MAGELLON_WEIGHTS_PATH="$MAGELLON_DIR/Sandbox/2dclass_evaluator/CNNTraining/final_model/final_model_cont.pth"
-if [ -f "$MAGELLON_WEIGHTS_PATH" ]; then
-    echo "📝 Updating master_config.json with cryosift weights path and environment name..."
+MAGELLON_EVALUATOR_SCRIPT_PATH="$MAGELLON_DIR/Sandbox/2dclass_evaluator/CNNTraining/output_class_list.py"
+
+if [ -f "$MAGELLON_WEIGHTS_PATH" ] && [ -f "$MAGELLON_EVALUATOR_SCRIPT_PATH" ]; then
+    echo "📝 Updating master_config.json with cryosift weights path, evaluator script path, and environment name..."
     # Use jq with --arg for safe path handling
     update_json_config_with_arg "weights_path" "$MAGELLON_WEIGHTS_PATH" ".cryosift.cryosift_weights_path = \$weights_path | .cryosift.cryosift_env = \"$MAGELLON_ENV_NAME\""
+    update_json_config_with_arg "evaluator_script_path" "$MAGELLON_EVALUATOR_SCRIPT_PATH" ".cryosift.cryosift_evaluator_script_path = \$evaluator_script_path"
+    
+    # Also update stage-specific config files
+    echo "📝 Updating stage-specific config files with cryosift paths..."
+    
+    # Update optimization_2d_config.json
+    OPT_2D_CONFIG="$SCRIPT_DIR/configs/cryosparc/optimization_2d_config.json"
+    if [ -f "$OPT_2D_CONFIG" ]; then
+        update_json_config_with_arg "weights_path" "$MAGELLON_WEIGHTS_PATH" ".workflow.\"2d_optimization\".select_2d_classes.cryosift_weights_path = \$weights_path | .workflow.\"2d_optimization\".select_2d_classes.cryosift_env = \"$MAGELLON_ENV_NAME\"" "$OPT_2D_CONFIG"
+        update_json_config_with_arg "evaluator_script_path" "$MAGELLON_EVALUATOR_SCRIPT_PATH" ".workflow.\"2d_optimization\".select_2d_classes.cryosift_evaluator_script_path = \$evaluator_script_path" "$OPT_2D_CONFIG"
+    fi
+    
+    # Update particle_picking_config.json
+    PICKING_CONFIG="$SCRIPT_DIR/configs/cryosparc/particle_picking_config.json"
+    if [ -f "$PICKING_CONFIG" ]; then
+        update_json_config_with_arg "weights_path" "$MAGELLON_WEIGHTS_PATH" ".workflow.select_2d_classes.cryosift_weights_path = \$weights_path | .workflow.select_2d_classes.cryosift_env = \"$MAGELLON_ENV_NAME\"" "$PICKING_CONFIG"
+        update_json_config_with_arg "evaluator_script_path" "$MAGELLON_EVALUATOR_SCRIPT_PATH" ".workflow.select_2d_classes.cryosift_evaluator_script_path = \$evaluator_script_path" "$PICKING_CONFIG"
+    fi
+elif [ -f "$MAGELLON_WEIGHTS_PATH" ]; then
+    echo "⚠️  WARNING: CryoSift evaluator script not found at: $MAGELLON_EVALUATOR_SCRIPT_PATH"
+    echo "📝 Updating master_config.json with cryosift weights path and environment name..."
+    update_json_config_with_arg "weights_path" "$MAGELLON_WEIGHTS_PATH" ".cryosift.cryosift_weights_path = \$weights_path | .cryosift.cryosift_env = \"$MAGELLON_ENV_NAME\""
+elif [ -f "$MAGELLON_EVALUATOR_SCRIPT_PATH" ]; then
+    echo "⚠️  WARNING: CryoSift weights file not found at: $MAGELLON_WEIGHTS_PATH"
+    echo "📝 Updating master_config.json with evaluator script path and environment name..."
+    update_json_config_with_arg "evaluator_script_path" "$MAGELLON_EVALUATOR_SCRIPT_PATH" ".cryosift.cryosift_evaluator_script_path = \$evaluator_script_path | .cryosift.cryosift_env = \"$MAGELLON_ENV_NAME\""
 else
     echo "⚠️  WARNING: CryoSift weights file not found at: $MAGELLON_WEIGHTS_PATH"
+    echo "⚠️  WARNING: CryoSift evaluator script not found at: $MAGELLON_EVALUATOR_SCRIPT_PATH"
     echo "   Updating only the environment name in config..."
     update_json_config ".cryosift.cryosift_env = \"$MAGELLON_ENV_NAME\""
 fi
@@ -330,7 +379,9 @@ echo
 echo "🚀 Activating cryoagent environment now..."
 echo "==============================================="
 
+set +u  # Temporarily disable unbound variable check for conda activation
 conda activate "$CRYOAGENT_ENV_NAME"
+set -u  # Re-enable unbound variable check
 
 echo "🟢 cryoagent environment activated."
 echo
