@@ -52,6 +52,9 @@ class Optimizer2DAgent(BaseReActAgent):
         
         # Initialize logger for this agent
         self.logger = logging.getLogger("Optimizer2DAgent")
+        
+        # Track previous round's median cryosift score for quality degradation detection
+        self._previous_round_median_score: Optional[float] = None
     
     def _create_tools(self) -> List[Tool]:
         """Create 2D optimization-specific tools."""
@@ -97,6 +100,7 @@ class Optimizer2DAgent(BaseReActAgent):
         max_rounds = self._get_stage_param("2d_optimization", "max_iterative_rounds", 5)
         threshold = self._get_stage_param("2d_optimization", "good_particles_threshold", 0.9)
         enable_select_all = self._get_stage_param("2d_optimization", "enable_select_all_after_last_round", False)
+        stop_on_degradation = self._get_stage_param("2d_optimization", "stop_on_quality_degradation", True)
         
         threshold_pct = int(threshold * 100)
         
@@ -253,6 +257,12 @@ Iterative loop (max {max_rounds} rounds):
 
 - **Stopping Conditions**:
   - Function 1 stops when: ≥{threshold_pct}% good particles OR max {max_rounds} rounds reached
+  - **CRITICAL: Quality Degradation Check** {'(ENABLED)' if stop_on_degradation else '(DISABLED)'}: After each round of 2D classification and selection (in Step C - Iterative rounds), check the result from `select_2d_classes`:
+    - If the result contains "quality_degradation_detected": true, this means the median cryosift score of selected classes is HIGHER (worse) than the previous round
+    - **If quality_degradation_detected is true, you MUST STOP further rounds of 2D classification**, even if the convergence threshold (≥{threshold_pct}%) has not been reached and max rounds have not been reached
+    - The result will include "quality_warning" with details about the score comparison
+    - Lower cryosift scores are better (higher quality), so if the median score increases, quality is degrading
+    - **Note**: This check is {'enabled' if stop_on_degradation else 'disabled'} in the current configuration
   - Always check particle count after each selection to determine if threshold is met
 
 - **Final Summary**: 
@@ -842,6 +852,53 @@ Think carefully about the workflow order and which functions are enabled before 
                     "selected_template_indices": result.get("selected_template_indices", []),
                     "selection_metadata": result.get("selection_metadata", {})
                 }
+                
+                # Check for quality degradation using cryosift median scores
+                # This is only relevant for iterative rounds (Function 1, Step C)
+                selection_metadata = result.get("selection_metadata", {})
+                if selection_metadata.get("selection_mode") == "cryosift":
+                    scores = selection_metadata.get("scores", {})
+                    if scores:
+                        # Calculate median score of selected classes
+                        score_values = [score for score in scores.values() if score is not None]
+                        if score_values:
+                            import statistics
+                            current_median_score = statistics.median(score_values)
+                            
+                            # Check if quality degradation check is enabled
+                            stop_on_degradation = self._get_stage_param("2d_optimization", "stop_on_quality_degradation", True)
+                            
+                            # Determine if we should compare scores
+                            enable_f1 = self._get_stage_param("2d_optimization", "enable_function1_iterative", True)
+                            is_iterative_round = enable_f1 and self._previous_round_median_score is not None
+                            
+                            if is_iterative_round and stop_on_degradation:
+                                # We have a baseline from a previous round—compare and flag degradation
+                                if current_median_score > self._previous_round_median_score:
+                                    formatted_result["quality_degradation_detected"] = True
+                                    formatted_result["current_median_score"] = current_median_score
+                                    formatted_result["previous_median_score"] = self._previous_round_median_score
+                                    formatted_result["quality_warning"] = (
+                                        f"⚠️ Quality degradation detected: Current round median score ({current_median_score:.3f}) "
+                                        f"is higher (worse) than previous round ({self._previous_round_median_score:.3f}). "
+                                        f"Consider stopping further rounds of 2D classification."
+                                    )
+                                    self.logger.warning(
+                                        "Quality degradation detected in 2D classification: "
+                                        f"median score increased from {self._previous_round_median_score:.3f} to {current_median_score:.3f}"
+                                    )
+                                else:
+                                    formatted_result["quality_degradation_detected"] = False
+                                    formatted_result["current_median_score"] = current_median_score
+                                    formatted_result["previous_median_score"] = self._previous_round_median_score
+                                    self.logger.info(
+                                        "Quality maintained or improved: "
+                                        f"median score changed from {self._previous_round_median_score:.3f} to {current_median_score:.3f}"
+                                    )
+                            
+                            # Always update baseline so the next round compares against the latest score
+                            self._previous_round_median_score = current_median_score
+                            formatted_result["current_median_score"] = current_median_score
             else:
                 formatted_result = {
                     "success": True,

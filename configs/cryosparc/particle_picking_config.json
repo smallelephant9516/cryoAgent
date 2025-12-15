@@ -15,14 +15,14 @@
     "particle_job_uid"
   ],
   "microscope_parameters": {
-    "pixel_size": 0.8,
+    "pixel_size": 0.88,
     "particle_diameter": 180.0,
-    "dose": 60.0,
+    "dose": 61.4,
     "voltage": 200.0,
-    "cs_mm": 2.7,
-    "symmetry": "C3",
-    "movies_path": null,
-    "gain_ref_path": null,
+    "cs_mm": 1.4,
+    "symmetry": "D2",
+    "movies_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/*.tiff",
+    "gain_ref_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/gain.mrc",
     "gain_rot": 0,
     "gain_flip": 0
   },
@@ -38,8 +38,8 @@
       "diameter_max_description": "Maximum particle diameter in Angstroms. If null, defaults to 2.0 × particle_diameter. Defines the upper bound of the particle size search range. Useful for particles with size variation."
     },
     "particle_extraction": {
-      "box_size_pix": 360,
-      "box_size_pix_description": "Extraction box size in pixels. Calculated as 180.0/0.8 + 125 ≈ 360.",
+      "box_size_pix": 324,
+      "box_size_pix_description": "Extraction box size in pixels. Calculated as 180.0/0.88 + 125 ≈ 324.",
       "extract_downscale_factor": 1.0,
       "extract_downscale_factor_description": "Downsampling factor for extraction. 1.0 = no downsampling. Values like 2.0 or 4.0 reduce box size for initial processing and speed. Typical range: 1.0-4.0.",
       "bg_radius": null,

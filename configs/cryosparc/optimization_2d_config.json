@@ -26,6 +26,8 @@
       "good_particles_threshold_description": "Threshold for good particles percentage (default: 0.9 = 90%)",
       "enable_select_all_after_last_round": false,
       "enable_select_all_after_last_round_description": "If enabled, after the last round of 2D classification, run a select_2d job to select all particles from that round (default: false)",
+      "stop_on_quality_degradation": true,
+      "stop_on_quality_degradation_description": "If enabled, stop iterative 2D classification rounds when quality degrades (median cryosift score increases). Lower scores are better, so if median score increases, quality is degrading (default: true)",
       "2d_classification": {
         "num_classes": 200,
         "num_classes_description": "Number of 2D classes to generate for each classification round",
