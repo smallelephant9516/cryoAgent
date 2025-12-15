@@ -110,18 +110,3 @@
     "gain_flip": 0
   },
 
-# QC random test
-
-  "microscope_parameters": {
-    "pixel_size": 0.8,
-    "voltage": 200,
-    "cs_mm": 2.7,
-    "dose": 60,
-    "particle_diameter": 180,
-    "symmetry": "C3",
-    "movies_path": null,
-    "micrographs_path": "/lustre1/qichen/data/WT-HFBI/20250424_WT_SRx3_0424/WT_SRx3_0424_*_SumCorr_DW.mrc",
-    "gain_ref_path": null,
-    "gain_rot": 0,
-    "gain_flip": 0
-  },

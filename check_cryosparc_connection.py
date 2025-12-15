@@ -6,6 +6,7 @@ This script provides comprehensive testing of CryoSPARC connectivity,
 including basic connection, project access, and workspace verification.
 """
 
+from re import S
 import sys
 import time
 from pathlib import Path
@@ -40,6 +41,7 @@ def test_cryosparc_connection():
         start_time = time.time()
         cryosparc_tools = CryoSPARCTools(config.cryosparc)
         connection_time = time.time() - start_time
+        result = True
         
         print(f"✅ CryoSPARC connection successful! (took {connection_time:.2f}s)")
         
@@ -53,7 +55,9 @@ def test_cryosparc_connection():
         print("4. Ensure the CryoSPARC Python tools are properly installed")
         print("5. Verify network connectivity to CryoSPARC server")
         print("6. Check if the project and workspace UIDs exist")
-        return False
+        result = None
+    
+    return result
 
 
 def test_connection_performance():

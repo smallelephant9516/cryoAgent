@@ -181,7 +181,7 @@ echo "3️⃣  Setting up magellon2DAssess env (Magellon/CryoSift)"
 echo "============================="
 
 MAGELLON_DIR="$SCRIPT_DIR/Magellon"
-MAGELLON_REPO="https://github.com/sstagg/Magellon"
+MAGELLON_REPO="https://github.com/smallelephant9516/Magellon"
 MAGELLON_ENV_NAME="magellon2DAssess"
 MAGELLON_REQ_REL="Sandbox/2dclass_evaluator/requirements.txt"
 MAGELLON_REQ_PATH="$MAGELLON_DIR/$MAGELLON_REQ_REL"
