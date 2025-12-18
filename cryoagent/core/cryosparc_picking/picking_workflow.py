@@ -404,7 +404,31 @@ Begin by executing step 1 (blob_picker) and proceed sequentially through all 9 s
                 continue
 
             wait_info = waits.get(job_uid)
+            
+            # select_2d_classes completes synchronously (waits internally), so it doesn't require wait_for_job
+            is_select_2d_classes = step_enum in (PickingStep.SELECT_2D_CLASSES, PickingStep.SELECT_FINAL_CLASSES)
+            
             if not wait_info:
+                if is_select_2d_classes:
+                    # For select_2d_classes, if we have a job_uid and the tool returned successfully,
+                    # assume it completed (the tool waits internally)
+                    # Check if the result payload indicates success
+                    if isinstance(result_payload, dict) and "job_uid" in result_payload:
+                        # The tool completed synchronously, so mark as successful
+                        step_name = step_enum.value.replace('_', ' ').title()
+                        self.results.append(
+                            PickingResult(
+                                step=step_enum,
+                                success=True,
+                                job_uid=job_uid,
+                                message=f"CryoSPARC {step_name} job {job_uid} completed successfully (synchronous operation)",
+                                error=None,
+                                reasoning=result
+                            )
+                        )
+                        continue
+                
+                # For other steps, require wait_for_job
                 self.results.append(
                     PickingResult(
                         step=step_enum,

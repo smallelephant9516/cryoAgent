@@ -806,6 +806,10 @@ Think carefully about the workflow order and which functions are enabled before 
                 if cryosift_weights_path:
                     cryosift_options["weights_path"] = cryosift_weights_path
                 
+                cryosift_evaluator_script_path = params.get("cryosift_evaluator_script_path") or self._get_stage_param("select_2d_classes", "cryosift_evaluator_script_path")
+                if cryosift_evaluator_script_path:
+                    cryosift_options["evaluator_script_path"] = cryosift_evaluator_script_path
+                
                 cryosift_output_subdir = params.get("cryosift_output_subdir") or self._get_stage_param("select_2d_classes", "cryosift_output_subdir")
                 if cryosift_output_subdir:
                     cryosift_options["output_subdir"] = cryosift_output_subdir

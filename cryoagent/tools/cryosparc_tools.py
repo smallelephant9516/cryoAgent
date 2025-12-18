@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 from cryosparc.tools import CryoSPARC
 from ..config.config_loader import CryoSPARCSettings
-from .cryosift_tools import CryoSiftTools
+from .cryosift_tools import CryoSiftTools, CryoSiftPaths
 
 
 class CryoSPARCTools:
@@ -1702,11 +1702,24 @@ class CryoSPARCTools:
 
                         threshold = float(cryosift_cfg.get("threshold", 3.0))
                         weights_path = cryosift_cfg.get("weights_path")
+                        evaluator_script_path = cryosift_cfg.get("evaluator_script_path")
                         python_executable = cryosift_cfg.get("python_executable", "python")
                         conda_env = cryosift_cfg.get("conda_env")
                         extra_args = cryosift_cfg.get("extra_args")
 
+                        # Create CryoSiftPaths if evaluator_script_path or weights_path is provided
+                        cryosift_paths = None
+                        if evaluator_script_path or weights_path:
+                            # Use provided paths or fall back to defaults
+                            default_weights_path = Path(weights_path) if weights_path else CryoSiftPaths().default_weights
+                            evaluator_script = Path(evaluator_script_path) if evaluator_script_path else CryoSiftPaths().evaluator_script
+                            cryosift_paths = CryoSiftPaths(
+                                evaluator_script=evaluator_script,
+                                default_weights=default_weights_path,
+                            )
+
                         cryosift_tool = CryoSiftTools(
+                            paths=cryosift_paths,
                             python_executable=python_executable,
                             conda_env=conda_env,
                         )

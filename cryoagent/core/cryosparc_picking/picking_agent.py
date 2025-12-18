@@ -448,10 +448,26 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             cryosift_threshold = params.get("cryosift_threshold")
             cryosift_env = params.get("cryosift_env")
             cryosift_weights_path = params.get("cryosift_weights_path")
+            cryosift_evaluator_script_path = params.get("cryosift_evaluator_script_path")
             cryosift_output_dir = params.get("cryosift_output_dir")
             cryosift_output_subdir = params.get("cryosift_output_subdir")
             cryosift_python = params.get("cryosift_python_executable")
             cryosift_fallback = params.get("cryosift_fallback_strategy")
+            
+            # Read from config if not provided in params
+            if selection_mode == "cryosift":
+                if cryosift_threshold is None:
+                    cryosift_threshold = self._get_stage_param("select_2d_classes", "cryosift_threshold")
+                if not cryosift_env:
+                    cryosift_env = self._get_stage_param("select_2d_classes", "cryosift_env")
+                if not cryosift_weights_path:
+                    cryosift_weights_path = self._get_stage_param("select_2d_classes", "cryosift_weights_path")
+                if not cryosift_evaluator_script_path:
+                    cryosift_evaluator_script_path = self._get_stage_param("select_2d_classes", "cryosift_evaluator_script_path")
+                if not cryosift_output_subdir:
+                    cryosift_output_subdir = self._get_stage_param("select_2d_classes", "cryosift_output_subdir")
+                if not cryosift_fallback:
+                    cryosift_fallback = self._get_stage_param("select_2d_classes", "cryosift_fallback_strategy")
             
             # Support both class_2d_job_uid and job_uid (when LLM passes just "J88")
             class_2d_job_uid = params.get("class_2d_job_uid") or params.get("job_uid")
@@ -483,6 +499,8 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 cryosift_options["conda_env"] = cryosift_env
             if cryosift_weights_path:
                 cryosift_options["weights_path"] = cryosift_weights_path
+            if cryosift_evaluator_script_path:
+                cryosift_options["evaluator_script_path"] = cryosift_evaluator_script_path
             if cryosift_output_dir:
                 cryosift_options["output_dir"] = cryosift_output_dir
             if cryosift_output_subdir:
