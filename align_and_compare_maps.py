@@ -94,7 +94,7 @@ def extract_resolution_from_fsc_output(output_text):
 
 
 def run_alignment_workflow(
-    source_map, target_map, data_dir, source_map_name, target_map_name,
+    source_map, target_map, data_dir, output_dir, source_map_name, target_map_name,
     docker_container, docker_mount_prefix, docker_mount_prefix_val,
     transform_map_script, chimerax_cmd, eman2_conda_env, fitmap_script,
     cal_fsc_script, voxel_size, alg_type, source_contour_level, target_contour_level
@@ -166,8 +166,8 @@ def run_alignment_workflow(
                 f"CryoAlign may have failed. Expected pattern: *RT.npy"
             )
     
-    # Transform_map.py outputs to the same directory as input
-    transformed_map = data_dir / f"{Path(target_map_name).stem}_trans.map"
+    # Transform_map.py outputs - save to output directory
+    transformed_map = output_dir / f"{Path(target_map_name).stem}_trans.map"
     
     # Validate transform_map_script
     if transform_map_script is None:
@@ -234,20 +234,25 @@ def run_alignment_workflow(
         ], cwd=str(data_dir), quiet=True)
     print("Done")
     
-    # Verify transformed map was created
-    if not transformed_map.exists():
+    # Transform_map.py creates output in data_dir, move it to output_dir
+    transformed_map_temp = data_dir / f"{Path(target_map_name).stem}_trans.map"
+    if not transformed_map_temp.exists():
         alt_transformed = data_dir / f"{Path(target_map_name).stem}.map"
         if alt_transformed.exists():
-            transformed_map = alt_transformed
+            transformed_map_temp = alt_transformed
         else:
             raise FileNotFoundError(
-                f"Transformed map not found: {transformed_map}. "
+                f"Transformed map not found in {data_dir}. "
                 f"Transform_map.py may have failed."
             )
     
+    # Move transformed map to output directory
+    if transformed_map_temp.exists():
+        shutil.move(str(transformed_map_temp), str(transformed_map))
+    
     # Step 4: Fitmap using chimerax
     print(f"Step 4: Fitting maps using ChimeraX...", end=" ", flush=True)
-    fitted_map = data_dir / f"{Path(target_map_name).stem}_trans_fitmap.mrc"
+    fitted_map = output_dir / f"{Path(target_map_name).stem}_trans_fitmap.mrc"
     run_command([
         chimerax_cmd,
         "--nogui",
@@ -432,8 +437,12 @@ def main():
     data_dir = source_map.parent
     source_map_name = source_map.name
     
-    # Create results file
-    results_file = data_dir / f"alignment_results_{source_map.stem}_{target_map.stem}.txt"
+    # Create output subfolder for generated files
+    output_dir = data_dir / f"alignment_output_{source_map.stem}_{target_map.stem}"
+    output_dir.mkdir(parents=True, exist_ok=True)
+    
+    # Create results file in output directory
+    results_file = output_dir / f"alignment_results_{source_map.stem}_{target_map.stem}.txt"
     
     try:
         # First run: Non-flipped target map (steps 2-5)
@@ -449,7 +458,7 @@ def main():
             shutil.copy2(target_map, target_map_in_data)
         
         resolution_non_flipped = run_alignment_workflow(
-            source_map, target_map_in_data, data_dir, source_map_name, target_map_name,
+            source_map, target_map_in_data, data_dir, output_dir, source_map_name, target_map_name,
             docker_container, docker_mount_prefix, docker_mount_prefix,
             transform_map_script, chimerax_cmd, eman2_conda_env, fitmap_script,
             cal_fsc_script, args.voxel_size, args.alg_type,
@@ -471,7 +480,7 @@ def main():
         
         # Step 1: Flip target map
         print("Step 1: Flipping target map...", end=" ", flush=True)
-        target_flipped = work_dir / f"{target_map.stem}_flip.mrc"
+        target_flipped = output_dir / f"{target_map.stem}_flip.mrc"
         run_command([
             sys.executable,
             flip_map_script,
@@ -483,12 +492,12 @@ def main():
         target_flipped_name = target_flipped.name
         target_flipped_in_data = data_dir / target_flipped_name
         
-        # Copy flipped map to data directory
+        # Copy flipped map to data directory (CryoAlign needs it there)
         if not target_flipped_in_data.exists() or target_flipped_in_data.stat().st_mtime < target_flipped.stat().st_mtime:
             shutil.copy2(target_flipped, target_flipped_in_data)
         
         resolution_flipped = run_alignment_workflow(
-            source_map, target_flipped_in_data, data_dir, source_map_name, target_flipped_name,
+            source_map, target_flipped_in_data, data_dir, output_dir, source_map_name, target_flipped_name,
             docker_container, docker_mount_prefix, docker_mount_prefix,
             transform_map_script, chimerax_cmd, eman2_conda_env, fitmap_script,
             cal_fsc_script, args.voxel_size, args.alg_type,
