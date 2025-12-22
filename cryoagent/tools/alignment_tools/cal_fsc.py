@@ -95,3 +95,4 @@ if __name__ == '__main__':
     resolution = round(1/resolution, 2)
 
     print(f"Resolution: {resolution} Å")
+    print(f"FSC: {fsc}")

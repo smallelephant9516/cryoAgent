@@ -1,0 +1,21 @@
+# flip map
+
+python /home/daoyi/Github/cryoagent/cryoagent/utils/filp_map.py /mnt/sda2/relion/10025/10025_subset/Class3D/job038/run_it025_class003.mrc /mnt/sda2/relion/10025/10025_subset/Class3D/job038/run_it025_class003_flip.mrc
+
+# docker 
+
+docker exec -it cryo2 bash
+CryoAlign --data_dir /data/relion/10025/10025_subset/Class3D/job038 --source_map run_it025_class001.mrc --target_map run_it025_class003_flip.mrc --voxel_size 5.0 --alg_type global --source_contour_level 0.01 --target_contour_level 0.01 
+exit
+
+# generate map (need to be run in eman2 environment)
+
+python /home/daoyi/Github/cryoAlign2/script/Transform_map.py /mnt/sda2/relion/10025/10025_subset/Class3D/job038/run_it025_class003_flip.mrc run_it025_class001_run_it025_class003_flip_RT.npy
+
+# fitmap
+
+chimerax --nogui --script "/home/daoyi/Github/cryoagent/cryoagent/utils/fitmap_chimerax.py /mnt/sda2/relion/10025/10025_subset/Class3D/job038/run_it025_class001.mrc /mnt/sda2/relion/10025/10025_subset/Class3D/job038/run_it025_class003_flip_trans.map /mnt/sda2/relion/10025/10025_subset/Class3D/job038/run_it025_class003_flip_trans_fitmap.mrc"
+
+# calfsc
+
+python /home/daoyi/Github/cryoagent/cryoagent/utils/cal_fsc.py /mnt/sda2/relion/10025/10025_subset/Class3D/job038/run_it025_class001.mrc /mnt/sda2/relion/10025/10025_subset/Class3D/job038/run_it025_class003_flip_trans_fitmap.mrc
