@@ -353,6 +353,12 @@ def main():
         help="Name of the eman2 conda environment (default: from EMAN2_CONDA_ENV env var)"
     )
     parser.add_argument(
+        "--eman2_env",
+        type=str,
+        default=None,
+        help="Command to activate eman2 environment (legacy, use --eman2_conda_env instead; default: from EMAN2_ENV env var)"
+    )
+    parser.add_argument(
         "--work_dir",
         type=str,
         default=None,
