@@ -35,7 +35,13 @@ import subprocess
 import tempfile
 import shutil
 import re
+import numpy as np
 from pathlib import Path
+
+try:
+    import mrcfile
+except ImportError:
+    mrcfile = None
 
 
 def get_env_var(name, default=None, required=False):
@@ -73,6 +79,30 @@ def run_command(cmd, check=True, shell=False, env=None, cwd=None, quiet=False):
         if e.stderr:
             print(e.stderr, file=sys.stderr)
         raise
+
+
+def calculate_rms(map_path):
+    """
+    Calculate RMS (Root Mean Square) of a density map.
+    
+    Args:
+        map_path: Path to MRC file
+    
+    Returns:
+        float: RMS value
+    """
+    if mrcfile is None:
+        raise ImportError(
+            "mrcfile is required to calculate RMS. "
+            "Install it with: pip install mrcfile"
+        )
+    
+    with mrcfile.open(str(map_path), mode='r') as mrc:
+        data = mrc.data.astype(np.float64)
+        # Calculate RMS: sqrt(mean((values - mean(values))^2))
+        mean_val = np.mean(data)
+        rms = np.sqrt(np.mean((data - mean_val) ** 2))
+        return float(rms)
 
 
 def extract_resolution_from_fsc_output(output_text):
@@ -374,8 +404,16 @@ def main():
         action="store_true",
         help="Keep working directory after completion (default: delete)"
     )
+    parser.add_argument(
+        "--no_rms_threshold",
+        action="store_true",
+        help="Disable automatic RMS calculation and use manual contour levels"
+    )
     
     args = parser.parse_args()
+    
+    # Default to using RMS threshold unless explicitly disabled
+    use_rms_threshold = not args.no_rms_threshold
     
     # Get environment variables with defaults
     docker_container = args.docker_container or get_env_var("CRYOALIGN_DOCKER_CONTAINER", "cryo2")
@@ -444,6 +482,54 @@ def main():
     # Create results file in output directory
     results_file = output_dir / f"alignment_results_{source_map.stem}_{target_map.stem}.txt"
     
+    # Calculate RMS for both maps if requested and not explicitly set
+    source_contour_level = args.source_contour_level
+    target_contour_level = args.target_contour_level
+    
+    # Check if contour levels were explicitly set (different from defaults)
+    default_contour_level = 0.01
+    source_explicitly_set = args.source_contour_level != default_contour_level
+    target_explicitly_set = args.target_contour_level != default_contour_level
+    
+    if use_rms_threshold:
+        # Calculate RMS only for levels that weren't explicitly set
+        print("\n" + "="*60)
+        print("Determining contour levels for density maps...")
+        print("="*60)
+        try:
+            if not source_explicitly_set:
+                print(f"Calculating RMS for source map: {source_map.name}...", end=" ", flush=True)
+                source_rms = calculate_rms(source_map)
+                source_contour_level = source_rms
+                print(f"RMS = {source_rms:.6f}")
+            else:
+                print(f"Using explicitly set source contour level: {source_contour_level:.6f}")
+            
+            if not target_explicitly_set:
+                print(f"Calculating RMS for target map: {target_map.name}...", end=" ", flush=True)
+                target_rms = calculate_rms(target_map)
+                target_contour_level = target_rms
+                print(f"RMS = {target_rms:.6f}")
+            else:
+                print(f"Using explicitly set target contour level: {target_contour_level:.6f}")
+            
+            print(f"\nUsing contour levels:")
+            print(f"  Source contour level: {source_contour_level:.6f}")
+            print(f"  Target contour level: {target_contour_level:.6f}")
+        except Exception as e:
+            print(f"\nWarning: Failed to calculate RMS: {e}")
+            print("Falling back to manual contour levels:")
+            print(f"  Source contour level: {source_contour_level}")
+            print(f"  Target contour level: {target_contour_level}")
+    else:
+        # Use explicitly set values or defaults
+        if source_explicitly_set or target_explicitly_set:
+            print(f"\nUsing explicitly set contour levels:")
+        else:
+            print(f"\nUsing manual contour levels:")
+        print(f"  Source contour level: {source_contour_level:.6f}")
+        print(f"  Target contour level: {target_contour_level:.6f}")
+    
     try:
         # First run: Non-flipped target map (steps 2-5)
         print("\n" + "="*60)
@@ -462,7 +548,7 @@ def main():
             docker_container, docker_mount_prefix, docker_mount_prefix,
             transform_map_script, chimerax_cmd, eman2_conda_env, fitmap_script,
             cal_fsc_script, args.voxel_size, args.alg_type,
-            args.source_contour_level, args.target_contour_level
+            source_contour_level, target_contour_level
         )
         
         print(f"\nNon-flipped target map resolution: {resolution_non_flipped} Å")
@@ -471,6 +557,8 @@ def main():
         with open(results_file, 'w') as f:
             f.write(f"Alignment Results: {source_map_name} vs {target_map_name}\n")
             f.write("="*60 + "\n")
+            f.write(f"Source contour level (RMS): {source_contour_level:.6f}\n")
+            f.write(f"Target contour level (RMS): {target_contour_level:.6f}\n")
             f.write(f"Non-flipped target map: {resolution_non_flipped} Å\n")
         
         # Second run: Flipped target map (steps 1-5)
@@ -501,7 +589,7 @@ def main():
             docker_container, docker_mount_prefix, docker_mount_prefix,
             transform_map_script, chimerax_cmd, eman2_conda_env, fitmap_script,
             cal_fsc_script, args.voxel_size, args.alg_type,
-            args.source_contour_level, args.target_contour_level
+            source_contour_level, target_contour_level
         )
         
         print(f"\nFlipped target map resolution: {resolution_flipped} Å")
