@@ -25,6 +25,13 @@
         "agent_class": "Optimizer2DAgent"
       },
       {
+        "name": "heterogeneity",
+        "description": "Heterogeneity analysis stage: Determine true number of classes using ab initio + heterogeneous refinement and density comparison",
+        "enabled": true,
+        "agent_group": "cryosparc",
+        "agent_class": "HeterogeneityAgent"
+      },
+      {
         "name": "reconstruction",
         "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
         "enabled": true,

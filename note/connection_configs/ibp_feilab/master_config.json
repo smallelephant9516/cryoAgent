@@ -18,6 +18,13 @@
         "agent_class": "ParticlePickingAgent"
       },
       {
+        "name": "heterogeneity",
+        "description": "Heterogeneity analysis stage: Determine true number of classes using ab initio + heterogeneous refinement and density comparison",
+        "enabled": true,
+        "agent_group": "cryosparc",
+        "agent_class": "HeterogeneityAgent"
+      },
+      {
         "name": "optimization_2d",
         "description": "2D classification optimization stage: Iteratively refine particle selection using 2D classification and CryoSift",
         "enabled": false,

@@ -63,6 +63,22 @@
     "gain_flip": 0
   },
 
+#10059
+
+"microscope_parameters": {
+    "pixel_size": 1.2156,
+    "voltage": 300,
+    "cs_mm": 2.0,
+    "dose": 42,
+    "particle_diameter": 200,
+    "symmetry": "C1",
+    "movies_path": null,
+    "micrographs_path": "/home/daoyi/scratch/cryoEM_dataset/10059/data/micrographs/*.mrc",
+    "gain_ref_path": null,
+    "gain_rot": 0,
+    "gain_flip": 0
+  },
+
 # 10316
 
   "microscope_parameters": {

@@ -1,0 +1,78 @@
+{
+  "stage_info": {
+    "name": "heterogeneity_analysis",
+    "description": "Heterogeneity analysis stage: Determine true number of classes using ab initio + heterogeneous refinement and density comparison",
+    "version": "1.0.0"
+  },
+  "required_inputs": [
+    "refinement_job_uid",
+    "particles_job_uid",
+    "micrographs_job_uid",
+    "volume_job_uid"
+  ],
+  "outputs": [
+    "converged_k",
+    "true_num_classes",
+    "filtered_groups",
+    "final_refinement_jobs",
+    "output_json_path"
+  ],
+  "microscope_parameters": {},
+  "workflow": {
+    "heterogeneity_analysis": {
+      "initial_k_values": [3, 5],
+      "initial_k_values_description": "Initial K values to test (default: [3, 5])",
+      "max_k": 10,
+      "max_k_description": "Maximum K value to test (default: 10)",
+      "convergence_threshold": 0,
+      "convergence_threshold_description": "Number of additional classes detected to consider converged (default: 0, meaning no new classes)",
+      "resolution_threshold": 10.0,
+      "resolution_threshold_description": "Resolution threshold in Angstroms - groups with worse resolution are discarded (default: 12.0)",
+      "ab_initio_initial_resolution": 9.0,
+      "ab_initio_initial_resolution_description": "Initial resolution (Å) for ab initio reconstruction (default: 9.0)",
+      "ab_initio_final_resolution": 7.0,
+      "ab_initio_final_resolution_description": "Final/maximum resolution (Å) for ab initio reconstruction (default: 7.0)",
+      "use_nonuniform_refinement": true,
+      "use_nonuniform_refinement_description": "Use non-uniform refinement for final refinement of each group (default: true)",
+      "refine_res_init": null,
+      "refine_res_init_description": "Initial lowpass resolution (Å) for refinement. If null, uses CryoSPARC default (typically 30Å).",
+      "density_comparison": {
+        "voxel_size": 5.0,
+        "voxel_size_description": "Voxel size in Angstroms for density comparison (default: 5.0)",
+        "source_contour_level": 0.01,
+        "source_contour_level_description": "Source contour level for density comparison (default: 0.01)",
+        "target_contour_level": 0.01,
+        "target_contour_level_description": "Target contour level for density comparison (default: 0.01)",
+        "alg_type": "global",
+        "alg_type_description": "Algorithm type for density comparison: 'global' or 'local' (default: 'global')",
+        "resolution_threshold": 20.0,
+        "resolution_threshold_description": "Resolution threshold for density comparison (default: 20.0)",
+        "n_clusters": null,
+        "n_clusters_description": "Number of clusters for density grouping (null = auto-detect, default: null)",
+        "cluster_method": "spectral",
+        "cluster_method_description": "Clustering method: 'spectral', 'agglomerative', or 'louvain' (default: 'spectral')",
+        "keep_work_dir": false,
+        "keep_work_dir_description": "Keep working directory after comparison (default: false)",
+        "no_rms_threshold": false,
+        "no_rms_threshold_description": "Disable RMS threshold for density comparison (default: false)"
+      },
+      "external_tools": {
+        "eman2_conda_env": "eman2",
+        "eman2_conda_env_description": "Conda environment name for EMAN2 tools (optional)",
+        "chimerax_cmd": null,
+        "chimerax_cmd_description": "ChimeraX command path (optional)",
+        "docker_container": null,
+        "docker_container_description": "Docker container name for CryoAlign tools (optional)",
+        "docker_mount_prefix": null,
+        "docker_mount_prefix_description": "Docker mount prefix path (optional)"
+      },
+      "script_paths": {
+        "compare_all_densities_script": null,
+        "compare_all_densities_script_description": "Path to compare_all_densities.py script. If null, auto-detects from alignment_tools folder or project root. Default: null (auto-detect)",
+        "align_and_compare_script": null,
+        "align_and_compare_script_description": "Path to align_and_compare_maps.py script. If null, auto-detects from project root. Default: null (auto-detect)"
+      }
+    }
+  }
+}
+

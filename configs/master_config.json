@@ -32,6 +32,13 @@
         "agent_class": "ReconstructionAgent"
       },
       {
+        "name": "heterogeneity",
+        "description": "Heterogeneity analysis stage: Determine true number of classes using ab initio + heterogeneous refinement and density comparison",
+        "enabled": true,
+        "agent_group": "cryosparc",
+        "agent_class": "HeterogeneityAgent"
+      },
+      {
         "name": "optimization",
         "description": "Box size optimization stage: Optimize box size/diameter for 3D reconstruction",
         "enabled": true,
@@ -52,11 +59,11 @@
     "max_retries": 2
   },
   "cryosparc": {
-    "host": "192.168.125.96",
+    "host": "localhost",
     "base_port": 39000,
-    "username": "feilab@ibp.ac.cn",
-    "password": "123456",
-    "license_id": "8d2aa694-dfbf-11ee-8a59-837cd2b78154"
+    "username": "lidaoyi16@hotmail.com",
+    "password": "Password123",
+    "license_id": "ea7aec62-b1ae-11e9-8554-cb1fba28db1b"
   },
   "relion": {
     "relion_exe": "/usr/local/bin/relion",

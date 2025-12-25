@@ -33,6 +33,7 @@ class WorkflowStage(Enum):
     OPTIMIZATION_2D = "optimization_2d"
     RECONSTRUCTION = "reconstruction"
     OPTIMIZATION = "optimization"
+    HETEROGENEITY = "heterogeneity"
     POLISH = "polish"
 
 
@@ -78,6 +79,7 @@ def _check_output_in_directory_orch(stage: WorkflowStage, outputs_path: Path) ->
         WorkflowStage.OPTIMIZATION_2D: "2d_optimization_results_*.json",
         WorkflowStage.RECONSTRUCTION: ["reconstruction_results_cryosparc_*.json", "3d_reconstruction_results_relion_*.json"],
         WorkflowStage.OPTIMIZATION: "optimization_results_*.json",
+        WorkflowStage.HETEROGENEITY: "heterogeneity_analysis_results_*.json",
         WorkflowStage.POLISH: "polish_results_*.json"
     }
     
@@ -1917,6 +1919,255 @@ class PolishAgent(StageAgent):
         return ["optimization_results", "preprocessing_results"]
 
 
+class HeterogeneityAgent(StageAgent):
+    """Specialized agent for heterogeneity analysis stage."""
+    
+    def __init__(self, config_path: str, master_config_path: Optional[str] = None):
+        super().__init__("heterogeneity", config_path, master_config_path)
+        self.backend_type = None  # Will be set during initialization
+    
+    def initialize(self) -> bool:
+        """Initialize the heterogeneity analysis agent with modular architecture."""
+        try:
+            # Load basic configuration
+            config_loader = ConfigLoader(self.config_path, self.master_config_path)
+            self.config = config_loader.load_config()
+            
+            # Heterogeneity analysis is only available for CryoSPARC
+            from .cryosparc_heterogeneity.heterogeneity_agent import HeterogeneityAgent as ModularHeterogeneityAgent
+            from .cryosparc_heterogeneity.heterogeneity_workflow import HeterogeneityWorkflow
+            
+            # Initialize CryoSPARC tools
+            self.cryosparc_tools = CryoSPARCTools(self.config.cryosparc)
+            
+            # Initialize modular heterogeneity agent and workflow
+            self.modular_agent = ModularHeterogeneityAgent(self.cryosparc_tools, self.config)
+            self.modular_workflow = HeterogeneityWorkflow(self.modular_agent, self.config, stage_config_path=self.config_path)
+            self.backend_type = "CryoSPARC"
+            
+            # Set stage name and workflow type for conversation logging
+            self.modular_agent.stage_name = "heterogeneity"
+            self.modular_agent.workflow_type = "cryoem"
+            
+            self.logger.info(f"Stage agent {self.stage_name} initialized with {self.backend_type} backend")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize stage agent {self.stage_name}: {e}")
+            return False
+    
+    def execute_stage(self, context: WorkflowContext, conversation_id: Optional[str] = None) -> StageResult:
+        """
+        Execute the heterogeneity analysis stage.
+        
+        Args:
+            context: Workflow context with previous stage outputs
+            conversation_id: Optional conversation identifier
+            
+        Returns:
+            StageResult with heterogeneity analysis outputs
+        """
+        start_time = time.time()
+        try:
+            # Get required inputs from previous stages
+            stage_outputs_map = getattr(context, "stage_outputs", {}) or {}
+            reconstruction_outputs = stage_outputs_map.get(WorkflowStage.RECONSTRUCTION)
+            if isinstance(reconstruction_outputs, StageResult):
+                reconstruction_outputs = reconstruction_outputs.stage_outputs
+            
+            # Get final_volume_job_uid from reconstruction stage
+            final_volume_job_uid = None
+            if reconstruction_outputs:
+                final_volume_job_uid = (
+                    reconstruction_outputs.get("final_volume_job_uid")
+                    or (reconstruction_outputs.get("job_uids", {}).get("final_volume") if isinstance(reconstruction_outputs.get("job_uids"), dict) else None)
+                    or (reconstruction_outputs.get("outputs", {}).get("final_volume_job_uid") if isinstance(reconstruction_outputs.get("outputs"), dict) else None)
+                    or reconstruction_outputs.get("homogeneous_refinement_job_uid")
+                    or (reconstruction_outputs.get("job_uids", {}).get("homogeneous_refinement") if isinstance(reconstruction_outputs.get("job_uids"), dict) else None)
+                )
+            
+            # refinement_job_uid and volume_job_uid should both be the final_volume_job_uid
+            refinement_job_uid = final_volume_job_uid
+            volume_job_uid = final_volume_job_uid
+            
+            # Get particles job UID from reconstruction stage (use the same particles that reconstruction used)
+            particles_job_uid = None
+            
+            # First, try to get from reconstruction outputs (input_particles_job_uid)
+            if reconstruction_outputs:
+                particles_job_uid = reconstruction_outputs.get("input_particles_job_uid")
+                if particles_job_uid:
+                    self.logger.info(f"Using particles from reconstruction stage outputs: {particles_job_uid}")
+            
+            # If not in outputs, try to get from reconstruction job itself (ab_initio job has particles as input)
+            if not particles_job_uid and final_volume_job_uid:
+                try:
+                    ab_initio_job_uid = (
+                        reconstruction_outputs.get("ab_initio_job_uid")
+                        or (reconstruction_outputs.get("job_uids", {}).get("ab_initio") if isinstance(reconstruction_outputs.get("job_uids"), dict) else None)
+                    )
+                    if ab_initio_job_uid:
+                        # Get particles job UID from ab_initio job (it has particles as input)
+                        job = self.cryosparc_tools.cs.find_job(self.config.workflow.project_uid, ab_initio_job_uid)
+                        if job:
+                            job.refresh()
+                            doc = getattr(job, "doc", {})
+                            input_connections = doc.get("input_connections", {})
+                            particles_connection = input_connections.get("particles", [])
+                            if particles_connection and len(particles_connection) > 0:
+                                # particles_connection is a list of [job_uid, group_name] tuples
+                                particles_job_uid = particles_connection[0][0] if isinstance(particles_connection[0], (list, tuple)) else particles_connection[0]
+                                if particles_job_uid:
+                                    self.logger.info(f"Using particles from reconstruction ab_initio job input: {particles_job_uid}")
+                except Exception as e:
+                    self.logger.warning(f"Could not get particles from reconstruction job: {e}")
+            
+            # Fallback: use same logic as reconstruction (2D optimization first, then particle picking)
+            if not particles_job_uid:
+                # Check 2D optimization stage (if enabled and completed)
+                optimization_2d_outputs = stage_outputs_map.get(WorkflowStage.OPTIMIZATION_2D)
+                if isinstance(optimization_2d_outputs, StageResult):
+                    optimization_2d_outputs = optimization_2d_outputs.stage_outputs
+                
+                if optimization_2d_outputs and optimization_2d_outputs.get("final_particles_job_uid"):
+                    particles_job_uid = optimization_2d_outputs.get("final_particles_job_uid")
+                    self.logger.info(f"Using particles from 2D optimization stage (fallback): {particles_job_uid}")
+                else:
+                    # Fallback to particle picking stage
+                    picking_outputs = stage_outputs_map.get(WorkflowStage.PARTICLE_PICKING)
+                    if isinstance(picking_outputs, StageResult):
+                        picking_outputs = picking_outputs.stage_outputs
+                    
+                    if picking_outputs:
+                        particles_job_uid = (
+                            picking_outputs.get("final_selection_job_uid")
+                            or picking_outputs.get("selected_particles_job_uid")
+                            or picking_outputs.get("blob_picker_job_uid")
+                            or picking_outputs.get("picking_job_uid")
+                            or picking_outputs.get("particle_picking_job_uid")
+                        )
+                        if particles_job_uid:
+                            self.logger.info(f"Using particles from particle picking stage (fallback): {particles_job_uid}")
+            
+            # Get micrographs job UID
+            preprocessing_outputs = stage_outputs_map.get(WorkflowStage.PREPROCESSING)
+            if isinstance(preprocessing_outputs, StageResult):
+                preprocessing_outputs = preprocessing_outputs.stage_outputs
+            
+            micrographs_job_uid = None
+            if preprocessing_outputs:
+                micrographs_job_uid = (
+                    preprocessing_outputs.get("micrograph_selection_job_uid")
+                    or preprocessing_outputs.get("final_micrographs_job_uid")
+                )
+            
+            if not all([refinement_job_uid, particles_job_uid, micrographs_job_uid, volume_job_uid]):
+                missing = []
+                if not refinement_job_uid:
+                    missing.append("refinement_job_uid")
+                if not particles_job_uid:
+                    missing.append("particles_job_uid")
+                if not micrographs_job_uid:
+                    missing.append("micrographs_job_uid")
+                if not volume_job_uid:
+                    missing.append("volume_job_uid")
+                
+                execution_time = time.time() - start_time
+                return StageResult(
+                    stage=WorkflowStage.HETEROGENEITY,
+                    success=False,
+                    error=f"Missing required inputs from previous stages: {', '.join(missing)}",
+                    stage_outputs={},
+                    execution_time=execution_time
+                )
+            
+            # Execute heterogeneity analysis workflow
+            # Use "outputs" as default output directory (same as other agents)
+            output_dir = "outputs"
+            result = self.modular_workflow.execute_heterogeneity_analysis(
+                refinement_job_uid=refinement_job_uid,
+                particles_job_uid=particles_job_uid,
+                micrographs_job_uid=micrographs_job_uid,
+                volume_job_uid=volume_job_uid,
+                conversation_id=conversation_id,
+                output_dir=output_dir
+            )
+            
+            # Extract outputs
+            stage_outputs = {
+                "converged_k": result.converged_k,
+                "true_num_classes": result.true_num_classes,
+                "filtered_groups": result.filtered_groups or [],
+                "final_refinement_jobs": result.final_refinement_jobs or [],
+                "output_json_path": result.output_json_path
+            }
+            
+            # Calculate execution time
+            execution_time = time.time() - start_time
+            
+            # Save results
+            output_file = self._save_heterogeneity_results(stage_outputs, context, result.success, execution_time)
+            stage_outputs["output_file"] = output_file
+            
+            return StageResult(
+                stage=WorkflowStage.HETEROGENEITY,
+                success=result.success,
+                error=result.error,
+                stage_outputs=stage_outputs,
+                execution_time=execution_time
+            )
+            
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self.logger.error(f"Failed to execute heterogeneity analysis stage: {e}")
+            return StageResult(
+                stage=WorkflowStage.HETEROGENEITY,
+                success=False,
+                error=str(e),
+                stage_outputs={},
+                execution_time=execution_time
+            )
+    
+    def _save_heterogeneity_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True, execution_time: float = 0.0) -> str:
+        """Save heterogeneity analysis results to a JSON file."""
+        import datetime
+        from pathlib import Path
+        
+        output_dir = Path("outputs")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        status = "completed" if success else "failed"
+        
+        heterogeneity_results = {
+            "stage": "heterogeneity",
+            "status": status,
+            "timestamp": timestamp,
+            "agent_type": "cryosparc",
+            "project_uid": context.project_uid,
+            "workspace_uid": context.workspace_uid,
+            "execution_time": execution_time,
+            "converged_k": stage_outputs.get("converged_k"),
+            "true_num_classes": stage_outputs.get("true_num_classes"),
+            "filtered_groups": stage_outputs.get("filtered_groups", []),
+            "final_refinement_jobs": stage_outputs.get("final_refinement_jobs", []),
+            "output_json_path": stage_outputs.get("output_json_path")
+        }
+        
+        output_file = output_dir / f"heterogeneity_analysis_results_{timestamp}.json"
+        with open(output_file, 'w') as f:
+            json.dump(heterogeneity_results, f, indent=2)
+        
+        self.logger.info(f"Heterogeneity analysis results saved to {output_file}")
+        return str(output_file)
+    
+    def get_stage_description(self) -> str:
+        return "Heterogeneity Analysis: Determine true number of classes using ab initio + heterogeneous refinement and density comparison"
+    
+    def get_required_inputs(self) -> List[str]:
+        return ["refinement_job_uid", "particles_job_uid", "micrographs_job_uid", "volume_job_uid"]
+
+
 class MasterOrchestrator:
     """Master orchestrator for the complete cryoEM workflow."""
     
@@ -2003,6 +2254,8 @@ class MasterOrchestrator:
                     agent = ReconstructionAgent(config_path, self.master_config_path)
                 elif agent_class == "OptimizerAgent":
                     agent = OptimizerAgent(config_path, self.master_config_path)
+                elif agent_class == "HeterogeneityAgent":
+                    agent = HeterogeneityAgent(config_path, self.master_config_path)
                 elif agent_class == "PolishAgent":
                     agent = PolishAgent(config_path, self.master_config_path)
                 else:
@@ -2236,6 +2489,24 @@ class MasterOrchestrator:
                 stage_outputs["final_volume_job_uid"] = final_volume_uid
             if final_star_file:
                 stage_outputs["final_star_file"] = final_star_file
+
+        elif stage == WorkflowStage.HETEROGENEITY:
+            converged_k = data.get("converged_k")
+            true_num_classes = data.get("true_num_classes")
+            filtered_groups = data.get("filtered_groups", [])
+            final_refinement_jobs = data.get("final_refinement_jobs", [])
+            output_json_path = data.get("output_json_path")
+            
+            if converged_k is not None:
+                stage_outputs["converged_k"] = converged_k
+            if true_num_classes is not None:
+                stage_outputs["true_num_classes"] = true_num_classes
+            if filtered_groups:
+                stage_outputs["filtered_groups"] = filtered_groups
+            if final_refinement_jobs:
+                stage_outputs["final_refinement_jobs"] = final_refinement_jobs
+            if output_json_path:
+                stage_outputs["output_json_path"] = output_json_path
 
         return stage_outputs
     

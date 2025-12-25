@@ -90,9 +90,21 @@ if __name__ == '__main__':
     spatial_freq, fsc = calculate_fsc(map1, map2, pixel_size)
     
     resolution = 0
+
+    print(f"Spatial frequency: {spatial_freq[fsc<0.05]}")
+
     gold_standard = np.argwhere(fsc < 0.5).min()
-    resolution = (spatial_freq[gold_standard] + spatial_freq[gold_standard-1]) / 2
+    try:
+        resolution = (spatial_freq[gold_standard] + spatial_freq[gold_standard+1]) / 2
+    except:
+        resolution = (spatial_freq[gold_standard] + spatial_freq[gold_standard-1]) / 2
     resolution = round(1/resolution, 2)
 
-    print(f"Resolution: {resolution} Å")
+    resolution_20A = np.argwhere(spatial_freq < 0.05).max()
+    fsc_20A = fsc[:resolution_20A]
+    if len(fsc_20A[fsc_20A<0.85]) > 0:
+        resolution = 1/spatial_freq[np.argwhere(fsc_20A < 0.85).min()]
+
+    print(f"Gold standard: {gold_standard}")
     print(f"FSC: {fsc}")
+    print(f"Resolution: {resolution} Å")
