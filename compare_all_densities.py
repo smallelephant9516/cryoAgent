@@ -447,16 +447,14 @@ def cluster_graph(graph, volume_maps, n_clusters=None, method='spectral'):
     
     # Auto-detect number of clusters if not specified
     if n_clusters is None:
-        # Use heuristic: sqrt(n/2) or at least number of connected components
-        heuristic_clusters = max(2, int(np.sqrt(len(map_names) / 2)))
-        # Need at least as many clusters as connected components
-        # (can't have fewer clusters than disconnected components)
-        n_clusters = max(n_connected_components, heuristic_clusters)
+        # Set number of clusters to exactly the number of connected components
+        # Each disconnected component will form its own cluster
+        n_clusters = n_connected_components
         # But don't exceed number of maps
         n_clusters = min(n_clusters, len(map_names))
         
         print(f"Detected {n_connected_components} connected component(s) in graph")
-        print(f"Auto-detected number of clusters: {n_clusters} (at least {n_connected_components} required for disconnected components)")
+        print(f"Auto-detected number of clusters: {n_clusters} (set to number of disconnected components)")
     
     # Ensure n_clusters is at least the number of connected components
     # (this is a constraint: we can't have fewer clusters than disconnected components)

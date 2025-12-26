@@ -1,48 +1,26 @@
 {
   "stage_info": {
-    "name": "heterogeneity_analysis",
-    "description": "Heterogeneity analysis stage: Determine true number of classes using ab initio + heterogeneous refinement and density comparison",
+    "name": "heterogeneity_depth_analysis",
+    "description": "Heterogeneity depth analysis stage: Iteratively refine until only one cluster remains",
     "version": "1.0.0"
   },
-  "required_inputs": [
-    "refinement_job_uid",
-    "particles_job_uid",
-    "micrographs_job_uid",
-    "volume_job_uid"
-  ],
+  "required_inputs": [],
   "outputs": [
-    "converged_k",
-    "true_num_classes",
-    "filtered_groups",
-    "final_refinement_jobs",
+    "final_refinement_job_uid",
     "output_json_path"
   ],
   "microscope_parameters": {},
   "workflow": {
-    "heterogeneity_analysis": {
-      "initial_k_values": [3, 5],
-      "initial_k_values_description": "Initial K values to test (default: [3, 5])",
-      "max_k": 10,
-      "max_k_description": "Maximum K value to test (default: 10)",
-      "convergence_threshold": 0,
-      "convergence_threshold_description": "Number of additional classes detected to consider converged (default: 0, meaning no new classes)",
+    "heterogeneity_depth_analysis": {
+      "k": 4,
+      "k_description": "Number of classes for heterogeneous refinement (default: 4)",
       "resolution_threshold": 10.0,
-      "resolution_threshold_description": "Resolution threshold in Angstroms - groups with worse resolution are discarded (default: 12.0)",
-      "ab_initio_initial_resolution": 9.0,
-      "ab_initio_initial_resolution_description": "Initial resolution (Å) for ab initio reconstruction (default: 9.0)",
-      "ab_initio_final_resolution": 7.0,
-      "ab_initio_final_resolution_description": "Final/maximum resolution (Å) for ab initio reconstruction (default: 7.0)",
-      "use_nonuniform_refinement": true,
-      "use_nonuniform_refinement_description": "Use non-uniform refinement for final refinement of each group (default: true)",
+      "resolution_threshold_description": "Resolution threshold in Angstroms - clusters with worse resolution are discarded (default: 12.0)",
       "refine_res_init": null,
       "refine_res_init_description": "Initial lowpass resolution (Å) for refinement. If null, uses CryoSPARC default (typically 30Å).",
       "density_comparison": {
         "voxel_size": 5.0,
         "voxel_size_description": "Voxel size in Angstroms for density comparison (default: 5.0)",
-        "source_contour_level": 0.01,
-        "source_contour_level_description": "Source contour level for density comparison (default: 0.01)",
-        "target_contour_level": 0.01,
-        "target_contour_level_description": "Target contour level for density comparison (default: 0.01)",
         "alg_type": "global",
         "alg_type_description": "Algorithm type for density comparison: 'global' or 'local' (default: 'global')",
         "resolution_threshold": 30.0,

@@ -37,7 +37,8 @@ class CompareAllDensitiesTool:
         compare_script: Optional[str] = None,
         align_script: Optional[str] = None,
         default_voxel_size: float = 5.0,
-        default_alg_type: str = "global"
+        default_alg_type: str = "global",
+        default_resolution_threshold: Optional[float] = None
     ) -> Tool:
         """
         Create a tool for comparing all density maps in a folder.
@@ -47,6 +48,7 @@ class CompareAllDensitiesTool:
             align_script: Path to align_and_compare_maps.py script (auto-detected if None)
             default_voxel_size: Default voxel size in Angstroms
             default_alg_type: Default algorithm type (global/local)
+            default_resolution_threshold: Default resolution threshold in Angstroms (optional)
         
         Returns:
             LangChain Tool instance
@@ -191,6 +193,8 @@ class CompareAllDensitiesTool:
                 
                 if params.get("resolution_threshold"):
                     cmd.extend(["--resolution_threshold", str(params["resolution_threshold"])])
+                elif default_resolution_threshold is not None:
+                    cmd.extend(["--resolution_threshold", str(default_resolution_threshold)])
                 
                 if params.get("n_clusters"):
                     cmd.extend(["--n_clusters", str(params["n_clusters"])])

@@ -34,6 +34,7 @@ class WorkflowStage(Enum):
     RECONSTRUCTION = "reconstruction"
     OPTIMIZATION = "optimization"
     HETEROGENEITY = "heterogeneity"
+    HETEROGENEITY_DEPTH = "heterogeneity_depth"
     POLISH = "polish"
 
 
@@ -2168,6 +2169,150 @@ class HeterogeneityAgent(StageAgent):
         return ["refinement_job_uid", "particles_job_uid", "micrographs_job_uid", "volume_job_uid"]
 
 
+class HeterogeneityDepthAgent(StageAgent):
+    """Specialized agent for heterogeneity depth analysis stage."""
+    
+    def __init__(self, config_path: str, master_config_path: Optional[str] = None):
+        super().__init__("heterogeneity_depth", config_path, master_config_path)
+        self.backend_type = None  # Will be set during initialization
+    
+    def initialize(self) -> bool:
+        """Initialize the heterogeneity depth analysis agent with modular architecture."""
+        try:
+            # Load basic configuration
+            config_loader = ConfigLoader(self.config_path, self.master_config_path)
+            self.config = config_loader.load_config()
+            
+            # Heterogeneity depth analysis is only available for CryoSPARC
+            from .cryosparc_heterogeneity_depth.heterogeneity_depth_agent import HeterogeneityDepthAgent as ModularHeterogeneityDepthAgent
+            from .cryosparc_heterogeneity_depth.heterogeneity_depth_workflow import HeterogeneityDepthWorkflow
+            
+            # Initialize CryoSPARC tools
+            self.cryosparc_tools = CryoSPARCTools(self.config.cryosparc)
+            
+            # Initialize modular heterogeneity depth agent and workflow
+            self.modular_agent = ModularHeterogeneityDepthAgent(self.cryosparc_tools, self.config)
+            self.modular_workflow = HeterogeneityDepthWorkflow(self.modular_agent, self.config, stage_config_path=self.config_path)
+            self.backend_type = "CryoSPARC"
+            
+            # Set stage name and workflow type for conversation logging
+            self.modular_agent.stage_name = "heterogeneity_depth"
+            self.modular_agent.workflow_type = "cryoem"
+            
+            self.logger.info(f"Stage agent {self.stage_name} initialized with {self.backend_type} backend")
+            return True
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize stage agent {self.stage_name}: {e}")
+            return False
+    
+    def execute_stage(self, context: WorkflowContext, conversation_id: Optional[str] = None) -> StageResult:
+        """
+        Execute the heterogeneity depth analysis stage.
+        
+        Args:
+            context: Workflow context with stage inputs
+            conversation_id: Optional conversation ID for logging
+            
+        Returns:
+            StageResult with execution results
+        """
+        import time
+        start_time = time.time()
+        
+        try:
+            self.logger.info(f"Starting {self.stage_name} stage execution")
+            
+            # Execute the workflow
+            result = self.modular_workflow.execute_heterogeneity_depth_analysis(
+                conversation_id=conversation_id,
+                output_dir=None  # Let workflow handle output directory
+            )
+            
+            execution_time = time.time() - start_time
+            
+            if result.success:
+                # Extract stage outputs
+                stage_outputs = {
+                    "final_refinement_job_uids": result.final_refinement_job_uids or [],
+                    "final_refinement_job_uid": result.final_refinement_job_uids[0] if result.final_refinement_job_uids else None,  # Keep for backward compatibility
+                    "branches": result.branches or [],
+                    "output_json_path": result.output_json_path
+                }
+                
+                # Save results
+                output_json_path = self._save_heterogeneity_depth_results(
+                    stage_outputs, context, success=True, execution_time=execution_time
+                )
+                stage_outputs["output_file"] = output_json_path
+                
+                return StageResult(
+                    stage=WorkflowStage.HETEROGENEITY_DEPTH,
+                    success=True,
+                    error=result.error,
+                    execution_time=execution_time,
+                    stage_outputs=stage_outputs
+                )
+            else:
+                return StageResult(
+                    stage=WorkflowStage.HETEROGENEITY_DEPTH,
+                    success=False,
+                    error=result.error,
+                    execution_time=execution_time,
+                    stage_outputs={}
+                )
+                
+        except Exception as e:
+            execution_time = time.time() - start_time
+            self.logger.error(f"Error executing {self.stage_name} stage: {e}")
+            return StageResult(
+                stage=WorkflowStage.HETEROGENEITY_DEPTH,
+                success=False,
+                error=str(e),
+                execution_time=execution_time,
+                stage_outputs={}
+            )
+    
+    def _save_heterogeneity_depth_results(self, stage_outputs: Dict[str, Any], context: WorkflowContext, success: bool = True, execution_time: float = 0.0) -> str:
+        """Save heterogeneity depth analysis results to a JSON file."""
+        import datetime
+        from pathlib import Path
+        
+        output_dir = Path("outputs")
+        output_dir.mkdir(parents=True, exist_ok=True)
+        
+        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+        status = "completed" if success else "failed"
+        
+        heterogeneity_depth_results = {
+            "stage": "heterogeneity_depth",
+            "status": status,
+            "timestamp": timestamp,
+            "agent_type": "cryosparc",
+            "project_uid": context.project_uid,
+            "workspace_uid": context.workspace_uid,
+            "execution_time": execution_time,
+            "final_refinement_job_uids": stage_outputs.get("final_refinement_job_uids", []),
+            "final_refinement_job_uid": stage_outputs.get("final_refinement_job_uid"),  # First one for backward compatibility
+            "total_final_refinements": len(stage_outputs.get("final_refinement_job_uids", [])),
+            "branches": stage_outputs.get("branches", []),
+            "output_json_path": stage_outputs.get("output_json_path")
+        }
+        
+        output_file = output_dir / f"heterogeneity_depth_analysis_results_{timestamp}.json"
+        with open(output_file, 'w') as f:
+            json.dump(heterogeneity_depth_results, f, indent=2)
+        
+        self.logger.info(f"Heterogeneity depth analysis results saved to {output_file}")
+        return str(output_file)
+    
+    def get_stage_description(self) -> str:
+        return "Heterogeneity Depth Analysis: Iteratively refine until only one cluster remains using heterogeneous refinement and density comparison"
+    
+    def get_required_inputs(self) -> List[str]:
+        return []  # Reads from JSON files automatically
+
+
 class MasterOrchestrator:
     """Master orchestrator for the complete cryoEM workflow."""
     
@@ -2256,6 +2401,8 @@ class MasterOrchestrator:
                     agent = OptimizerAgent(config_path, self.master_config_path)
                 elif agent_class == "HeterogeneityAgent":
                     agent = HeterogeneityAgent(config_path, self.master_config_path)
+                elif agent_class == "HeterogeneityDepthAgent":
+                    agent = HeterogeneityDepthAgent(config_path, self.master_config_path)
                 elif agent_class == "PolishAgent":
                     agent = PolishAgent(config_path, self.master_config_path)
                 else:

@@ -63,7 +63,8 @@ class HeterogeneityAgent(BaseReActAgent):
             compare_script=self._get_stage_param("script_paths", "compare_all_densities_script", None),
             align_script=self._get_stage_param("script_paths", "align_and_compare_script", None),
             default_voxel_size=self._get_stage_param("density_comparison", "voxel_size", 5.0),
-            default_alg_type=self._get_stage_param("density_comparison", "alg_type", "global")
+            default_alg_type=self._get_stage_param("density_comparison", "alg_type", "global"),
+            default_resolution_threshold=self._get_stage_param("density_comparison", "resolution_threshold", None)
         )
         tools.append(compare_tool)
         
