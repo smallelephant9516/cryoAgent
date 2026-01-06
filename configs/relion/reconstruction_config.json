@@ -45,7 +45,7 @@
       "denovo_3dref": true
     },
     "particle_reextraction": {
-      "extract_size": 280,
+      "extract_size": 240,
       "norm": true,
       "bg_radius": -1,
       "white_dust": -1,

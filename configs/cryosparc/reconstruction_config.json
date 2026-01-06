@@ -16,11 +16,11 @@
   "microscope_parameters": {
     "particle_diameter": 200.0,
     "symmetry": "C1",
-    "pixel_size": 1.31,
+    "pixel_size": 1.77,
     "voltage": 300.0,
-    "cs_mm": 2.7,
-    "dose": 42.0,
-    "movies_path": null,
+    "cs_mm": 2.0,
+    "dose": 16.0,
+    "movies_path": "/lustre2/EMDB/10002/data/*.mrc",
     "gain_ref_path": null,
     "gain_rot": 0,
     "gain_flip": 0
