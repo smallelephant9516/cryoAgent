@@ -59,11 +59,11 @@
     "max_retries": 2
   },
   "cryosparc": {
-    "host": "192.168.125.96",
-    "base_port": 39000,
-    "username": "feilab@ibp.ac.cn",
-    "password": "123456",
-    "license_id": "8d2aa694-dfbf-11ee-8a59-837cd2b78154"
+    "host": "localhost",
+    "base_port": 61000,
+    "username": "lidaoyi16@hotmail.com",
+    "password": "Password123",
+    "license_id": "30717d7e-8f18-11f0-8d17-8b491a13a8e1"
   },
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
