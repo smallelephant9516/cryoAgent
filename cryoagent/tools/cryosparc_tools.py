@@ -532,15 +532,47 @@ class CryoSPARCTools:
             project = self.cs.find_project(project_uid)
             workspace = project.find_workspace(workspace_uid)
             
+            # Verify the import job exists and has outputs
+            available_output_labels = []
+            try:
+                import_job = project.find_job(movies_job_uid)
+                import_job.refresh()
+                job_doc = getattr(import_job, "doc", {})
+                job_status = job_doc.get("status", "unknown")
+                
+                # Check if job has outputs
+                output_result_groups = job_doc.get("output_result_groups", [])
+                for group in output_result_groups:
+                    label = group.get("name")
+                    num_items = group.get("num_items", 0)
+                    if label and num_items > 0:
+                        available_output_labels.append(label)
+                
+                if not available_output_labels:
+                    raise RuntimeError(
+                        f"Import movies job {movies_job_uid} (status: {job_status}) has no outputs. "
+                        f"This usually means no movies were found at the specified path or the import failed. "
+                        f"Please check the import job log and verify the movies_path is correct."
+                    )
+            except RuntimeError:
+                # Re-raise RuntimeError (our custom error about no outputs)
+                raise
+            except Exception as check_error:
+                # If we can't check the job, proceed anyway and let the connection attempt fail
+                # This preserves backward compatibility
+                pass
+            
             # Prepare job parameters using correct CryoSPARC API format
             job_params = {
                 **kwargs
             }
             
             # Create job with connections - try known import job outputs for compatibility
+            # First try available output labels if we found them, otherwise try defaults
+            output_labels_to_try = available_output_labels if available_output_labels else ["imported_movies", "movies"]
             connection_errors = []
             job = None
-            for output_label in ("imported_movies", "movies"):
+            for output_label in output_labels_to_try:
                 try:
                     job = workspace.create_job(
                         "patch_motion_correction_multi",
@@ -557,7 +589,9 @@ class CryoSPARCTools:
                 ) or "unknown"
                 raise RuntimeError(
                     "Unable to connect motion correction to import job outputs: "
-                    f"{error_messages}"
+                    f"{error_messages}. "
+                    f"Import job {movies_job_uid} may not have produced valid outputs. "
+                    f"Please verify the import job completed successfully and check its log."
                 )
             
             # Queue the job

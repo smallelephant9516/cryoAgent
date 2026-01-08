@@ -17,16 +17,16 @@
     "fsc_data"
   ],
   "microscope_parameters": {
-    "particle_diameter": 200.0,
-    "symmetry": "C1"
+    "particle_diameter": 160.0,
+    "symmetry": "D3"
   },
   "workflow": {
     "ab_initio_reconstruction": {
       "iter": 200,
       "K": 1,
       "sym": "C1",
-      "align_sym": "C1",
-      "particle_diameter": 240,
+      "align_sym": "D3",
+      "particle_diameter": 192,
       "oversampling": 1,
       "healpix_order": 1,
       "offset_range": 6.0,
@@ -45,7 +45,7 @@
       "denovo_3dref": true
     },
     "particle_reextraction": {
-      "extract_size": 240,
+      "extract_size": 360,
       "norm": true,
       "bg_radius": -1,
       "white_dust": -1,
@@ -55,8 +55,8 @@
       "only_do_unfinished": false
     },
     "refinement_3d": {
-      "sym": "C1",
-      "particle_diameter": 240,
+      "sym": "D3",
+      "particle_diameter": 192,
       "oversampling": 1,
       "healpix_order": 2,
       "auto_local_healpix_order": 4,

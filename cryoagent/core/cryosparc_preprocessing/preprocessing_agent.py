@@ -372,6 +372,21 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
             
+            # Extract movies_job_uid - try parameter first, then extract from text
+            movies_job_uid = params.get("movies_job_uid")
+            if not movies_job_uid:
+                # Try to extract job UID from input text (e.g., "from job J16" or "job J16")
+                import re
+                # Look for patterns like "J" followed by digits (e.g., J16, J123)
+                job_uid_pattern = r'\bJ\d+\b'
+                matches = re.findall(job_uid_pattern, input_str)
+                if matches:
+                    movies_job_uid = matches[0]  # Use first match
+                    self.logger.info(f"Extracted movies_job_uid '{movies_job_uid}' from input text")
+            
+            if not movies_job_uid:
+                return f"❌ Error starting motion correction: Missing required parameter 'movies_job_uid'. Please specify the job UID from the import_movies step (e.g., movies_job_uid=J16 or just 'J16')."
+            
             # Safely get preprocessing config values, handling case where it might not be set yet
             preprocessing_config = getattr(self, 'preprocessing_config', {}).get('workflow', {})
             motion_correction_config = preprocessing_config.get('motion_correction', {})
@@ -379,12 +394,12 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             used_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
-                "movies_job_uid": params.get("movies_job_uid"),
-                "binning": int(params.get("binning", motion_correction_config.get("binning", 1))),
-                "patch_size": int(params.get("patch_size", motion_correction_config.get("patch_size", 5))),
+                "movies_job_uid": movies_job_uid,
+                "binning": self._parse_int_param(params.get("binning", motion_correction_config.get("binning", 1)), default=1, param_name="binning"),
+                "patch_size": self._parse_int_param(params.get("patch_size", motion_correction_config.get("patch_size", 5)), default=5, param_name="patch_size"),
                 "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
-                "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
-                "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
+                "timeout": self._parse_int_param(params.get("timeout", self.config.job_management.default_timeout), default=self.config.job_management.default_timeout, param_name="timeout"),
+                "check_interval": self._parse_int_param(params.get("check_interval", self.config.job_management.status_check_interval), default=self.config.job_management.status_check_interval, param_name="check_interval")
             }
 
             result = self.cryosparc_tools.motion_correction(**used_params)
@@ -433,8 +448,8 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 "min_res": float(params.get("min_res", ctf_config.get("min_res", 30.0))),
                 "max_res": float(params.get("max_res", ctf_config.get("max_res", 4.0))),
                 "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
-                "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
-                "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
+                "timeout": self._parse_int_param(params.get("timeout", self.config.job_management.default_timeout), default=self.config.job_management.default_timeout, param_name="timeout"),
+                "check_interval": self._parse_int_param(params.get("check_interval", self.config.job_management.status_check_interval), default=self.config.job_management.status_check_interval, param_name="check_interval")
             }
 
             result = self.cryosparc_tools.ctf_estimation(**used_params)
@@ -460,8 +475,8 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 "ctf_job_uid": params.get("ctf_job_uid"),
                 "min_resolution": float(params.get("min_resolution", 5.0)),
                 "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
-                "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
-                "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
+                "timeout": self._parse_int_param(params.get("timeout", self.config.job_management.default_timeout), default=self.config.job_management.default_timeout, param_name="timeout"),
+                "check_interval": self._parse_int_param(params.get("check_interval", self.config.job_management.status_check_interval), default=self.config.job_management.status_check_interval, param_name="check_interval")
             }
 
             result = self.cryosparc_tools.micrograph_selection(**used_params)

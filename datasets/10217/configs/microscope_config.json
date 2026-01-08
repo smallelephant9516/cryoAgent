@@ -13,7 +13,7 @@
     "particle_diameter": 160,
     "symmetry": "D3",
     "movies_path": null,
-    "micrographs_path": "/lustre2/EMDB/10217/data/*_DW.mrc",
+    "micrographs_path": "/lustre2/EMDB/10217/data/*DW.mrc",
     "gain_ref_path": null,
     "gain_rot": 0,
     "gain_flip": 0
