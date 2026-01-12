@@ -14,12 +14,12 @@
     "reconstruction_job_uid"
   ],
   "microscope_parameters": {
-    "particle_diameter": 160.0,
-    "symmetry": "D3",
-    "pixel_size": 0.6616,
+    "particle_diameter": 150.0,
+    "symmetry": "C1",
+    "pixel_size": 1.0961,
     "voltage": 300.0,
-    "cs_mm": 2.7,
-    "dose": 61.25,
+    "cs_mm": 0.0,
+    "dose": 62.75,
     "movies_path": null,
     "gain_ref_path": null,
     "gain_rot": 0,
@@ -34,14 +34,14 @@
       "initial_resolution": 20.0,
       "final_resolution": 10.0,
       "max_iterations": 50,
-      "symmetry": "D3",
-      "particle_diameter": 192
+      "symmetry": "C1",
+      "particle_diameter": 180
     },
     "refinement": {
       "type": "homogeneous",
       "resolution": null,
-      "symmetry": "D3",
-      "particle_diameter": 192
+      "symmetry": "C1",
+      "particle_diameter": 180
     }
   },
   "react_workflow": {

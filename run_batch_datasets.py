@@ -293,6 +293,145 @@ def move_outputs_to_dataset(output_files: List[Path], dataset_output_dir: Path, 
             logger.warning(f"Failed to move output file {src_file}: {e}")
 
 
+def check_workflow_summary_exists(dataset_output_dir: Path, logger: logging.Logger) -> Optional[Dict[str, Any]]:
+    """
+    Check if a successful workflow summary report exists for the dataset.
+    
+    Args:
+        dataset_output_dir: Directory containing dataset outputs
+        logger: Logger instance
+        
+    Returns:
+        Dictionary with summary report info if successful workflow found, None otherwise
+    """
+    if not dataset_output_dir.exists():
+        return None
+    
+    # Look for workflow summary reports
+    summary_files = list(dataset_output_dir.glob("workflow_summary_report_*.json"))
+    
+    if not summary_files:
+        return None
+    
+    # Get the most recent summary report
+    latest_summary = max(summary_files, key=lambda p: p.stat().st_mtime)
+    
+    try:
+        with open(latest_summary, 'r') as f:
+            summary_data = json.load(f)
+        
+        # Check if it's a valid workflow summary
+        if summary_data.get("report_type") != "cryoagent_workflow_summary":
+            return None
+        
+        workflow_metadata = summary_data.get("workflow_metadata", {})
+        executive_summary = summary_data.get("executive_summary", {})
+        
+        # Check if workflow completed successfully
+        overall_status = executive_summary.get("overall_status", "")
+        successful_stages = workflow_metadata.get("successful_stages", 0)
+        total_stages = workflow_metadata.get("total_stages", 0)
+        
+        if overall_status == "success" and successful_stages == total_stages and total_stages > 0:
+            return {
+                "file_path": str(latest_summary),
+                "timestamp": summary_data.get("timestamp", ""),
+                "conversation_id": summary_data.get("conversation_id", ""),
+                "successful_stages": successful_stages,
+                "total_stages": total_stages,
+                "overall_status": overall_status
+            }
+    except (json.JSONDecodeError, IOError, KeyError) as e:
+        logger.debug(f"Failed to read workflow summary {latest_summary}: {e}")
+    
+    return None
+
+
+def check_all_stages_completed(dataset_output_dir: Path, workflow_type: str, logger: logging.Logger) -> Optional[Dict[str, Any]]:
+    """
+    Check if all required stages for a workflow are completed by checking individual stage result files.
+    This is a fallback when no workflow summary report exists.
+    
+    Args:
+        dataset_output_dir: Directory containing dataset outputs
+        workflow_type: Type of workflow (complete, preprocessing, etc.)
+        logger: Logger instance
+        
+    Returns:
+        Dictionary with completion info if all stages completed, None otherwise
+    """
+    if not dataset_output_dir.exists():
+        return None
+    
+    # Map workflow types to required stage patterns
+    # These match the patterns used in cryoagent_workflow.py
+    stage_patterns_map = {
+        "complete": [
+            "preprocessing_results_*.json",
+            "particle_picking_results_*.json",
+            "2d_optimization_results_*.json",
+            "reconstruction_results_*.json",
+            "optimization_results_*.json"
+        ],
+        "preprocessing": [
+            "preprocessing_results_*.json"
+        ]
+    }
+    
+    # Get required patterns for this workflow type
+    required_patterns = stage_patterns_map.get(workflow_type, [])
+    
+    if not required_patterns:
+        # Unknown workflow type, can't check
+        return None
+    
+    completed_stages = []
+    failed_stages = []
+    stage_info = {}
+    
+    # Check each required stage
+    for pattern in required_patterns:
+        matching_files = list(dataset_output_dir.glob(pattern))
+        
+        if not matching_files:
+            # Stage result file doesn't exist
+            return None
+        
+        # Get the most recent file for this stage
+        latest_file = max(matching_files, key=lambda p: p.stat().st_mtime)
+        
+        try:
+            with open(latest_file, 'r') as f:
+                stage_data = json.load(f)
+            
+            status = stage_data.get("status", "")
+            stage_name = pattern.replace("_results_*.json", "").replace("_", " ")
+            
+            if status == "completed":
+                completed_stages.append(stage_name)
+                stage_info[stage_name] = {
+                    "status": "completed",
+                    "timestamp": stage_data.get("timestamp", ""),
+                    "file": latest_file.name
+                }
+            else:
+                # Stage exists but not completed (failed, etc.)
+                failed_stages.append(stage_name)
+                return None  # Can't consider workflow complete if any stage failed
+                
+        except (json.JSONDecodeError, IOError, KeyError) as e:
+            logger.debug(f"Failed to read stage result file {latest_file}: {e}")
+            return None
+    
+    # All required stages are completed
+    return {
+        "method": "individual_stage_files",
+        "completed_stages": completed_stages,
+        "total_stages": len(required_patterns),
+        "stage_info": stage_info
+    }
+
+
 def run_workflow_for_dataset(
     dataset_path: Path,
     project_root: Path,
@@ -329,6 +468,29 @@ def run_workflow_for_dataset(
     dataset_output_dir = dataset_path / "outputs"
     dataset_output_dir.mkdir(parents=True, exist_ok=True)
     logger.info(f"Output directory: {dataset_output_dir}")
+    
+    # Check if workflow summary report exists and indicates successful completion
+    existing_summary = check_workflow_summary_exists(dataset_output_dir, logger)
+    if existing_summary:
+        logger.info(f"✅ Found successful workflow summary for dataset {dataset_name}")
+        logger.info(f"   📄 Summary file: {Path(existing_summary['file_path']).name}")
+        logger.info(f"   📅 Completed: {existing_summary['timestamp']}")
+        logger.info(f"   🎯 Status: {existing_summary['overall_status']}")
+        logger.info(f"   ✅ Stages: {existing_summary['successful_stages']}/{existing_summary['total_stages']} completed")
+        logger.info(f"   💬 Conversation ID: {existing_summary['conversation_id']}")
+        logger.info(f"   ℹ️  Skipping workflow execution - dataset already completed successfully")
+        return True
+    
+    # Fallback: Check individual stage result files if no summary report exists
+    logger.debug(f"No workflow summary report found, checking individual stage result files...")
+    stage_check_result = check_all_stages_completed(dataset_output_dir, workflow_type, logger)
+    if stage_check_result:
+        logger.info(f"✅ Found all required stages completed for dataset {dataset_name} (checked individual files)")
+        logger.info(f"   📊 Method: {stage_check_result['method']}")
+        logger.info(f"   ✅ Completed stages: {', '.join(stage_check_result['completed_stages'])}")
+        logger.info(f"   📈 Total: {stage_check_result['total_stages']} stages completed")
+        logger.info(f"   ℹ️  Skipping workflow execution - all stages already completed")
+        return True
     
     # Setup configs - this creates a temporary config structure with all necessary files
     temp_config_dir, success = setup_dataset_configs(dataset_path, project_root, logger)

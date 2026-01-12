@@ -24,25 +24,25 @@
   "microscope_parameters": {
     "movies_path": null,
     "gain_ref_path": null,
-    "pixel_size": 0.6616,
+    "pixel_size": 1.0961,
     "voltage": 300.0,
-    "cs_mm": 2.7,
+    "cs_mm": 0.0,
     "q0": 0.1,
     "beamtilt_x": 0.0,
     "beamtilt_y": 0.0,
     "gain_rot": 0,
     "gain_flip": 0,
-    "dose": 61.25,
-    "particle_diameter": 160.0,
-    "symmetry": "D3"
+    "dose": 62.75,
+    "particle_diameter": 150.0,
+    "symmetry": "C1"
   },
   "workflow": {
     "import_movies": {
       "movies_path": null,
       "gain_ref_path": null,
-      "pixel_size": 0.6616,
+      "pixel_size": 1.0961,
       "voltage": 300.0,
-      "cs_mm": 2.7,
+      "cs_mm": 0.0,
       "q0": 0.1,
       "beamtilt_x": 0.0,
       "beamtilt_y": 0.0,
@@ -50,7 +50,7 @@
       "gain_flip": 0,
       "optics_group_name": "opticsGroup1",
       "continue_job": true,
-      "dose": 61.25
+      "dose": 62.75
     },
     "motion_correction": {
       "use_motioncor2": false,
