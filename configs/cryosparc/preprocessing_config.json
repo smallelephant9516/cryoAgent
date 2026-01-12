@@ -12,16 +12,16 @@
     "dose"
   ],
   "microscope_parameters": {
-    "movies_path": null,
+    "movies_path": "/home/daoyi/scratch/cryoEM_dataset/10089/data/Movies/*.mrc",
     "gain_ref_path": null,
-    "pixel_size": 1.31,
+    "pixel_size": 1.14,
     "voltage": 300.0,
-    "cs_mm": 2.7,
-    "dose": 42.0,
+    "cs_mm": 0.0,
+    "dose": 60.0,
     "gain_rot": 0,
     "gain_flip": 0,
-    "particle_diameter": 200.0,
-    "symmetry": "C1"
+    "particle_diameter": 250.0,
+    "symmetry": "C5"
   },
   "outputs": [
     "selected_micrographs",
@@ -30,12 +30,12 @@
   ],
   "workflow": {
     "import_movies": {
-      "movies_path": null,
+      "movies_path": "/home/daoyi/scratch/cryoEM_dataset/10089/data/Movies/*.mrc",
       "gain_ref_path": null,
-      "pixel_size": 1.31,
+      "pixel_size": 1.14,
       "voltage": 300.0,
-      "cs_mm": 2.7,
-      "dose": 42.0,
+      "cs_mm": 0.0,
+      "dose": 60.0,
       "gain_rot": 0,
       "gain_flip": 0
     },

@@ -165,13 +165,16 @@ Workflow:
              * particles_group_names: List of particles_class_X for each class in the cluster
              * volume_group_name: volume_class_X with best resolution
           v. Wait for completion → get new hetero job
-          vi. Extract density maps from the new hetero job
-          vii. Use compare_all_densities again to check how many clusters are in this new hetero job
-          viii. **Recursively apply the same logic:**
-             - Get class resolutions for the new hetero job
+          vi. **CRITICAL - DO NOT STOP HERE**: After the heterogeneous refinement job completes, you MUST continue:
+             a. Extract density maps from the new hetero job using `extract_density_maps` tool
+             b. Compare all density maps using `compare_all_densities` tool
+             c. Get class resolutions using `get_hetero_class_resolutions` tool
+             d. Check if any class passes the resolution threshold
+          vii. **Recursively apply the same logic based on comparison and resolution results:**
              - If NO cluster passes resolution threshold → use particles_all_classes from that hetero job + best volume → run homogeneous refinement → record final job UID → branch COMPLETE
              - If 1 cluster → use particles_all_classes from that hetero job + best volume → run homogeneous refinement → record final job UID → branch COMPLETE
-             - If multiple clusters AND at least one passes threshold → split into more branches → repeat steps i-viii recursively
+             - If multiple clusters AND at least one passes threshold → split into more branches → repeat steps i-vii recursively for EACH new cluster
+        * **CRITICAL**: Do NOT stop after a heterogeneous refinement job completes. ALWAYS extract density maps, compare, check resolutions, and continue recursively until the branch terminates.
         * Continue this recursive expansion until EVERY branch reaches only 1 cluster OR no cluster passes resolution threshold
         * Each branch that reaches 1 cluster OR no cluster passes threshold gets a final homogeneous refinement job UID
       

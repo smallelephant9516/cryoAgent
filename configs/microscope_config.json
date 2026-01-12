@@ -5,15 +5,15 @@
     "description": "Basic microscope parameters for cryoEM data collection",
     "version": "1.0.0"
   },
-  "microscope_parameters": {
-    "pixel_size": 1.31,
+"microscope_parameters": {
+    "pixel_size": 1.14,
     "voltage": 300,
-    "cs_mm": 2.7,
-    "dose": 42,
-    "particle_diameter": 200,
-    "symmetry": "C1",
-    "movies_path": null,
-    "micrographs_path": "/home/daoyi/scratch/cryoEM_dataset/10059/data/micrographs/*.mrc",
+    "cs_mm": 0,
+    "dose": 60,
+    "particle_diameter": 250,
+    "symmetry": "C5",
+    "movies_path": "/home/daoyi/scratch/cryoEM_dataset/10089/data/Movies/*.mrc",
+    "micrographs_path": null,
     "gain_ref_path": null,
     "gain_rot": 0,
     "gain_flip": 0

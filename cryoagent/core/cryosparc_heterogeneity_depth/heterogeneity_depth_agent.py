@@ -208,13 +208,18 @@ For EACH cluster from the heterogeneity analysis results:
           * particles_group_names: List of particles_class_X for each class in the cluster
           * volume_group_name: volume_class_X with best resolution
        e. Wait for completion → get new hetero job
-       f. Extract density maps from the new hetero job
-       g. Use `compare_all_densities` again to check how many clusters are in this new hetero job
-       h. **Recursively apply the same logic:**
-          - If 1 cluster → extract classes in cluster → use appropriate particles → run homogeneous refinement → record final job UID → branch COMPLETE
-          - If multiple clusters → split into more branches → repeat steps a-h recursively
-     * Continue this recursive expansion until EVERY branch reaches only 1 cluster
-     * Each branch that reaches 1 cluster gets a final homogeneous refinement job UID
+       f. **CRITICAL - DO NOT STOP HERE**: After the heterogeneous refinement job completes, you MUST continue:
+          - Extract density maps from the new hetero job using `extract_density_maps` tool
+          - Compare all density maps using `compare_all_densities` tool
+          - Get class resolutions using `get_hetero_class_resolutions` tool
+          - Check if any class passes the resolution threshold
+       g. **Recursively apply the same logic based on comparison and resolution results:**
+          - If NO cluster passes resolution threshold → use particles_all_classes from that hetero job + best volume → run homogeneous refinement → record final job UID → branch COMPLETE
+          - If 1 cluster → use particles_all_classes from that hetero job + best volume → run homogeneous refinement → record final job UID → branch COMPLETE
+          - If multiple clusters AND at least one passes threshold → split into more branches → repeat steps a-g recursively for EACH new cluster
+     * **CRITICAL**: Do NOT stop after a heterogeneous refinement job completes. ALWAYS extract density maps, compare, check resolutions, and continue recursively until the branch terminates.
+     * Continue this recursive expansion until EVERY branch reaches only 1 cluster OR no cluster passes resolution threshold
+     * Each branch that reaches 1 cluster OR no cluster passes threshold gets a final homogeneous refinement job UID
 
 4. **Final Homogeneous Refinement** (for each terminal branch):
    - A branch terminates when comparison shows only 1 cluster in a heterogeneous refinement job
@@ -277,9 +282,12 @@ For EACH cluster from the heterogeneity analysis results:
 - Extract which classes belong to each cluster from comparison results (map names contain class IDs)
 - **CRITICAL WORKFLOW**: For EACH cluster from initial heterogeneity analysis:
   * ALWAYS start with heterogeneous refinement (do NOT skip to homogeneous refinement)
-  * After heterogeneous refinement, validate with comparison tool AND check class resolutions
-  * Use `get_hetero_class_resolutions` tool to get resolution for each class
-  * Check if any class passes the resolution threshold (default: 10.0 Å, check config for actual value)
+  * After heterogeneous refinement completes, you MUST:
+    1. Extract density maps using `extract_density_maps` tool
+    2. Compare all density maps using `compare_all_densities` tool
+    3. Get class resolutions using `get_hetero_class_resolutions` tool
+    4. Check if any class passes the resolution threshold (default: 10.0 Å, check config for actual value)
+  * **DO NOT STOP** after a heterogeneous refinement job completes - you MUST continue with extraction, comparison, and recursive refinement
   * **If comparison shows multiple clusters**: Create branches - one for each cluster, continue with heterogeneous refinement for each
   * **If comparison shows only 1 cluster**: This is when you do homogeneous refinement using `particles_all_classes` from that hetero job + best volume
   * **If NO cluster passes resolution threshold** (all classes have resolution worse than threshold): Also run homogeneous refinement using `particles_all_classes` from that hetero job + best volume (even if multiple clusters exist)
@@ -297,7 +305,15 @@ For EACH cluster from the heterogeneity analysis results:
 - The workflow creates a tree structure where each split represents multiple clusters found
 
 Remember: Always follow the Thought → Action → Observation pattern!
-Think carefully about cluster validation and iteration logic before proceeding."""
+Think carefully about cluster validation and iteration logic before proceeding.
+
+**CRITICAL REMINDER**: After EACH heterogeneous refinement job completes, you MUST:
+1. Extract density maps (extract_density_maps)
+2. Compare densities (compare_all_densities)
+3. Get class resolutions (get_hetero_class_resolutions)
+4. Continue recursively based on results
+
+DO NOT stop after a heterogeneous refinement job completes - always continue with the recursive workflow until the branch terminates (1 cluster OR no cluster passes threshold)."""
     
     # =================================================================
     # Tool Implementation Methods
