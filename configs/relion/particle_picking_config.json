@@ -17,13 +17,8 @@
     "selected_particles_star"
   ],
   "microscope_parameters": {
-<<<<<<< HEAD
-    "pixel_size": 1.14,
-    "particle_diameter": 250.0
-=======
-    "pixel_size": 1.0961,
-    "particle_diameter": 150.0
->>>>>>> b0e23cce2353ca9852e9a9771bfafeb3a6c78189
+    "pixel_size": 1.77,
+    "particle_diameter": 120.0
   },
   "workflow": {
     "blob_picker": {
@@ -32,13 +27,8 @@
       "lowpass": 20,
       "min_distance": -1,
       "LoG": true,
-<<<<<<< HEAD
-      "LoG_diam_min": 175,
-      "LoG_diam_max": 325
-=======
-      "LoG_diam_min": 105,
-      "LoG_diam_max": 195
->>>>>>> b0e23cce2353ca9852e9a9771bfafeb3a6c78189
+      "LoG_diam_min": 84,
+      "LoG_diam_max": 156
     },
     "template_picker": {
       "pickname": "autopick",
@@ -55,11 +45,7 @@
     },
     "particle_extraction": {
       "coord_suffix": "autopick.star",
-<<<<<<< HEAD
-      "extract_size": 336,
-=======
-      "extract_size": 256,
->>>>>>> b0e23cce2353ca9852e9a9771bfafeb3a6c78189
+      "extract_size": 192,
       "float16": true,
       "scale": 128,
       "norm": true,
@@ -74,11 +60,7 @@
       "K": 50,
       "iter": 25,
       "tau2_fudge": 2.0,
-<<<<<<< HEAD
-      "particle_diameter": 300,
-=======
-      "particle_diameter": 180,
->>>>>>> b0e23cce2353ca9852e9a9771bfafeb3a6c78189
+      "particle_diameter": 144,
       "offset_range": 6.0,
       "offset_step": 2.0,
       "oversampling": 1,
@@ -104,17 +86,10 @@
       "fn_sel_classavgs": "class_averages.star"
     },
     "classification_2d2": {
-<<<<<<< HEAD
-      "particle_diameter": 300
+      "particle_diameter": 144
     },
     "particle_extraction2": {
-      "extract_size": 336
-=======
-      "particle_diameter": 180
-    },
-    "particle_extraction2": {
-      "extract_size": 256
->>>>>>> b0e23cce2353ca9852e9a9771bfafeb3a6c78189
+      "extract_size": 192
     }
   },
   "react_workflow": {

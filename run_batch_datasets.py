@@ -3,16 +3,18 @@
 Batch Dataset Runner for CryoAgent
 
 This script runs the CryoAgent workflow on multiple datasets continuously.
-Each dataset should have its own folder in the datasets/ directory with:
+Each dataset should have its own folder in the datasets/unfinished_datasets/ directory with:
 - configs/session.json
 - configs/microscope_config.json
 - configs/master_config.json (can be a symlink to the main one)
+
+After successful completion, datasets are automatically moved from unfinished_datasets/ to finished_datasets/.
 
 Usage:
     python run_batch_datasets.py [options]
 
 Options:
-    --datasets-dir DIR       Directory containing dataset folders (default: datasets/)
+    --datasets-dir DIR       Directory containing dataset folders (default: datasets/unfinished_datasets/)
     --workflow WORKFLOW      Workflow type: complete, preprocessing, custom (default: complete)
     --stages STAGES          Comma-separated list of stages for custom workflow
     --verbose                Enable verbose output
@@ -347,6 +349,59 @@ def check_workflow_summary_exists(dataset_output_dir: Path, logger: logging.Logg
     return None
 
 
+def move_dataset_to_finished(
+    dataset_path: Path,
+    unfinished_dir: Path,
+    finished_dir: Path,
+    logger: logging.Logger
+) -> bool:
+    """
+    Move a completed dataset folder from unfinished_datasets to finished_datasets.
+    
+    Args:
+        dataset_path: Path to the dataset folder (currently in unfinished_datasets)
+        unfinished_dir: Directory containing unfinished datasets
+        finished_dir: Directory to move completed datasets to (finished_datasets)
+        logger: Logger instance
+        
+    Returns:
+        True if move was successful, False otherwise
+    """
+    try:
+        # Check if dataset is actually in the unfinished directory
+        try:
+            dataset_path.relative_to(unfinished_dir)
+        except ValueError:
+            # Dataset is not in unfinished_dir, skip moving
+            logger.debug(f"Dataset {dataset_path.name} is not in unfinished_datasets, skipping move")
+            return True
+        
+        # Ensure finished directory exists
+        finished_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Destination path
+        destination = finished_dir / dataset_path.name
+        
+        # Check if destination already exists
+        if destination.exists():
+            logger.warning(f"Destination {destination} already exists. Skipping move.")
+            return False
+        
+        # Move the entire dataset folder
+        shutil.move(str(dataset_path), str(destination))
+        logger.info(f"✅ Moved completed dataset {dataset_path.name} from unfinished_datasets to finished_datasets/")
+        logger.info(f"   Source: {dataset_path}")
+        logger.info(f"   Destination: {destination}")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to move dataset {dataset_path.name} to finished: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return False
+
+
 def check_all_stages_completed(dataset_output_dir: Path, workflow_type: str, logger: logging.Logger) -> Optional[Dict[str, Any]]:
     """
     Check if all required stages for a workflow are completed by checking individual stage result files.
@@ -618,8 +673,8 @@ Examples:
     parser.add_argument(
         "--datasets-dir",
         type=Path,
-        default=project_root / "datasets",
-        help="Directory containing dataset folders (default: datasets/)"
+        default=project_root / "datasets" / "unfinished_datasets",
+        help="Directory containing dataset folders (default: datasets/unfinished_datasets/)"
     )
     
     parser.add_argument(
@@ -700,46 +755,95 @@ Examples:
         logger.error(f"Failed to find datasets: {e}")
         sys.exit(1)
     
-    # Process each dataset
+    # Process each dataset with dynamic refresh
     results = {}
+    processed_datasets = set()  # Track processed dataset names
     start_time = time.time()
     
     try:
-        for dataset_path in datasets:
-            dataset_name = dataset_path.name
+        # Use a while loop to allow dynamic refresh of dataset list
+        while True:
+            # Refresh the dataset list from unfinished_datasets
+            try:
+                current_datasets = find_datasets(args.datasets_dir, dataset_names)
+                # Filter out already processed datasets
+                remaining_datasets = [
+                    ds for ds in current_datasets 
+                    if ds.name not in processed_datasets
+                ]
+            except Exception as e:
+                logger.error(f"Failed to refresh dataset list: {e}")
+                break
             
-            retries = 0
-            success = False
+            # If no more datasets to process, exit the loop
+            if not remaining_datasets:
+                logger.info("No more datasets found in unfinished_datasets. Processing complete.")
+                break
             
-            while retries <= args.max_retries and not success:
-                if retries > 0:
-                    logger.info(f"Retry {retries}/{args.max_retries} for dataset {dataset_name}")
-                    time.sleep(5)  # Brief pause before retry
+            logger.info(f"Found {len(remaining_datasets)} dataset(s) remaining to process:")
+            for ds in remaining_datasets:
+                logger.info(f"  - {ds.name}")
+            
+            # Process each remaining dataset
+            for dataset_path in remaining_datasets:
+                dataset_name = dataset_path.name
                 
-                success = run_workflow_for_dataset(
-                    dataset_path=dataset_path,
-                    project_root=project_root,
-                    workflow_type=args.workflow,
-                    stages=args.stages,
-                    verbose=args.verbose,
-                    dry_run=args.dry_run,
-                    logger=logger
-                )
+                # Skip if already processed (shouldn't happen, but safety check)
+                if dataset_name in processed_datasets:
+                    continue
+                
+                retries = 0
+                success = False
+                
+                while retries <= args.max_retries and not success:
+                    if retries > 0:
+                        logger.info(f"Retry {retries}/{args.max_retries} for dataset {dataset_name}")
+                        time.sleep(5)  # Brief pause before retry
+                    
+                    success = run_workflow_for_dataset(
+                        dataset_path=dataset_path,
+                        project_root=project_root,
+                        workflow_type=args.workflow,
+                        stages=args.stages,
+                        verbose=args.verbose,
+                        dry_run=args.dry_run,
+                        logger=logger
+                    )
+                    
+                    if success:
+                        break
+                    
+                    retries += 1
+                
+                # Mark as processed
+                processed_datasets.add(dataset_name)
+                results[dataset_name] = success
                 
                 if success:
-                    break
-                
-                retries += 1
-            
-            results[dataset_name] = success
-            
-            if not success:
-                if args.continue_on_error:
-                    logger.warning(f"Dataset {dataset_name} failed, continuing to next dataset...")
-                    continue
+                    # Move completed dataset from unfinished_datasets to finished_datasets
+                    unfinished_dir = args.datasets_dir
+                    finished_dir = project_root / "datasets" / "finished_datasets"
+                    
+                    # Only move if we're reading from unfinished_datasets
+                    if "unfinished_datasets" in str(unfinished_dir):
+                        move_dataset_to_finished(
+                            dataset_path=dataset_path,
+                            unfinished_dir=unfinished_dir,
+                            finished_dir=finished_dir,
+                            logger=logger
+                        )
+                    
+                    # After successful completion, break to refresh the list
+                    logger.info("Refreshing dataset list to check for new datasets...")
+                    break  # Break from inner for loop to refresh list
                 else:
-                    logger.error(f"Dataset {dataset_name} failed, stopping batch processing")
-                    sys.exit(1)
+                    if args.continue_on_error:
+                        logger.warning(f"Dataset {dataset_name} failed, continuing to next dataset...")
+                        # Continue to next dataset in current list
+                        continue
+                    else:
+                        logger.error(f"Dataset {dataset_name} failed, stopping batch processing")
+                        sys.exit(1)
     
     except KeyboardInterrupt:
         logger.warning("⚠️ Batch processing interrupted by user")

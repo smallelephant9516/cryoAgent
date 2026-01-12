@@ -189,11 +189,7 @@
     }
   },
   "workflow": {
-<<<<<<< HEAD
     "project_uid": "P3",
-=======
-    "project_uid": "P1",
->>>>>>> b0e23cce2353ca9852e9a9771bfafeb3a6c78189
     "workspace_uid": "W1"
   },
   "job_management": {
