@@ -5,30 +5,19 @@
     "description": "Basic microscope parameters for cryoEM data collection - Dataset 10028",
     "version": "1.0.0"
   },
-<<<<<<< HEAD
-"microscope_parameters": {
-    "pixel_size": 1.14,
-    "voltage": 300,
-    "cs_mm": 0,
-    "dose": 60,
-    "particle_diameter": 250,
-    "symmetry": "C5",
-    "movies_path": "/home/daoyi/scratch/cryoEM_dataset/10089/data/Movies/*.mrc",
-    "micrographs_path": null,
-=======
- "microscope_parameters": {
-    "pixel_size": 1.0961,
-    "voltage": 300,
-    "cs_mm": 0,
-    "dose": 62.75,
-    "particle_diameter": 150,
-    "symmetry": "C1",
-    "movies_path": null,
-    "micrographs_path": "/lustre2/EMDB/10240/data/ceramide_micrographs/*.mrc",
->>>>>>> b0e23cce2353ca9852e9a9771bfafeb3a6c78189
-    "gain_ref_path": null,
-    "gain_rot": 0,
-    "gain_flip": 0
+
+  "microscope_parameters": {
+  "pixel_size": 1.77,
+  "voltage": 300,
+  "cs_mm": 2,
+  "dose": 16,
+  "particle_diameter": 200,
+  "symmetry": "C1",
+  "movies_path": "/lustre2/EMDB/10002/data/*.mrcs",
+  "micrographs_path": null,
+  "gain_ref_path": null,
+  "gain_rot": 0,
+  "gain_flip": 0
   },
 
   "parameter_descriptions": {

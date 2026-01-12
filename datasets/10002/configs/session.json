@@ -23,6 +23,13 @@
         "agent_class": "Optimizer2DAgent"
       },
       {
+        "name": "heterogeneity",
+        "description": "Heterogeneity analysis stage: Determine true number of classes using ab initio + heterogeneous refinement and density comparison",
+        "enabled": false,
+        "agent_group": "cryosparc",
+        "agent_class": "HeterogeneityAgent"
+      },
+      {
         "name": "reconstruction",
         "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
         "enabled": true,
@@ -39,7 +46,7 @@
       {
         "name": "polish",
         "description": "Polish refinement stage: Final refinement steps with CTF refinement and motion correction to achieve best possible resolution",
-        "enabled": true,
+        "enabled": false,
         "agent_group": "cryosparc",
         "agent_class": "PolishAgent"
       }
@@ -48,7 +55,7 @@
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
     "continue_job": true,
-    "relion_dir": "/home/daoyi/scratch/relion/10204/ccc",
+    "relion_dir": "/home/daoyi/scratch/relion/10028/ccc",
     "backend_execution": {
       "enabled": true,
       "default_timeout": 84600,
@@ -59,7 +66,7 @@
     }
   },
   "workflow": {
-    "project_uid": "P12",
+    "project_uid": "P1",
     "workspace_uid": "W1"
   }
 }

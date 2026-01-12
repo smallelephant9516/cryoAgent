@@ -18,6 +18,13 @@
         "agent_class": "ParticlePickingAgent"
       },
       {
+        "name": "heterogeneity",
+        "description": "Heterogeneity analysis stage: Determine true number of classes using ab initio + heterogeneous refinement and density comparison",
+        "enabled": true,
+        "agent_group": "cryosparc",
+        "agent_class": "HeterogeneityAgent"
+      },
+      {
         "name": "optimization_2d",
         "description": "2D classification optimization stage: Iteratively refine particle selection using 2D classification and CryoSift",
         "enabled": false,
@@ -30,20 +37,6 @@
         "enabled": true,
         "agent_group": "cryosparc",
         "agent_class": "ReconstructionAgent"
-      },
-      {
-        "name": "heterogeneity",
-        "description": "Heterogeneity analysis stage: Determine true number of classes using ab initio + heterogeneous refinement and density comparison",
-        "enabled": true,
-        "agent_group": "cryosparc",
-        "agent_class": "HeterogeneityAgent"
-      },
-      {
-        "name": "heterogeneity_depth",
-        "description": "Heterogeneity depth analysis stage: Iteratively refine until only one cluster remains using heterogeneous refinement and density comparison",
-        "enabled": false,
-        "agent_group": "cryosparc",
-        "agent_class": "HeterogeneityDepthAgent"
       },
       {
         "name": "optimization",
@@ -67,10 +60,10 @@
   },
   "cryosparc": {
     "host": "localhost",
-    "base_port": 39000,
+    "base_port": 61000,
     "username": "lidaoyi16@hotmail.com",
     "password": "Password123",
-    "license_id": "ea7aec62-b1ae-11e9-8554-cb1fba28db1b"
+    "license_id": "30717d7e-8f18-11f0-8d17-8b491a13a8e1"
   },
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
@@ -196,7 +189,11 @@
     }
   },
   "workflow": {
+<<<<<<< HEAD
     "project_uid": "P3",
+=======
+    "project_uid": "P1",
+>>>>>>> b0e23cce2353ca9852e9a9771bfafeb3a6c78189
     "workspace_uid": "W1"
   },
   "job_management": {

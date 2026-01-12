@@ -12,4 +12,84 @@
     "gain_ref_path": null,
     "gain_rot": 0,
     "gain_flip": 0
-  },
+  }
+
+# 10002
+
+"microscope_parameters": {
+  "pixel_size": 1.77,
+  "voltage": 300,
+  "cs_mm": 2,
+  "dose": 16,
+  "particle_diameter": 200,
+  "symmetry": "C1",
+  "movies_path": "/lustre2/EMDB/10002/data/*.mrc",
+  "micrographs_path": null,
+  "gain_ref_path": null,
+  "gain_rot": 0,
+  "gain_flip": 0
+}
+
+# 10081 (unstarted)
+
+"microscope_parameters": {
+  "pixel_size": 1.3,
+  "voltage": 300,
+  "cs_mm": 2.7,
+  "dose": 60,
+  "particle_diameter": 180,
+  "symmetry": "C4",
+  "movies_path": null,
+  "micrographs_path": "/lustre2/EMDB/10081",
+  "gain_ref_path": null,
+  "gain_rot": 0,
+  "gain_flip": 0
+}
+
+# 10217
+
+"microscope_parameters": {
+  "pixel_size": 0.6616,
+  "voltage": 300,
+  "cs_mm": 2.7,
+  "dose": 61.25,
+  "particle_diameter": 160,
+  "symmetry": "C3",
+  "movies_path": null,
+  "micrographs_path": "/lustre2/EMDB/10217/data/*_DW.mrc",
+  "gain_ref_path": null,
+  "gain_rot": 0,
+  "gain_flip": 0
+}
+
+# 10240
+
+"microscope_parameters": {
+  "pixel_size": 1.0961,
+  "voltage": 300,
+  "cs_mm": 0,
+  "dose": 62.75,
+  "particle_diameter": 150,
+  "symmetry": "C1",
+  "movies_path": null,
+  "micrographs_path": "/lustre2/EMDB/10240/data/ceramide_micrographs/*.mrc",
+  "gain_ref_path": null,
+  "gain_rot": 0,
+  "gain_flip": 0
+}
+
+# QC random test
+
+"microscope_parameters": {
+  "pixel_size": 0.8,
+  "voltage": 200,
+  "cs_mm": 2.7,
+  "dose": 60,
+  "particle_diameter": 180,
+  "symmetry": "C3",
+  "movies_path": null,
+  "micrographs_path": "/lustre1/qichen/data/WT-HFBI/20250424_WT_SRx3_0424/WT_SRx3_0424_*_SumCorr_DW.mrc",
+  "gain_ref_path": null,
+  "gain_rot": 0,
+  "gain_flip": 0
+}

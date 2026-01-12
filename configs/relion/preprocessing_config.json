@@ -24,7 +24,11 @@
   "microscope_parameters": {
     "movies_path": "/home/daoyi/scratch/cryoEM_dataset/10089/data/Movies/*.mrc",
     "gain_ref_path": null,
+<<<<<<< HEAD
     "pixel_size": 1.14,
+=======
+    "pixel_size": 1.0961,
+>>>>>>> b0e23cce2353ca9852e9a9771bfafeb3a6c78189
     "voltage": 300.0,
     "cs_mm": 0.0,
     "q0": 0.1,
@@ -32,15 +36,25 @@
     "beamtilt_y": 0.0,
     "gain_rot": 0,
     "gain_flip": 0,
+<<<<<<< HEAD
     "dose": 60.0,
     "particle_diameter": 250.0,
     "symmetry": "C5"
+=======
+    "dose": 62.75,
+    "particle_diameter": 150.0,
+    "symmetry": "C1"
+>>>>>>> b0e23cce2353ca9852e9a9771bfafeb3a6c78189
   },
   "workflow": {
     "import_movies": {
       "movies_path": "/home/daoyi/scratch/cryoEM_dataset/10089/data/Movies/*.mrc",
       "gain_ref_path": null,
+<<<<<<< HEAD
       "pixel_size": 1.14,
+=======
+      "pixel_size": 1.0961,
+>>>>>>> b0e23cce2353ca9852e9a9771bfafeb3a6c78189
       "voltage": 300.0,
       "cs_mm": 0.0,
       "q0": 0.1,
@@ -50,7 +64,11 @@
       "gain_flip": 0,
       "optics_group_name": "opticsGroup1",
       "continue_job": true,
+<<<<<<< HEAD
       "dose": 60.0
+=======
+      "dose": 62.75
+>>>>>>> b0e23cce2353ca9852e9a9771bfafeb3a6c78189
     },
     "motion_correction": {
       "use_motioncor2": false,

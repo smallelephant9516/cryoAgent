@@ -25,20 +25,14 @@
       {
         "name": "heterogeneity",
         "description": "Heterogeneity analysis stage: Determine true number of classes using ab initio + heterogeneous refinement and density comparison",
-        "enabled": false,
+        "enabled": true,
         "agent_group": "cryosparc",
         "agent_class": "HeterogeneityAgent"
       },
       {
-<<<<<<< HEAD
-        "name": "heterogeneity_depth",
-        "description": "Heterogeneity depth analysis stage: Iteratively refine until only one cluster remains using heterogeneous refinement and density comparison",
-        "enabled": false,
-=======
         "name": "reconstruction",
         "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
         "enabled": true,
->>>>>>> b0e23cce2353ca9852e9a9771bfafeb3a6c78189
         "agent_group": "cryosparc",
         "agent_class": "ReconstructionAgent"
       },
@@ -61,7 +55,7 @@
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
     "continue_job": true,
-    "relion_dir": "/lustre2/daoyi/relion/agent_test/ccc",
+    "relion_dir": "/home/daoyi/scratch/relion/10204/ccc",
     "backend_execution": {
       "enabled": true,
       "default_timeout": 84600,
@@ -72,11 +66,7 @@
     }
   },
   "workflow": {
-<<<<<<< HEAD
-    "project_uid": "P3",
-=======
-    "project_uid": "P1",
->>>>>>> b0e23cce2353ca9852e9a9771bfafeb3a6c78189
+    "project_uid": "P12",
     "workspace_uid": "W1"
   }
 }
