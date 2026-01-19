@@ -469,11 +469,16 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             params = self._parse_tool_input(input_str)
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            
+            # Safely get preprocessing config values, handling case where it might not be set yet
+            preprocessing_config = getattr(self, 'preprocessing_config', {}).get('workflow', {})
+            micrograph_selection_config = preprocessing_config.get('micrograph_selection', {})
+            
             used_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
                 "ctf_job_uid": params.get("ctf_job_uid"),
-                "min_resolution": float(params.get("min_resolution", 5.0)),
+                "min_resolution": float(params.get("min_resolution", micrograph_selection_config.get("min_resolution", 5.0))),
                 "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
                 "timeout": self._parse_int_param(params.get("timeout", self.config.job_management.default_timeout), default=self.config.job_management.default_timeout, param_name="timeout"),
                 "check_interval": self._parse_int_param(params.get("check_interval", self.config.job_management.status_check_interval), default=self.config.job_management.status_check_interval, param_name="check_interval")

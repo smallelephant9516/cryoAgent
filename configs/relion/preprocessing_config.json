@@ -22,27 +22,27 @@
     "selected_micrographs_star"
   ],
   "microscope_parameters": {
-    "movies_path": null,
-    "gain_ref_path": null,
-    "pixel_size": 1.77,
+    "movies_path": "/lustre2/EMDB/10405/data/C/micrographs/*.tif",
+    "gain_ref_path": "/lustre2/EMDB/10405/data/C/gain.mrc",
+    "pixel_size": 0.435,
     "voltage": 300.0,
-    "cs_mm": 2.0,
+    "cs_mm": 2.7,
     "q0": 0.1,
     "beamtilt_x": 0.0,
     "beamtilt_y": 0.0,
     "gain_rot": 0,
     "gain_flip": 0,
-    "dose": 24.0,
-    "particle_diameter": 120.0,
-    "symmetry": "D2"
+    "dose": 83.0,
+    "particle_diameter": 150.0,
+    "symmetry": "O"
   },
   "workflow": {
     "import_movies": {
-      "movies_path": null,
-      "gain_ref_path": null,
-      "pixel_size": 1.77,
+      "movies_path": "/lustre2/EMDB/10405/data/C/micrographs/*.tif",
+      "gain_ref_path": "/lustre2/EMDB/10405/data/C/gain.mrc",
+      "pixel_size": 0.435,
       "voltage": 300.0,
-      "cs_mm": 2.0,
+      "cs_mm": 2.7,
       "q0": 0.1,
       "beamtilt_x": 0.0,
       "beamtilt_y": 0.0,
@@ -50,7 +50,7 @@
       "gain_flip": 0,
       "optics_group_name": "opticsGroup1",
       "continue_job": true,
-      "dose": 24.0
+      "dose": 83.0
     },
     "motion_correction": {
       "use_motioncor2": false,

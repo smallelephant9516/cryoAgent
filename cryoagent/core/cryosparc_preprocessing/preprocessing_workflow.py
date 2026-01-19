@@ -86,9 +86,19 @@ class PreprocessingWorkflow:
         # Get microscope config from the agent
         microscope_config = getattr(self.agent, 'microscope_config', {})
         
+        # Get preprocessing config from the agent to read workflow parameters
+        preprocessing_config = getattr(self.agent, 'preprocessing_config', {})
+        workflow_config = preprocessing_config.get('workflow', {})
+        motion_correction_config = workflow_config.get('motion_correction', {})
+        ctf_config = workflow_config.get('ctf_estimation', {})
+        micrograph_selection_config = workflow_config.get('micrograph_selection', {})
+        
         # Check if micrographs_path is available (indicates direct micrograph import)
         micrographs_path = microscope_config.get('micrographs_path')
         movies_path = microscope_config.get('movies_path', 'N/A')
+        
+        # Get min_resolution from config, default to 5.0 if not found
+        min_resolution = micrograph_selection_config.get('min_resolution', 5.0)
         
         return f"""
 Execute the complete cryoEM preprocessing workflow. Choose the appropriate path based on your input data:
@@ -103,12 +113,12 @@ Execute the complete cryoEM preprocessing workflow. Choose the appropriate path 
    - Workspace: {self.config.workflow.workspace_uid}
 
 2. **Motion Correction**: Correct motion in the imported movies
-   - Binning: {getattr(self.config.workflow, 'motion_correction_binning', 1)}
-   - Patch size: {getattr(self.config.workflow, 'motion_correction_patch_size', 5)}
+   - Binning: {motion_correction_config.get('binning', 1)}
+   - Patch size: {motion_correction_config.get('patch_size', 5)}
 
 3. **CTF Estimation**: Estimate CTF parameters for micrographs
-   - Min resolution: {getattr(self.config.workflow, 'ctf_min_res', 30.0)} Å
-   - Max resolution: {getattr(self.config.workflow, 'ctf_max_res', 4.0)} Å
+   - Min resolution: {ctf_config.get('min_res', 30.0)} Å
+   - Max resolution: {ctf_config.get('max_res', 4.0)} Å
 
 **Option B: If you have already motion-corrected micrographs:**
 1. **Import Micrographs**: Import micrograph files directly from {micrographs_path or movies_path}
@@ -121,12 +131,12 @@ Execute the complete cryoEM preprocessing workflow. Choose the appropriate path 
    - **CRITICAL**: Skip motion correction and proceed directly to CTF estimation
 
 2. **CTF Estimation**: Estimate CTF parameters for micrographs
-   - Min resolution: {getattr(self.config.workflow, 'ctf_min_res', 30.0)} Å
-   - Max resolution: {getattr(self.config.workflow, 'ctf_max_res', 4.0)} Å
+   - Min resolution: {ctf_config.get('min_res', 30.0)} Å
+   - Max resolution: {ctf_config.get('max_res', 4.0)} Å
 
 **Common Final Step:**
-4. **Micrograph Selection**: Select micrographs with resolution better than {getattr(self.config.workflow, 'min_resolution', 5.0)} Å
-   - Min resolution threshold: {getattr(self.config.workflow, 'min_resolution', 5.0)} Å
+4. **Micrograph Selection**: Select micrographs with resolution better than {min_resolution} Å
+   - Min resolution threshold: {min_resolution} Å
    - Filters out low-quality micrographs
 
 **Important**: 

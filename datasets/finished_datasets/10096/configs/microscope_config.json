@@ -2,19 +2,19 @@
   "overwrite": true,
   "microscope_info": {
     "name": "microscope_parameters",
-    "description": "Basic microscope parameters for cryoEM data collection - Dataset 10405",
+    "description": "Basic microscope parameters for cryoEM data collection - Dataset 10096",
     "version": "1.0.0"
   },
   "microscope_parameters": {
-    "pixel_size": 0.435,
+    "pixel_size": 1.31,
     "voltage": 300,
     "cs_mm": 2.7,
-    "dose": 83.0,
-    "particle_diameter": 150,
-    "symmetry": "O",
-    "movies_path": "/lustre2/EMDB/10405/data/C/micrographs/*.tif",
-    "micrographs_path": null,
-    "gain_ref_path": "/lustre2/EMDB/10405/data/C/gain.mrc",
+    "dose": 82.0,
+    "particle_diameter": 180,
+    "symmetry": "C3",
+    "movies_path": null,
+    "micrographs_path": "/lustre2/EMDB/10096/data/Dose-Weighted-Micrographs/*.mrc",
+    "gain_ref_path": null,
     "gain_rot": 0,
     "gain_flip": 0
   },
