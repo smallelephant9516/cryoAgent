@@ -30,7 +30,7 @@ class OptimizationResult:
     best_multi_round_refinement_job_uid: Optional[str] = None
     best_multi_round_resolution: Optional[float] = None
     multi_round_rounds_completed: Optional[int] = None
-    # Final non-uniform refinement with CTF refinement
+    # Final homogeneous refinement
     final_refinement_job_uid: Optional[str] = None
     final_refinement_resolution: Optional[float] = None
 
@@ -420,7 +420,7 @@ Please report the current resolution from this refinement job."""
                     best_multi_round_resolution = multi_round_result.get("best_resolution_angstroms")
                     multi_round_rounds = multi_round_result.get("rounds_completed")
                 
-                # Run final non-uniform refinement with CTF refinement enabled
+                # Run final homogeneous refinement
                 best_homogeneous_refinement_job_uid = best_result.get("job_uid")
                 final_refinement_job_uid = None
                 final_refinement_resolution = None
@@ -435,7 +435,7 @@ Please report the current resolution from this refinement job."""
                         workspace_uid = self.config.workflow.workspace_uid
                         
                         # Log the final refinement step
-                        self.agent.logger.info(f"🔧 Running final non-uniform refinement with CTF refinement enabled...")
+                        self.agent.logger.info(f"🔧 Running final homogeneous refinement...")
                         self.agent.logger.info(f"   Source job: {best_homogeneous_refinement_job_uid}")
                         self.agent.logger.info(f"   Symmetry: {symmetry}")
                         
@@ -444,15 +444,13 @@ Please report the current resolution from this refinement job."""
                         if hasattr(self.agent, '_get_refinement_res_init'):
                             refine_res_init = self.agent._get_refinement_res_init()
                         
-                        # Run non-uniform refinement with local and global CTF refinement enabled
-                        refine_result = self.agent.cryosparc_tools.nonuniform_refine_new(
+                        # Run homogeneous refinement
+                        refine_result = self.agent.cryosparc_tools.homogeneous_refinement(
                             project_uid=project_uid,
                             workspace_uid=workspace_uid,
                             particles_job_uid=best_homogeneous_refinement_job_uid,
                             volume_job_uid=best_homogeneous_refinement_job_uid,
                             symmetry=symmetry,
-                            refine_defocus_refine=True,  # Enable local CTF refinement
-                            refine_ctf_global_refine=True,  # Enable global CTF refinement
                             refine_res_init=refine_res_init,  # Initial lowpass resolution if configured
                             wait_for_completion=True,
                             timeout=self.config.job_management.default_timeout,
@@ -470,7 +468,7 @@ Please report the current resolution from this refinement job."""
                                 )
                                 if fsc_info.get("success"):
                                     final_refinement_resolution = fsc_info.get("resolution_angstroms")
-                                    self.agent.logger.info(f"✅ Final non-uniform refinement completed successfully")
+                                    self.agent.logger.info(f"✅ Final homogeneous refinement completed successfully")
                                     self.agent.logger.info(f"   Final refinement job: {final_refinement_job_uid}")
                                     self.agent.logger.info(f"   Final resolution: {final_refinement_resolution:.3f} Å")
                                 else:
@@ -479,9 +477,9 @@ Please report the current resolution from this refinement job."""
                                 self.agent.logger.warning(f"⚠️  Final refinement did not complete successfully: status={refine_status}")
                         else:
                             error_msg = refine_result.get("error") or "Unknown error"
-                            self.agent.logger.error(f"❌ Final non-uniform refinement failed: {error_msg}")
+                            self.agent.logger.error(f"❌ Final homogeneous refinement failed: {error_msg}")
                     except Exception as e:
-                        self.agent.logger.error(f"❌ Error running final non-uniform refinement: {e}", exc_info=True)
+                        self.agent.logger.error(f"❌ Error running final homogeneous refinement: {e}", exc_info=True)
                         # Continue with optimization result even if final refinement fails
                 
                 return OptimizationResult(
