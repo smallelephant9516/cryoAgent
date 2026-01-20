@@ -32,6 +32,13 @@
         "agent_class": "HeterogeneityAgent"
       },
       {
+        "name": "heterogeneity_depth",
+        "description": "Heterogeneity depth analysis stage: Iteratively refine until only one cluster remains using heterogeneous refinement and density comparison",
+        "enabled": false,
+        "agent_group": "cryosparc",
+        "agent_class": "ReconstructionAgent"
+      },
+      {
         "name": "reconstruction",
         "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
         "enabled": true,

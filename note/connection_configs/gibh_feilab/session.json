@@ -25,9 +25,16 @@
       {
         "name": "heterogeneity",
         "description": "Heterogeneity analysis stage: Determine true number of classes using ab initio + heterogeneous refinement and density comparison",
-        "enabled": true,
+        "enabled": false,
         "agent_group": "cryosparc",
         "agent_class": "HeterogeneityAgent"
+      },
+      {
+        "name": "heterogeneity_depth",
+        "description": "Heterogeneity depth analysis stage: Iteratively refine until only one cluster remains using heterogeneous refinement and density comparison",
+        "enabled": false,
+        "agent_group": "cryosparc",
+        "agent_class": "ReconstructionAgent"
       },
       {
         "name": "reconstruction",
