@@ -62,7 +62,7 @@
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
     "continue_job": true,
-    "relion_dir": "/lustre2/daoyi/relion/agent_test/ccc",
+    "relion_dir": "/scratch/daoyi/relion/agent_test/ccc",
     "backend_execution": {
       "enabled": true,
       "default_timeout": 84600,
