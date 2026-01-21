@@ -160,3 +160,6 @@ Magellon/
 
 # ignore the cryoEM data temp
 configs_temp/
+configs/session.json
+configs/microscope_config.json
+configs/master_config.json

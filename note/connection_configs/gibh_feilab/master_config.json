@@ -20,9 +20,16 @@
       {
         "name": "optimization_2d",
         "description": "2D classification optimization stage: Iteratively refine particle selection using 2D classification and CryoSift",
-        "enabled": false,
+        "enabled": true,
         "agent_group": "cryosparc",
         "agent_class": "Optimizer2DAgent"
+      },
+      {
+        "name": "reconstruction",
+        "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
+        "enabled": true,
+        "agent_group": "cryosparc",
+        "agent_class": "ReconstructionAgent"
       },
       {
         "name": "heterogeneity",
@@ -34,13 +41,6 @@
       {
         "name": "heterogeneity_depth",
         "description": "Heterogeneity depth analysis stage: Iteratively refine until only one cluster remains using heterogeneous refinement and density comparison",
-        "enabled": false,
-        "agent_group": "cryosparc",
-        "agent_class": "ReconstructionAgent"
-      },
-      {
-        "name": "reconstruction",
-        "description": "3D reconstruction stage: Generate initial models and refine 3D structures",
         "enabled": true,
         "agent_group": "cryosparc",
         "agent_class": "ReconstructionAgent"
@@ -48,7 +48,7 @@
       {
         "name": "optimization",
         "description": "Box size optimization stage: Optimize box size/diameter for 3D reconstruction",
-        "enabled": true,
+        "enabled": false,
         "agent_group": "cryosparc",
         "agent_class": "OptimizerAgent"
       },

@@ -973,6 +973,7 @@ class CryoSPARCTools:
             )
             
             if status["status"] in ["completed", "failed", "cancelled"]:
+                print()  # Print newline when job completes
                 return status
             
             progress_display = f"{status['progress']}%" if status.get("progress") is not None else "N/A"
@@ -980,9 +981,10 @@ class CryoSPARCTools:
             line = f"Job {job_uid} status: {status['status']} ({progress_display})"
             if message:
                 line += f" - {message}"
-            print(line)
+            print(f"\r{line}", end='', flush=True)
             time.sleep(check_interval)
         
+        print()  # Print newline before timeout error
         raise TimeoutError(f"Job {job_uid} did not complete within {timeout} seconds")
 
     def monitor_job(

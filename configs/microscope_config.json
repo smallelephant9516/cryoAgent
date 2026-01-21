@@ -2,33 +2,34 @@
   "overwrite": true,
   "microscope_info": {
     "name": "microscope_parameters",
-    "description": "Basic microscope parameters for cryoEM data collection - Dataset 10405",
+    "description": "Basic microscope parameters for cryoEM data collection",
     "version": "1.0.0"
   },
   "microscope_parameters": {
-    "pixel_size": 0.435,
+    "pixel_size":1.34,
     "voltage": 300,
-    "cs_mm": 2.7,
-    "dose": 83.0,
-    "particle_diameter": 150,
-    "symmetry": "O",
-    "movies_path": "/lustre2/EMDB/10405/data/C/micrographs/*.tif",
+    "cs_mm": 2,
+    "dose": 20,
+    "particle_diameter": 300,
+    "symmetry": "C1",
+    "movies_path": "/home/daoyi/cryoEM_dataset/10025_subset/empiar_10025_subset/*.tif",
     "micrographs_path": null,
-    "gain_ref_path": "/lustre2/EMDB/10405/data/C/gain.mrc",
+    "gain_ref_path": "/home/daoyi/cryoEM_dataset/10025_subset/empiar_10025_subset/norm-amibox05-0.mrc",
     "gain_rot": 0,
-    "gain_flip": 0
+    "gain_flip": 1
   },
+
   "parameter_descriptions": {
     "pixel_size": "Physical pixel size in Angstroms",
     "voltage": "Accelerating voltage in kV",
     "cs_mm": "Spherical aberration coefficient in mm",
-    "dose": "Electron dose per frame in e-/\u00c5\u00b2",
+    "dose": "Electron dose per frame in e-/Å²",
     "particle_diameter": "Estimated particle diameter in Angstroms used to auto-derive picking and reconstruction defaults",
     "symmetry": "Default point-group symmetry for reconstruction and refinement stages (e.g., C1, D7)",
     "movies_path": "Path to movie files (supports wildcards like *.tif)",
     "micrographs_path": "Path to already motion-corrected micrograph files (supports wildcards like *.mrc). If provided, use import_micrographs instead of import_movies (motion correction will be skipped)",
     "gain_ref_path": "Path to gain reference file (.mrc format)",
-    "gain_rot": "Clockwise rotation to apply to gain reference before use (units: 90\u00b0 increments, values 0-3)",
+    "gain_rot": "Clockwise rotation to apply to gain reference before use (units: 90° increments, values 0-3)",
     "gain_flip": "RELION gain flip code (0 = none, 1 = flip Y, 2 = flip X). CryoSPARC flip flags are derived automatically."
   }
 }

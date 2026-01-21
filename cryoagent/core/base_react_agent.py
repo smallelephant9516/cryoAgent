@@ -34,6 +34,7 @@ from .llm_factory import LLMFactory
 from ..utils.conversation_logger import ConversationLogger
 from ..utils.realtime_conversation_logger import RealtimeConversationLogger
 from ..utils.general_llm_logger import GeneralLLMLogger
+from ..utils.log_resume import LogResumeParser
 
 
 class BaseReActAgent(ABC):
@@ -415,6 +416,52 @@ class BaseReActAgent(ABC):
         """Clear the recorded tool execution history."""
         self.tool_execution_log = []
     
+    def _check_and_resume_from_log(self, conversation_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        """
+        Check for existing log file and return resume context if found.
+        
+        Args:
+            conversation_id: Optional conversation identifier
+            
+        Returns:
+            Resume context dictionary if log file found and should resume, None otherwise
+        """
+        try:
+            stage_name = getattr(self, 'stage_name', 'unknown')
+            
+            # Get outputs directory from realtime logger
+            if hasattr(self.realtime_logger, 'outputs_dir'):
+                outputs_dir = self.realtime_logger.outputs_dir
+            else:
+                outputs_dir = Path('outputs')
+            
+            # Initialize log resume parser
+            log_parser = LogResumeParser(outputs_dir=str(outputs_dir))
+            
+            # Find log file for this stage
+            log_file = log_parser.find_log_file(stage_name, conversation_id)
+            
+            if not log_file:
+                return None
+            
+            # Check if we should resume
+            if not log_parser.should_resume(log_file):
+                return None
+            
+            # Get resume context
+            resume_context = log_parser.get_resume_context(log_file)
+            
+            if self.config.agent.verbose:
+                print(f"📋 Found existing log file: {log_file}")
+                print(f"🔄 {resume_context.get('resume_message', 'Resuming from previous execution')}")
+            
+            return resume_context
+            
+        except Exception as e:
+            if self.config.agent.verbose:
+                print(f"⚠️ Warning: Failed to check for resume log: {e}")
+            return None
+    
     def run_react_workflow(self, workflow_input: str, conversation_id: Optional[str] = None) -> str:
         """
         Run a workflow using ReAct approach.
@@ -427,12 +474,91 @@ class BaseReActAgent(ABC):
             Result of the workflow execution
         """
         try:
-            # Start real-time conversation logging if enabled
-            if self.enable_conversation_logging:
-                self._start_realtime_conversation_log(workflow_input, conversation_id)
+            # Check for existing log file and resume context
+            resume_context = self._check_and_resume_from_log(conversation_id)
             
-            # Reset execution log for this run
-            self.clear_tool_execution_log()
+            # If resuming, use the existing log file and add resume message
+            if resume_context:
+                # Use the existing conversation ID from the log
+                if resume_context.get("conversation_id"):
+                    conversation_id = resume_context["conversation_id"]
+                
+                # Restore the log file path to the realtime logger
+                log_file = resume_context.get("log_file")
+                if log_file and hasattr(self.realtime_logger, 'current_log_file'):
+                    self.realtime_logger.current_log_file = log_file
+                    self.realtime_logger.conversation_id = resume_context.get("conversation_id")
+                    self.realtime_logger.stage_name = resume_context.get("stage_name")
+                    self.realtime_logger.workflow_type = resume_context.get("workflow_type")
+                    self.realtime_logger.start_time = resume_context.get("start_time")
+                
+                # Add resume information to workflow input
+                resume_message = resume_context.get("resume_message", "")
+                last_tool = resume_context.get("last_tool_execution")
+                completed_work = resume_context.get("completed_work")
+                
+                if last_tool:
+                    # Add context about what was already done
+                    workflow_input_parts = [workflow_input, "", resume_message]
+                    
+                    # Add completed work summary if available (especially important for heterogeneity)
+                    if completed_work:
+                        workflow_input_parts.append("")
+                        workflow_input_parts.append("=== COMPLETED WORK SUMMARY ===")
+                        workflow_input_parts.append(completed_work)
+                    
+                    workflow_input_parts.append("")
+                    workflow_input_parts.append("Previous execution context:")
+                    workflow_input_parts.append(f"- Last tool executed: {last_tool['tool_name']}")
+                    workflow_input_parts.append(f"- Last tool arguments: {json.dumps(last_tool['arguments'], indent=2)}")
+                    
+                    # Show last tool result (truncated if too long)
+                    last_result = last_tool.get('result')
+                    if isinstance(last_result, dict):
+                        result_str = json.dumps(last_result, indent=2)
+                    else:
+                        result_str = str(last_result)[:500] if last_result else "No result"
+                    workflow_input_parts.append(f"- Last tool result: {result_str}")
+                    
+                    workflow_input_parts.append("")
+                    workflow_input_parts.append("Please continue from where the previous execution left off.")
+                    if completed_work:
+                        workflow_input_parts.append("IMPORTANT: Do NOT re-run work that is already completed (as shown in the summary above).")
+                        workflow_input_parts.append("Continue with the next steps that have NOT been completed yet.")
+                    else:
+                        workflow_input_parts.append("Review the last tool execution and proceed with the next steps in the workflow.")
+                    
+                    workflow_input = "\n".join(workflow_input_parts)
+                else:
+                    workflow_input = f"""{workflow_input}
+
+{resume_message}
+
+Please continue with the workflow execution."""
+                
+                if self.config.agent.verbose:
+                    print(f"🔄 Resuming from log file: {log_file}")
+            else:
+                # Start fresh conversation logging if enabled
+                if self.enable_conversation_logging:
+                    self._start_realtime_conversation_log(workflow_input, conversation_id)
+            
+            # Reset execution log for this run (unless resuming)
+            if not resume_context:
+                self.clear_tool_execution_log()
+            else:
+                # If resuming, restore tool execution log from previous run
+                # This helps maintain context about what was already done
+                if resume_context.get("all_tool_executions"):
+                    # Restore previous tool executions to the log
+                    for tool_exec in resume_context["all_tool_executions"]:
+                        self._record_tool_execution(
+                            tool_exec["tool_name"],
+                            tool_exec["arguments"],
+                            result=tool_exec["result"]
+                        )
+                    if self.config.agent.verbose:
+                        print(f"📋 Restored {len(resume_context['all_tool_executions'])} previous tool executions")
 
             # Check if memory should be cleared
             if self._should_clear_memory(conversation_id):
@@ -443,8 +569,8 @@ class BaseReActAgent(ABC):
             # Update conversation state
             self._update_conversation_state(conversation_id)
             
-            # Force clear memory if configuration requires it
-            if (self.config.memory_control.clear_memory_on_new_conversation and 
+            # Force clear memory if configuration requires it (but not when resuming)
+            if not resume_context and (self.config.memory_control.clear_memory_on_new_conversation and 
                 not self.config.memory_control.maintain_context_between_interactions):
                 self._clear_agent_memory()
                 if self.config.agent.verbose:
@@ -453,8 +579,15 @@ class BaseReActAgent(ABC):
             # Add ReAct-specific instructions to the input
             react_input = self._format_react_input(workflow_input)
             
-            # Log the formatted input in real-time
-            if self.enable_conversation_logging:
+            # Log the formatted input in real-time (only if not resuming or if it's a new input)
+            if self.enable_conversation_logging and not resume_context:
+                self.realtime_logger.log_user_input(react_input)
+            elif self.enable_conversation_logging and resume_context:
+                # Log resume message
+                self.realtime_logger.log_system_message(
+                    f"Resuming workflow execution",
+                    metadata={"resume_context": resume_context.get("resume_message")}
+                )
                 self.realtime_logger.log_user_input(react_input)
             
             result = self.agent_executor.invoke({"input": react_input})

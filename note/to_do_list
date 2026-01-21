@@ -1,4 +1,3 @@
 1. optimization on each branch of hetero analysis
-2. cryoAlign in optimization muti rounds of 2D classification
-3. start from the intermidiate tool usage
-4. selecting the micrograph based on the distribution
+2. cryoAlign in 3D optimization muti rounds
+3. selecting the micrograph based on the distribution

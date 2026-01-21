@@ -1064,11 +1064,13 @@ class RELIONTools:
             status = self.get_job_status(job_id)
             
             if status["status"] in ["completed", "failed"]:
+                print()  # Print newline when job completes
                 return status
             
-            print(f"Job {job_id} status: {status['status']}")
+            print(f"\rJob {job_id} status: {status['status']}", end='', flush=True)
             time.sleep(check_interval)
         
+        print()  # Print newline before timeout error
         raise TimeoutError(f"Job {job_id} did not complete within {timeout} seconds")
     
     def monitor_job(
@@ -1643,6 +1645,7 @@ class RELIONTools:
             # Check if process is still running
             if process.poll() is not None:
                 # Process has finished
+                print()  # Print newline before process finish message (in case status was on same line)
                 stdout, stderr = process.communicate()
                 print(f"📊 Process finished with return code: {process.returncode}")
                 
@@ -1664,21 +1667,24 @@ class RELIONTools:
             
             # Only print status if it changed
             if job_status != last_status:
-                print(f"📊 Job status: {job_status} (elapsed: {elapsed}s)")
+                print(f"\r📊 Job status: {job_status} (elapsed: {elapsed}s)", end='', flush=True)
                 last_status = job_status
             
             if job_status == "completed":
+                print()  # Print newline before completion message
                 print("✅ Job completed successfully!")
                 # Terminate the process since job is done
                 process.terminate()
                 return True
             elif job_status == "failed":
+                print()  # Print newline before failure message
                 print("❌ Job failed!")
                 process.terminate()
                 return False
             
             time.sleep(check_interval)
         
+        print()  # Print newline before timeout message
         print(f"⏰ Monitoring timed out after {timeout} seconds")
         process.terminate()
         return False
