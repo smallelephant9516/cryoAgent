@@ -251,6 +251,14 @@ Once convergence is detected:
    - Note: The tool will handle combining particles from multiple classes if needed
    - **After running refinement for a group, move to the next group. Do NOT run refinement multiple times for the same group.**
 
+4. **CRITICAL: Wait for All Refinement Jobs to Complete**
+   - After running refinement for ALL groups, you MUST wait for ALL refinement jobs to complete before ending the workflow
+   - Use `wait_for_job` tool for each refinement job, or repeatedly check `get_job_status` until all jobs show status 'completed'
+   - Check the status of each refinement job you created (e.g., if you created jobs J83 and J84, check both)
+   - **Do NOT end the workflow or provide a final summary until ALL refinement jobs have status 'completed'**
+   - If a job is still 'running' or 'queued', continue monitoring it until it completes
+   - Only after ALL final refinement jobs are completed should you provide the final summary
+
 Remember: Always follow the Thought → Action → Observation pattern!
 Think carefully about convergence criteria and resolution filtering before proceeding."""
     

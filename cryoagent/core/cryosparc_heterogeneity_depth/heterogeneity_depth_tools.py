@@ -113,6 +113,8 @@ class HeterogeneityDepthTools:
             volume_job_uid: str = Field(description="Source of volume (e.g., 'JXXX')")
             particles_group_name: Optional[str] = Field(default="", description="Optional particles group name (e.g., 'particles_class_0')")
             volume_group_name: Optional[str] = Field(default="", description="Optional volume group name (e.g., 'volume_class_0')")
+            refine_defocus_refine: Optional[bool] = Field(default=True, description="Enable defocus refinement during CTF refinement (default: True)")
+            refine_ctf_global_refine: Optional[bool] = Field(default=True, description="Enable global CTF refinement (default: True)")
             project_uid: str = Field(default="", description="Optional project UID")
             workspace_uid: str = Field(default="", description="Optional workspace UID")
         
@@ -121,6 +123,8 @@ class HeterogeneityDepthTools:
             volume_job_uid: str,
             particles_group_name: str = "",
             volume_group_name: str = "",
+            refine_defocus_refine: bool = True,
+            refine_ctf_global_refine: bool = True,
             project_uid: str = "",
             workspace_uid: str = ""
         ) -> str:
@@ -134,6 +138,10 @@ class HeterogeneityDepthTools:
                 params["particles_group_name"] = particles_group_name
             if volume_group_name:
                 params["volume_group_name"] = volume_group_name
+            if refine_defocus_refine is not None:
+                params["refine_defocus_refine"] = refine_defocus_refine
+            if refine_ctf_global_refine is not None:
+                params["refine_ctf_global_refine"] = refine_ctf_global_refine
             if project_uid:
                 params["project_uid"] = project_uid
             if workspace_uid:
@@ -147,7 +155,10 @@ class HeterogeneityDepthTools:
             description="Run homogeneous refinement using particles and volume from a job. "
                        "Required parameters: particles_job_uid, volume_job_uid. "
                        "Optional parameters: particles_group_name (e.g., 'particles_class_0' or 'particles_all_classes'), "
-                       "volume_group_name (e.g., 'volume_class_0'), project_uid, workspace_uid. "
+                       "volume_group_name (e.g., 'volume_class_0'), "
+                       "refine_defocus_refine (enable defocus refinement during CTF refinement, default: True), "
+                       "refine_ctf_global_refine (enable global CTF refinement, default: True), "
+                       "project_uid, workspace_uid. "
                        "Returns: job_uid, status.",
             args_schema=RunHomogeneousRefinementInput
         )

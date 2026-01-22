@@ -288,6 +288,10 @@ class LogResumeParser:
         if parsed.get("stage_name") == "heterogeneity":
             context["completed_work"] = self._analyze_heterogeneity_progress(parsed.get("all_tool_executions", []))
         
+        # For heterogeneity_depth analysis, track completed clusters and branches
+        elif parsed.get("stage_name") == "heterogeneity_depth":
+            context["completed_work"] = self._analyze_heterogeneity_depth_progress(parsed.get("all_tool_executions", []))
+        
         # Create a resume message
         if context["last_tool_execution"]:
             last_tool = context["last_tool_execution"]
@@ -479,4 +483,97 @@ class LogResumeParser:
             summary_parts.append(f"   → Do NOT re-run K={max_completed_k} or lower values.")
         
         return "\n".join(summary_parts) if summary_parts else "No K values completed yet."
+    
+    def _analyze_heterogeneity_depth_progress(self, tool_executions: List[Dict[str, Any]]) -> str:
+        """
+        Analyze heterogeneity depth analysis progress from tool executions.
+        
+        Args:
+            tool_executions: List of tool execution dictionaries
+            
+        Returns:
+            String summary of completed work
+        """
+        hetero_jobs = []  # List of all heterogeneous refinement jobs
+        homo_jobs = []  # List of all homogeneous refinement jobs
+        completed_clusters = set()  # Track which starting clusters have been processed
+        branch_structure = {}  # Track branch structure: parent_job -> [child_jobs]
+        
+        # Track tool executions in order
+        for tool_exec in tool_executions:
+            tool_name = tool_exec.get("tool_name", "")
+            args = tool_exec.get("arguments", {})
+            result = tool_exec.get("result")
+            
+            # Parse result - it might be a string (JSON) or a dict
+            result_dict = result
+            if isinstance(result, str):
+                if result.strip().startswith("{") or result.strip().startswith("'"):
+                    try:
+                        import json
+                        result_str = result.strip().strip("'\"")
+                        result_dict = json.loads(result_str)
+                    except (json.JSONDecodeError, ValueError):
+                        result_dict = None
+                elif result == "No result" or "No result" in result:
+                    result_dict = None
+                else:
+                    result_dict = None
+            
+            # Check if result is successful
+            is_successful = isinstance(result_dict, dict) and result_dict.get("success")
+            
+            # Track heterogeneous_refinement jobs
+            if tool_name == "heterogeneous_refinement" and is_successful:
+                job_uid = result_dict.get("job_uid") or result_dict.get("hetero_job_uid")
+                if job_uid:
+                    hetero_jobs.append({
+                        "job_uid": job_uid,
+                        "parent_job": args.get("particles_job_uid") or args.get("volume_job_uid"),
+                        "k": args.get("num_classes", 4)
+                    })
+            
+            # Track homogeneous_refinement jobs (final refinements)
+            elif tool_name == "run_homogeneous_refinement" and is_successful:
+                job_uid = result_dict.get("job_uid")
+                if job_uid:
+                    parent_job = args.get("particles_job_uid") or args.get("volume_job_uid")
+                    homo_jobs.append({
+                        "job_uid": job_uid,
+                        "parent_job": parent_job
+                    })
+            
+            # Track read_input_json to identify starting clusters
+            elif tool_name == "read_input_json" and is_successful:
+                if isinstance(result_dict, dict):
+                    clusters = result_dict.get("clusters", [])
+                    for cluster in clusters:
+                        refinement_job_uid = cluster.get("refinement_job_uid")
+                        if refinement_job_uid:
+                            completed_clusters.add(refinement_job_uid)
+        
+        # Build summary
+        summary_parts = []
+        
+        if completed_clusters:
+            summary_parts.append(f"✅ Starting clusters processed: {sorted(completed_clusters)}")
+        
+        if hetero_jobs:
+            summary_parts.append(f"\n📊 Heterogeneous refinement jobs: {len(hetero_jobs)}")
+            for i, hetero_job in enumerate(hetero_jobs[-5:], 1):  # Show last 5
+                summary_parts.append(f"   {i}. {hetero_job['job_uid']} (K={hetero_job['k']}, parent: {hetero_job['parent_job']})")
+            if len(hetero_jobs) > 5:
+                summary_parts.append(f"   ... and {len(hetero_jobs) - 5} more")
+        
+        if homo_jobs:
+            summary_parts.append(f"\n✅ Final homogeneous refinement jobs: {len(homo_jobs)}")
+            for i, homo_job in enumerate(homo_jobs[-5:], 1):  # Show last 5
+                summary_parts.append(f"   {i}. {homo_job['job_uid']} (parent: {homo_job['parent_job']})")
+            if len(homo_jobs) > 5:
+                summary_parts.append(f"   ... and {len(homo_jobs) - 5} more")
+        
+        if not summary_parts:
+            summary_parts.append("No heterogeneity depth analysis work completed yet.")
+        
+        return "\n".join(summary_parts)
 

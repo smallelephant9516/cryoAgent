@@ -111,24 +111,36 @@ class HeterogeneityDepthWorkflow:
         
         prompt = f"""Perform heterogeneity depth analysis to iteratively refine until only one cluster remains OR no cluster passes resolution threshold for EACH cluster from the heterogeneity analysis results.
 
+**CRITICAL: You MUST start by reading the input JSON file using the read_input_json tool. DO NOT start any reconstruction or refinement jobs until you have read the JSON file first.**
+
 **Resolution threshold: {resolution_threshold} Å**
 - Classes with resolution BETTER (lower) than {resolution_threshold} Å PASS the threshold
 - Classes with resolution WORSE (higher) than {resolution_threshold} Å FAIL the threshold
 - If NO cluster passes the threshold, terminate the branch with homogeneous refinement
 
 Workflow:
-1. Read input JSON from heterogeneity job (heterogeneity_analysis_results_*.json) - PREFERRED
+1. **FIRST STEP - Read input JSON** (MANDATORY - do this before anything else):
+   - Use the `read_input_json` tool to read from heterogeneity job (heterogeneity_analysis_results_*.json)
+   - This file contains the clusters from the previous heterogeneity analysis stage
    - The tool will return all clusters from final_refinement_jobs
-   - Each cluster contains: refinement_job_uid, particles_job_uid, volume_job_uid, particles_group_name, volume_group_name
+   - Each cluster contains: refinement_job_uid (e.g., J83, J84), particles_job_uid, volume_job_uid, particles_group_names, volume_group_name
+   - **IMPORTANT**: When using refinement jobs (non-uniform or homogeneous), they use standard group names:
+     * particles_group_names: ["particles"] (not particles_class_X)
+     * volume_group_name: "volume" (not volume_class_X)
+   - Class-specific group names (particles_class_X, volume_class_X) only exist in heterogeneous refinement jobs
    - You need to process EACH cluster separately
+   - **DO NOT proceed to step 2 until you have successfully read the JSON file**
 
 2. For EACH cluster from the heterogeneity analysis results:
    a. **Initial Heterogeneous Refinement** (ALWAYS do this first - do NOT skip to homogeneous refinement):
-      - Use particles_job_uid and volume_job_uid from the cluster (from hetero job J10)
+      - Use particles_job_uid and volume_job_uid from the cluster (these are from the refinement job, e.g., J83 or J84)
       - Use particles_group_names and volume_group_name from the cluster
+      - **IMPORTANT**: Refinement jobs use standard group names:
+        * particles_group_names: ["particles"] (standard group, not class-specific)
+        * volume_group_name: "volume" (standard group, not class-specific)
       - Run heterogeneous refinement with K={k} using:
-        * Particles: Use particles_group_names from the cluster (e.g., ["particles_class_0"] or ["particles_class_0", "particles_class_2"])
-        * Volume: Use volume_group_name from the cluster (e.g., "volume_class_0")
+        * Particles: Use particles_group_names from the cluster (will be ["particles"] for refinement jobs)
+        * Volume: Use volume_group_name from the cluster (will be "volume" for refinement jobs)
       - Wait for completion
 
    b. **Extract and Compare Densities**:

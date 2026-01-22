@@ -52,6 +52,8 @@ class ReconstructionTools:
             refine_num_final_iterations: Optional[int] = Field(default=None, description="Number of final refinement iterations")
             refine_res_init: Optional[float] = Field(default=None, description="Initial resolution for refinement in Angstroms")
             refine_symmetry_do_align: Optional[bool] = Field(default=True, description="Enable symmetry alignment")
+            refine_defocus_refine: Optional[bool] = Field(default=True, description="Enable defocus refinement during CTF refinement")
+            refine_ctf_global_refine: Optional[bool] = Field(default=True, description="Enable global CTF refinement")
             project_uid: Optional[str] = Field(default="", description="Optional project UID")
             workspace_uid: Optional[str] = Field(default="", description="Optional workspace UID")
             wait_for_completion: Optional[bool] = Field(default=False, description="Whether to wait for job completion")
@@ -69,6 +71,8 @@ class ReconstructionTools:
             refine_num_final_iterations: Optional[int] = None,
             refine_res_init: Optional[float] = None,
             refine_symmetry_do_align: Optional[bool] = True,
+            refine_defocus_refine: Optional[bool] = True,
+            refine_ctf_global_refine: Optional[bool] = True,
             project_uid: str = "",
             workspace_uid: str = "",
             wait_for_completion: bool = False,
@@ -95,6 +99,10 @@ class ReconstructionTools:
                 params["refine_res_init"] = refine_res_init
             if refine_symmetry_do_align is not None:
                 params["refine_symmetry_do_align"] = str(refine_symmetry_do_align).lower()
+            if refine_defocus_refine is not None:
+                params["refine_defocus_refine"] = str(refine_defocus_refine).lower()
+            if refine_ctf_global_refine is not None:
+                params["refine_ctf_global_refine"] = str(refine_ctf_global_refine).lower()
             if project_uid:
                 params["project_uid"] = project_uid
             if workspace_uid:
@@ -121,6 +129,8 @@ class ReconstructionTools:
                        "refine_num_final_iterations (number of final iterations), "
                        "refine_res_init (initial resolution in Å), "
                        "refine_symmetry_do_align (enable symmetry alignment), "
+                       "refine_defocus_refine (enable defocus refinement during CTF refinement, default: True), "
+                       "refine_ctf_global_refine (enable global CTF refinement, default: True), "
                        "project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
             args_schema=HomogeneousRefinementInput
         )

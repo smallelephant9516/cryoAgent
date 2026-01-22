@@ -419,12 +419,13 @@ class BaseReActAgent(ABC):
     def _check_and_resume_from_log(self, conversation_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Check for existing log file and return resume context if found.
+        Always provides context from log files, even if completed, so agent can recognize existing work.
         
         Args:
             conversation_id: Optional conversation identifier
             
         Returns:
-            Resume context dictionary if log file found and should resume, None otherwise
+            Resume context dictionary if log file found, None otherwise
         """
         try:
             stage_name = getattr(self, 'stage_name', 'unknown')
@@ -444,16 +445,32 @@ class BaseReActAgent(ABC):
             if not log_file:
                 return None
             
-            # Check if we should resume
-            if not log_parser.should_resume(log_file):
-                return None
+            # Always get context from log file, even if completed
+            # This allows the agent to recognize existing work
+            parsed = log_parser.parse_log_file(log_file)
+            is_completed = parsed.get("completed", False)
             
             # Get resume context
             resume_context = log_parser.get_resume_context(log_file)
             
+            # Mark if this is a completed log
+            resume_context["is_completed"] = is_completed
+            
+            # If completed, update the resume message to indicate it's for reference
+            if is_completed:
+                resume_context["resume_message"] = (
+                    f"Found completed log file from previous execution. "
+                    f"This shows what work was already done. "
+                    f"Total tools executed: {resume_context.get('num_tools_executed', 0)}. "
+                    f"Review the completed work summary below and continue with any remaining work."
+                )
+            
             if self.config.agent.verbose:
                 print(f"📋 Found existing log file: {log_file}")
-                print(f"🔄 {resume_context.get('resume_message', 'Resuming from previous execution')}")
+                if is_completed:
+                    print(f"✅ Previous execution completed. Providing context for reference.")
+                else:
+                    print(f"🔄 {resume_context.get('resume_message', 'Resuming from previous execution')}")
             
             return resume_context
             
@@ -477,8 +494,10 @@ class BaseReActAgent(ABC):
             # Check for existing log file and resume context
             resume_context = self._check_and_resume_from_log(conversation_id)
             
-            # If resuming, use the existing log file and add resume message
+            # If resuming or found existing log, use the existing log file and add resume message
             if resume_context:
+                is_completed = resume_context.get("is_completed", False)
+                
                 # Use the existing conversation ID from the log
                 if resume_context.get("conversation_id"):
                     conversation_id = resume_context["conversation_id"]
@@ -496,8 +515,9 @@ class BaseReActAgent(ABC):
                 resume_message = resume_context.get("resume_message", "")
                 last_tool = resume_context.get("last_tool_execution")
                 completed_work = resume_context.get("completed_work")
+                all_tool_executions = resume_context.get("all_tool_executions", [])
                 
-                if last_tool:
+                if last_tool or all_tool_executions:
                     # Add context about what was already done
                     workflow_input_parts = [workflow_input, "", resume_message]
                     
@@ -507,26 +527,52 @@ class BaseReActAgent(ABC):
                         workflow_input_parts.append("=== COMPLETED WORK SUMMARY ===")
                         workflow_input_parts.append(completed_work)
                     
-                    workflow_input_parts.append("")
-                    workflow_input_parts.append("Previous execution context:")
-                    workflow_input_parts.append(f"- Last tool executed: {last_tool['tool_name']}")
-                    workflow_input_parts.append(f"- Last tool arguments: {json.dumps(last_tool['arguments'], indent=2)}")
+                    # Add summary of all tool executions
+                    if all_tool_executions:
+                        workflow_input_parts.append("")
+                        workflow_input_parts.append("=== ALL PREVIOUS TOOL EXECUTIONS ===")
+                        workflow_input_parts.append(f"Total tools executed: {len(all_tool_executions)}")
+                        for i, tool_exec in enumerate(all_tool_executions[-10:], 1):  # Show last 10 tools
+                            tool_name = tool_exec.get("tool_name", "unknown")
+                            tool_result = tool_exec.get("result")
+                            if isinstance(tool_result, dict) and tool_result.get("success"):
+                                result_summary = f"✅ {tool_name}"
+                                if tool_result.get("job_uid"):
+                                    result_summary += f" → {tool_result.get('job_uid')}"
+                                workflow_input_parts.append(f"  {i}. {result_summary}")
+                            elif isinstance(tool_result, dict) and not tool_result.get("success"):
+                                workflow_input_parts.append(f"  {i}. ❌ {tool_name} (failed)")
+                            else:
+                                workflow_input_parts.append(f"  {i}. {tool_name}")
+                        if len(all_tool_executions) > 10:
+                            workflow_input_parts.append(f"  ... and {len(all_tool_executions) - 10} more tools")
                     
-                    # Show last tool result (truncated if too long)
-                    last_result = last_tool.get('result')
-                    if isinstance(last_result, dict):
-                        result_str = json.dumps(last_result, indent=2)
-                    else:
-                        result_str = str(last_result)[:500] if last_result else "No result"
-                    workflow_input_parts.append(f"- Last tool result: {result_str}")
+                    if last_tool:
+                        workflow_input_parts.append("")
+                        workflow_input_parts.append("Previous execution context:")
+                        workflow_input_parts.append(f"- Last tool executed: {last_tool['tool_name']}")
+                        workflow_input_parts.append(f"- Last tool arguments: {json.dumps(last_tool['arguments'], indent=2)}")
+                        
+                        # Show last tool result (truncated if too long)
+                        last_result = last_tool.get('result')
+                        if isinstance(last_result, dict):
+                            result_str = json.dumps(last_result, indent=2)
+                        else:
+                            result_str = str(last_result)[:500] if last_result else "No result"
+                        workflow_input_parts.append(f"- Last tool result: {result_str}")
                     
                     workflow_input_parts.append("")
-                    workflow_input_parts.append("Please continue from where the previous execution left off.")
-                    if completed_work:
+                    if is_completed:
+                        workflow_input_parts.append("NOTE: The previous execution completed successfully.")
+                        workflow_input_parts.append("Review the completed work above. If you need to continue or redo any work, proceed accordingly.")
                         workflow_input_parts.append("IMPORTANT: Do NOT re-run work that is already completed (as shown in the summary above).")
-                        workflow_input_parts.append("Continue with the next steps that have NOT been completed yet.")
                     else:
-                        workflow_input_parts.append("Review the last tool execution and proceed with the next steps in the workflow.")
+                        workflow_input_parts.append("Please continue from where the previous execution left off.")
+                        if completed_work:
+                            workflow_input_parts.append("IMPORTANT: Do NOT re-run work that is already completed (as shown in the summary above).")
+                            workflow_input_parts.append("Continue with the next steps that have NOT been completed yet.")
+                        else:
+                            workflow_input_parts.append("Review the last tool execution and proceed with the next steps in the workflow.")
                     
                     workflow_input = "\n".join(workflow_input_parts)
                 else:
@@ -537,7 +583,10 @@ class BaseReActAgent(ABC):
 Please continue with the workflow execution."""
                 
                 if self.config.agent.verbose:
-                    print(f"🔄 Resuming from log file: {log_file}")
+                    if is_completed:
+                        print(f"📋 Found completed log file: {log_file}")
+                    else:
+                        print(f"🔄 Resuming from log file: {log_file}")
             else:
                 # Start fresh conversation logging if enabled
                 if self.enable_conversation_logging:
@@ -547,9 +596,11 @@ Please continue with the workflow execution."""
             if not resume_context:
                 self.clear_tool_execution_log()
             else:
-                # If resuming, restore tool execution log from previous run
+                # If resuming (not completed), restore tool execution log from previous run
                 # This helps maintain context about what was already done
-                if resume_context.get("all_tool_executions"):
+                # For completed logs, we don't restore the log (context is provided in workflow_input)
+                is_completed = resume_context.get("is_completed", False)
+                if not is_completed and resume_context.get("all_tool_executions"):
                     # Restore previous tool executions to the log
                     for tool_exec in resume_context["all_tool_executions"]:
                         self._record_tool_execution(
@@ -559,6 +610,9 @@ Please continue with the workflow execution."""
                         )
                     if self.config.agent.verbose:
                         print(f"📋 Restored {len(resume_context['all_tool_executions'])} previous tool executions")
+                elif is_completed:
+                    if self.config.agent.verbose:
+                        print(f"📋 Found completed log with {len(resume_context.get('all_tool_executions', []))} tool executions. Context provided in workflow input.")
 
             # Check if memory should be cleared
             if self._should_clear_memory(conversation_id):

@@ -1,5 +1,6 @@
 """CryoSPARC tools for cryoEM image processing."""
 
+import os
 import time
 from pathlib import Path
 from typing import Dict, Any, Optional, List
@@ -2607,6 +2608,8 @@ class CryoSPARCTools:
         refine_num_final_iterations: Optional[int] = None,
         refine_res_init: Optional[float] = None,
         refine_symmetry_do_align: bool = True,
+        refine_defocus_refine: bool = True,
+        refine_ctf_global_refine: bool = True,
         # Job control parameters
         lane: Optional[str] = None,
         hostname: Optional[str] = None,
@@ -2638,6 +2641,8 @@ class CryoSPARCTools:
             refine_num_final_iterations: Number of final refinement iterations (optional)
             refine_res_init: Initial resolution for refinement in Angstroms (optional)
             refine_symmetry_do_align: Enable symmetry alignment (default: True)
+            refine_defocus_refine: Enable defocus refinement during CTF refinement (default: True)
+            refine_ctf_global_refine: Enable global CTF refinement (default: True)
             # Job control parameters
             lane: Compute lane to use
             hostname: Specific hostname to run on
@@ -2777,11 +2782,11 @@ class CryoSPARCTools:
                 "refine_symmetry_do_align": refine_symmetry_do_align
             }
             
-            # Add CTF refinement parameters if provided
-            refine_defocus_refine = kwargs.get("refine_defocus_refine", True)
-            refine_ctf_global_refine = kwargs.get("refine_ctf_global_refine", True)
-            job_params["refine_defocus_refine"] = refine_defocus_refine
-            job_params["refine_ctf_global_refine"] = refine_ctf_global_refine
+            # Add CTF refinement parameters (use explicit parameters, fallback to kwargs)
+            refine_defocus_refine_value = kwargs.get("refine_defocus_refine", refine_defocus_refine)
+            refine_ctf_global_refine_value = kwargs.get("refine_ctf_global_refine", refine_ctf_global_refine)
+            job_params["refine_defocus_refine"] = refine_defocus_refine_value
+            job_params["refine_ctf_global_refine"] = refine_ctf_global_refine_value
             
             # Add refinement resolution if specified
             if refinement_resolution is not None:
@@ -2878,6 +2883,8 @@ class CryoSPARCTools:
         refine_num_final_iterations: Optional[int] = None,
         refine_res_init: Optional[float] = None,
         refine_symmetry_do_align: bool = True,
+        refine_defocus_refine: bool = True,
+        refine_ctf_global_refine: bool = True,
         # Job control parameters
         lane: Optional[str] = None,
         hostname: Optional[str] = None,
@@ -2907,6 +2914,8 @@ class CryoSPARCTools:
             refine_num_final_iterations: Number of final refinement iterations (optional)
             refine_res_init: Initial resolution for refinement in Angstroms (optional)
             refine_symmetry_do_align: Enable symmetry alignment (default: True)
+            refine_defocus_refine: Enable defocus refinement during CTF refinement (default: True)
+            refine_ctf_global_refine: Enable global CTF refinement (default: True)
             # Job control parameters
             lane: Compute lane to use
             hostname: Specific hostname to run on
@@ -3046,11 +3055,11 @@ class CryoSPARCTools:
                 "refine_symmetry_do_align": refine_symmetry_do_align
             }
             
-            # Add CTF refinement parameters if provided
-            refine_defocus_refine = kwargs.get("refine_defocus_refine", True)
-            refine_ctf_global_refine = kwargs.get("refine_ctf_global_refine", True)
-            job_params["refine_defocus_refine"] = refine_defocus_refine
-            job_params["refine_ctf_global_refine"] = refine_ctf_global_refine
+            # Add CTF refinement parameters (use explicit parameters, fallback to kwargs)
+            refine_defocus_refine_value = kwargs.get("refine_defocus_refine", refine_defocus_refine)
+            refine_ctf_global_refine_value = kwargs.get("refine_ctf_global_refine", refine_ctf_global_refine)
+            job_params["refine_defocus_refine"] = refine_defocus_refine_value
+            job_params["refine_ctf_global_refine"] = refine_ctf_global_refine_value
             
             # Add refinement resolution if specified
             if refinement_resolution is not None:
@@ -3825,37 +3834,52 @@ class CryoSPARCTools:
         Args:
             job_uid: UID of the job to read logs for
             project_uid: Optional project UID containing the job
-            workspace_uid: Optional workspace UID containing the job
+            workspace_uid: Optional workspace UID containing the job (not used, kept for compatibility)
             
         Returns:
             Dictionary containing log content and analysis
         """
         try:
-            # Try to construct log file path using common CryoSPARC project structure
-            # This is a more direct approach that doesn't rely on get_job_info
-            log_file_paths = []
-            
-            # Try different possible log file locations
-            if project_uid and workspace_uid:
-                # Try the full path structure
-                log_file_paths.append(f"/home/daoyi/cryosparc/cryosparc_projects/{project_uid}/{workspace_uid}/{job_uid}/job.log")
-            
-            # Try the example path structure from the user
-            log_file_paths.append(f"/home/daoyi/cryosparc/cryosparc_projects/CS-test/{job_uid}/job.log")
-            
-            # Try to find the log file in any of the possible locations
+            # First, try to get the job directory using the CryoSPARC API
             log_file_path = None
-            for path in log_file_paths:
-                try:
-                    with open(path, 'r', encoding='utf-8', errors='ignore') as f:
-                        # Just try to read a small part to test if file exists
-                        f.read(100)
-                    log_file_path = path
-                    break
-                except (FileNotFoundError, PermissionError):
-                    continue
             
+            if project_uid:
+                try:
+                    # Use the API to get the actual job directory
+                    job = self.cs.find_job(project_uid, job_uid)
+                    job.refresh()
+                    job_dir = str(job.dir())
+                    log_file_path = os.path.join(job_dir, "job.log")
+                    
+                    # Verify the file exists
+                    if not os.path.exists(log_file_path):
+                        log_file_path = None
+                except Exception as e:
+                    # If API call fails, fall back to hardcoded paths
+                    pass
+            
+            # Fallback: Try hardcoded paths if API method didn't work
             if not log_file_path:
+                log_file_paths = []
+                
+                # Try different possible log file locations
+                if project_uid and workspace_uid:
+                    # Try the full path structure
+                    log_file_paths.append(f"/home/daoyi/cryosparc/cryosparc_projects/{project_uid}/{workspace_uid}/{job_uid}/job.log")
+                
+                # Try the example path structure from the user
+                log_file_paths.append(f"/home/daoyi/cryosparc/cryosparc_projects/CS-test/{job_uid}/job.log")
+                
+                # Try to find the log file in any of the possible locations
+                for path in log_file_paths:
+                    try:
+                        if os.path.exists(path):
+                            log_file_path = path
+                            break
+                    except Exception:
+                        continue
+            
+            if not log_file_path or not os.path.exists(log_file_path):
                 return {
                     "success": False,
                     "error": "Log file not found",

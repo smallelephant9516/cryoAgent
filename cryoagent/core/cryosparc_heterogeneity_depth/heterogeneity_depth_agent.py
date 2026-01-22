@@ -157,14 +157,21 @@ You specialize in performing deep heterogeneity analysis by:
 
 ## Heterogeneity Depth Analysis Workflow:
 
-**Step 1: Read Input JSON**
-1. Use `read_input_json` tool to read JSON file from either:
+**Step 1: Read Input JSON (MANDATORY FIRST STEP)**
+1. **CRITICAL: You MUST start by reading the input JSON file. DO NOT run any reconstruction or refinement jobs until you have read the JSON file first.**
+2. Use `read_input_json` tool to read JSON file from either:
    - Heterogeneity job: heterogeneity_analysis_results_*.json (preferred if available)
    - Refinement job: reconstruction_results_*.json (fallback if heterogeneity not available)
-2. If reading from heterogeneity analysis results:
+3. If reading from heterogeneity analysis results:
    - The tool will return all clusters from `final_refinement_jobs`
-   - Each cluster has: refinement_job_uid, particles_job_uid, volume_job_uid, particles_group_name, volume_group_name
+   - Each cluster has: refinement_job_uid (e.g., J83, J84), particles_job_uid, volume_job_uid, particles_group_names, volume_group_name
+   - particles_job_uid and volume_job_uid are from the refinement job (not the hetero job)
+   - **IMPORTANT**: Refinement jobs (non-uniform or homogeneous) use standard group names:
+     * particles_group_names: ["particles"] (standard group, NOT particles_class_X)
+     * volume_group_name: "volume" (standard group, NOT volume_class_X)
+   - Class-specific group names (particles_class_X, volume_class_X) only exist in heterogeneous refinement jobs
    - You will process EACH cluster separately
+   - **DO NOT proceed to Step 2 until you have successfully read the JSON file**
 
 **Step 2: Process Each Cluster**
 For EACH cluster from the heterogeneity analysis results:
@@ -359,26 +366,35 @@ DO NOT stop after a heterogeneous refinement job completes - always continue wit
                     
                     # Extract all clusters from final_refinement_jobs
                     final_refinement_jobs = hetero_data.get("final_refinement_jobs", [])
+                    if not final_refinement_jobs:
+                        # Try filtered_groups as fallback
+                        final_refinement_jobs = hetero_data.get("filtered_groups", [])
+                        self.logger.info(f"📊 Using filtered_groups as fallback, found {len(final_refinement_jobs)} groups")
+                    
                     if final_refinement_jobs:
                         # Return all clusters for depth analysis
-                        # Use hetero_job_uid (J10) as the job source, with group names from JSON (particles_class_X, volume_class_X)
-                        # The hetero job is where the class-specific groups actually exist
+                        # Use refinement_job_uid (J83/J84) as the job source for both particles and volume
+                        # The refinement job contains the final refined particles and volumes
+                        # IMPORTANT: Refinement jobs (non-uniform or homogeneous) use standard group names:
+                        # - particles (not particles_class_X)
+                        # - volume (not volume_class_X)
                         clusters = []
                         for cluster in final_refinement_jobs:
-                            hetero_job_uid = cluster.get("hetero_job_uid")  # J10 - heterogeneous refinement job
-                            particles_group_names = cluster.get("particles_group_names", [])  # e.g., ["particles_class_0"]
-                            volume_group_name = cluster.get("volume_group_name", "volume")  # e.g., "volume_class_0"
+                            refinement_job_uid = cluster.get("refinement_job_uid")  # J83/J84 - final refinement job
+                            hetero_job_uid = cluster.get("hetero_job_uid")  # J82 - heterogeneous refinement job (for reference)
                             
+                            # For refinement jobs, use standard group names (not class-specific)
+                            # Class-specific names (particles_class_X, volume_class_X) only exist in hetero jobs
                             clusters.append({
                                 "group_id": cluster.get("group_id"),
-                                "refinement_job_uid": cluster.get("refinement_job_uid"),  # J14 - final refinement job (for reference)
-                                "particles_job_uid": hetero_job_uid,  # Particles from hetero job (J10) - has particles_class_X groups
-                                "volume_job_uid": hetero_job_uid,  # Volume from hetero job (J10) - has volume_class_X groups
-                                "particles_group_names": particles_group_names,  # e.g., ["particles_class_0"] or ["particles_class_0", "particles_class_2"]
-                                "particles_group_name": particles_group_names[0] if particles_group_names else "particles",  # Legacy single name
-                                "volume_group_name": volume_group_name,  # e.g., "volume_class_0"
-                                "hetero_job_uid": hetero_job_uid,  # J10 - the source job
-                                "class_ids": cluster.get("class_ids", [])  # e.g., [0] or [0, 2]
+                                "refinement_job_uid": refinement_job_uid,  # J83/J84 - final refinement job
+                                "particles_job_uid": refinement_job_uid,  # Particles from refinement job (J83/J84)
+                                "volume_job_uid": refinement_job_uid,  # Volume from refinement job (J83/J84)
+                                "particles_group_names": ["particles"],  # Refinement jobs use standard "particles" group
+                                "particles_group_name": "particles",  # Standard group name for refinement jobs
+                                "volume_group_name": "volume",  # Standard group name for refinement jobs
+                                "hetero_job_uid": hetero_job_uid,  # J82 - the source hetero job (for reference)
+                                "class_ids": cluster.get("class_ids", [])  # e.g., [0] or [0, 2] - kept for reference
                             })
                         
                         result = {
@@ -390,9 +406,17 @@ DO NOT stop after a heterogeneous refinement job completes - always continue wit
                             "workspace_uid": hetero_data.get("workspace_uid")
                         }
                         self.logger.info(f"📊 Found {len(clusters)} clusters for depth analysis")
+                        self.logger.info(f"📊 Clusters will use refinement jobs: {[c.get('refinement_job_uid') for c in clusters]}")
                         return json.dumps(result)
+                    else:
+                        self.logger.warning(f"⚠️ Heterogeneity analysis results file found but no final_refinement_jobs or filtered_groups found in {latest_hetero}")
+                        return json.dumps({
+                            "success": False,
+                            "error": f"Heterogeneity analysis results file found but no clusters available in {latest_hetero}"
+                        })
             
             # If no heterogeneity results, try reconstruction results
+            self.logger.warning("⚠️ No heterogeneity_analysis_results_*.json files found, falling back to reconstruction results")
             recon_files = list(outputs_path.glob("reconstruction_results_*.json"))
             if recon_files:
                 latest_recon = max(recon_files, key=lambda f: f.stat().st_mtime)
@@ -762,6 +786,8 @@ DO NOT stop after a heterogeneous refinement job completes - always continue wit
             volume_job_uid = params.get("volume_job_uid")
             particles_group_name = params.get("particles_group_name", "")
             volume_group_name = params.get("volume_group_name", "")
+            refine_defocus_refine = params.get("refine_defocus_refine", True)
+            refine_ctf_global_refine = params.get("refine_ctf_global_refine", True)
             
             if not particles_job_uid or not volume_job_uid:
                 missing = []
@@ -798,8 +824,8 @@ DO NOT stop after a heterogeneous refinement job completes - always continue wit
                 "particles_job_uid": particles_job_uid,
                 "volume_job_uid": volume_job_uid,
                 "symmetry": symmetry,
-                "refine_defocus_refine": True,
-                "refine_ctf_global_refine": True,
+                "refine_defocus_refine": refine_defocus_refine,
+                "refine_ctf_global_refine": refine_ctf_global_refine,
                 "wait_for_completion": False,
                 "timeout": self.config.job_management.default_timeout,
                 "check_interval": self.config.job_management.status_check_interval
