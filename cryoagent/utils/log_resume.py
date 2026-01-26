@@ -292,6 +292,10 @@ class LogResumeParser:
         elif parsed.get("stage_name") == "heterogeneity_depth":
             context["completed_work"] = self._analyze_heterogeneity_depth_progress(parsed.get("all_tool_executions", []))
         
+        # For optimization stage, track completed multi-round 3D classification, heterogeneous refinement, and box size optimization
+        elif parsed.get("stage_name") == "optimization":
+            context["completed_work"] = self._analyze_optimization_progress(parsed.get("all_tool_executions", []))
+        
         # Create a resume message
         if context["last_tool_execution"]:
             last_tool = context["last_tool_execution"]
@@ -574,6 +578,150 @@ class LogResumeParser:
         
         if not summary_parts:
             summary_parts.append("No heterogeneity depth analysis work completed yet.")
+        
+        return "\n".join(summary_parts)
+    
+    def _analyze_optimization_progress(self, tool_executions: List[Dict[str, Any]]) -> str:
+        """
+        Analyze optimization progress from tool executions.
+        
+        Detects completed:
+        - Multi-round 3D classification (test_multi_round_3d_classification)
+        - Heterogeneous refinement optimization (test_heterogeneous_refinement)
+        - Box size optimization tests (test_box_size)
+        
+        Args:
+            tool_executions: List of tool execution dictionaries
+            
+        Returns:
+            String summary of completed optimization work
+        """
+        multi_round_completed = False
+        multi_round_result = None
+        hetero_optimization_completed = False
+        hetero_optimization_result = None
+        box_size_tests = []  # List of completed box size tests
+        
+        # Process tool executions in order to find completed tasks
+        for tool_exec in tool_executions:
+            tool_name = tool_exec.get("tool_name", "")
+            args = tool_exec.get("arguments", {})
+            result = tool_exec.get("result")
+            
+            # Parse result - it might be a string (JSON) or a dict
+            result_dict = result
+            if isinstance(result, str):
+                if result.strip().startswith("{") or result.strip().startswith("'"):
+                    try:
+                        import json
+                        result_str = result.strip().strip("'\"")
+                        result_dict = json.loads(result_str)
+                    except (json.JSONDecodeError, ValueError):
+                        result_dict = None
+                elif result == "No result" or "No result" in result:
+                    result_dict = None
+                else:
+                    result_dict = None
+            
+            # Check if result is successful
+            is_successful = isinstance(result_dict, dict) and result_dict.get("success")
+            
+            # Track multi-round 3D classification
+            if tool_name == "test_multi_round_3d_classification" and is_successful:
+                multi_round_completed = True
+                multi_round_result = {
+                    "best_refinement_job_uid": result_dict.get("best_refinement_job_uid"),
+                    "best_resolution_angstroms": result_dict.get("best_resolution_angstroms"),
+                    "initial_resolution_angstroms": result_dict.get("initial_resolution_angstroms"),
+                    "rounds_completed": result_dict.get("rounds_completed"),
+                    "total_improvement": result_dict.get("total_improvement")
+                }
+            
+            # Track heterogeneous refinement optimization
+            elif tool_name == "test_heterogeneous_refinement" and is_successful:
+                hetero_optimization_completed = True
+                hetero_optimization_result = {
+                    "best_k": result_dict.get("best_k"),
+                    "best_refinement_job_uid": result_dict.get("best_refinement_job_uid"),
+                    "best_resolution_angstroms": result_dict.get("best_resolution_angstroms"),
+                    "tested_k_values": result_dict.get("tested_k_values", [])
+                }
+            
+            # Track box size optimization tests
+            elif tool_name == "test_box_size" and is_successful:
+                refinement_job_uid = result_dict.get("refinement_job_uid")
+                box_size_pix = result_dict.get("box_size_pix")
+                resolution_angstroms = result_dict.get("resolution_angstroms")
+                
+                # Only add if we haven't seen this refinement_job_uid before (deduplicate)
+                # Each successful test_box_size creates a unique refinement_job_uid
+                if refinement_job_uid:
+                    # Check if we already have this refinement_job_uid
+                    existing = next((t for t in box_size_tests if t.get("refinement_job_uid") == refinement_job_uid), None)
+                    if not existing:
+                        box_size_tests.append({
+                            "box_size_pix": box_size_pix,
+                            "resolution_angstroms": resolution_angstroms,
+                            "refinement_job_uid": refinement_job_uid
+                        })
+        
+        # Build summary message
+        summary_parts = []
+        
+        if multi_round_completed:
+            summary_parts.append("✅ Multi-round 3D classification: COMPLETED")
+            if multi_round_result:
+                summary_parts.append(f"   - Best refinement job: {multi_round_result.get('best_refinement_job_uid', 'N/A')}")
+                if multi_round_result.get('best_resolution_angstroms'):
+                    summary_parts.append(f"   - Best resolution: {multi_round_result['best_resolution_angstroms']:.3f} Å")
+                if multi_round_result.get('initial_resolution_angstroms'):
+                    summary_parts.append(f"   - Initial resolution: {multi_round_result['initial_resolution_angstroms']:.3f} Å")
+                if multi_round_result.get('rounds_completed'):
+                    summary_parts.append(f"   - Rounds completed: {multi_round_result['rounds_completed']}")
+                if multi_round_result.get('total_improvement'):
+                    summary_parts.append(f"   - Total improvement: {multi_round_result['total_improvement']:.3f} Å")
+            summary_parts.append("   → DO NOT re-run multi-round 3D classification. Use the best refinement job for next step.")
+        
+        if hetero_optimization_completed:
+            summary_parts.append("\n✅ Heterogeneous refinement optimization: COMPLETED")
+            if hetero_optimization_result:
+                if hetero_optimization_result.get('best_k'):
+                    summary_parts.append(f"   - Best K value: {hetero_optimization_result['best_k']}")
+                if hetero_optimization_result.get('best_refinement_job_uid'):
+                    summary_parts.append(f"   - Best refinement job: {hetero_optimization_result['best_refinement_job_uid']}")
+                if hetero_optimization_result.get('best_resolution_angstroms'):
+                    summary_parts.append(f"   - Best resolution: {hetero_optimization_result['best_resolution_angstroms']:.3f} Å")
+                if hetero_optimization_result.get('tested_k_values'):
+                    tested_k = hetero_optimization_result['tested_k_values']
+                    summary_parts.append(f"   - Tested K values: {tested_k}")
+            summary_parts.append("   → DO NOT re-run heterogeneous refinement optimization. Use the best refinement job for next step.")
+        
+        if box_size_tests:
+            summary_parts.append(f"\n📊 Box size optimization: {len(box_size_tests)} unique test(s) completed")
+            # Sort by resolution (lower is better)
+            sorted_tests = sorted(box_size_tests, key=lambda x: x.get("resolution_angstroms", float('inf')))
+            best_test = sorted_tests[0] if sorted_tests else None
+            if best_test:
+                summary_parts.append(f"   - Best box size: {best_test.get('box_size_pix', 'N/A')} px")
+                if best_test.get('resolution_angstroms'):
+                    summary_parts.append(f"   - Best resolution: {best_test['resolution_angstroms']:.3f} Å")
+                if best_test.get('refinement_job_uid'):
+                    summary_parts.append(f"   - Best refinement job: {best_test['refinement_job_uid']}")
+            summary_parts.append(f"   - All tested box sizes: {[t.get('box_size_pix') for t in sorted_tests]}")
+            summary_parts.append("   → Continue with box size optimization from where it stopped.")
+        
+        # Determine what to do next
+        if not summary_parts:
+            summary_parts.append("No optimization work completed yet.")
+        else:
+            summary_parts.append("\n📋 Next Steps:")
+            if not multi_round_completed:
+                summary_parts.append("   1. Run multi-round 3D classification FIRST")
+            elif not hetero_optimization_completed:
+                # Check if heterogeneous refinement is enabled by looking at workflow input
+                summary_parts.append("   2. Run heterogeneous refinement optimization (if enabled)")
+            else:
+                summary_parts.append("   3. Continue with box size optimization (if enabled)")
         
         return "\n".join(summary_parts)
 

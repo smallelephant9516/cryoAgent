@@ -6,11 +6,11 @@
     "version": "1.0.0"
   },
   "microscope_parameters": {
-    "pixel_size": 1.63,
+    "pixel_size": 2.26,
     "voltage": 120,
     "cs_mm": 2.0,
     "dose": 11.5,
-    "particle_diameter": 250,
+    "particle_diameter": 400,
     "symmetry": "D7",
     "movies_path": null,
     "micrographs_path": "/lustre2/EMDB/10018/non_pw/*.mrc",

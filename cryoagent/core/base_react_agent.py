@@ -601,15 +601,21 @@ Please continue with the workflow execution."""
                 # For completed logs, we don't restore the log (context is provided in workflow_input)
                 is_completed = resume_context.get("is_completed", False)
                 if not is_completed and resume_context.get("all_tool_executions"):
-                    # Restore previous tool executions to the log
+                    # Restore previous tool executions to memory only (don't log to file again)
+                    # Directly append to tool_execution_log to avoid duplicate log entries
                     for tool_exec in resume_context["all_tool_executions"]:
-                        self._record_tool_execution(
-                            tool_exec["tool_name"],
-                            tool_exec["arguments"],
-                            result=tool_exec["result"]
-                        )
+                        entry: Dict[str, Any] = {
+                            "tool": tool_exec.get("tool_name", "unknown"),  # Map tool_name to tool
+                            "timestamp": tool_exec.get("timestamp", time.time()),
+                            "params": tool_exec.get("arguments", {})  # Map arguments to params
+                        }
+                        if "result" in tool_exec:
+                            entry["result"] = tool_exec["result"]
+                        if "error" in tool_exec:
+                            entry["error"] = tool_exec["error"]
+                        self.tool_execution_log.append(entry)
                     if self.config.agent.verbose:
-                        print(f"📋 Restored {len(resume_context['all_tool_executions'])} previous tool executions")
+                        print(f"📋 Restored {len(resume_context['all_tool_executions'])} previous tool executions (in memory only, not logged to file)")
                 elif is_completed:
                     if self.config.agent.verbose:
                         print(f"📋 Found completed log with {len(resume_context.get('all_tool_executions', []))} tool executions. Context provided in workflow input.")
