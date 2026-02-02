@@ -412,6 +412,20 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             refine_res_init = params.get("refine_res_init", None)
             refine_symmetry_do_align = params.get("refine_symmetry_do_align", "true").lower() == "true"
             
+            # CTF refinement parameters - extract from params if provided, otherwise default to False
+            # (to match the agent's intent when it says CTF refinement is disabled)
+            refine_defocus_refine = params.get("refine_defocus_refine")
+            if refine_defocus_refine is not None:
+                refine_defocus_refine = str(refine_defocus_refine).lower() == "true"
+            else:
+                refine_defocus_refine = False  # Default to False when not specified
+            
+            refine_ctf_global_refine = params.get("refine_ctf_global_refine")
+            if refine_ctf_global_refine is not None:
+                refine_ctf_global_refine = str(refine_ctf_global_refine).lower() == "true"
+            else:
+                refine_ctf_global_refine = False  # Default to False when not specified
+            
             # Job control parameters
             wait_for_completion = params.get("wait_for_completion", "false").lower() == "true"
             timeout = int(params.get("timeout", self.config.job_management.default_timeout))
@@ -432,6 +446,8 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 refine_num_final_iterations=refine_num_final_iterations,
                 refine_res_init=refine_res_init,
                 refine_symmetry_do_align=refine_symmetry_do_align,
+                refine_defocus_refine=refine_defocus_refine,
+                refine_ctf_global_refine=refine_ctf_global_refine,
                 wait_for_completion=wait_for_completion,
                 timeout=timeout,
                 check_interval=check_interval

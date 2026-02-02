@@ -39,11 +39,11 @@
     "dose": 20,
     "particle_diameter": 300,
     "symmetry": "C1",
-    "movies_path": "/home/daoyi/cryoEM_dataset/10025_subset/empiar_10025_subset/*.tif",
+    "movies_path": "/home/daoyi/scratch/cryoEM_dataset/10028/10028/data/Micrographs/Movies/*.mrcs",
     "micrographs_path": null,
-    "gain_ref_path": "/home/daoyi/cryoEM_dataset/10025_subset/empiar_10025_subset/norm-amibox05-0.mrc",
+    "gain_ref_path": null,
     "gain_rot": 0,
-    "gain_flip": 1
+    "gain_flip": 0
   },
 
 

@@ -905,10 +905,44 @@ class ReconstructionAgent(StageAgent):
                     )
                 
                 # Save results to JSON (CryoSPARC format)
-                output_file = self._save_reconstruction_results(stage_outputs, context, success=True, backend_type="CryoSPARC")
-                
-                # Add output file path to stage_outputs for reference
-                stage_outputs["output_file"] = output_file
+                # Wrap in try-except to ensure we always save the JSON file, even if there are issues
+                try:
+                    output_file = self._save_reconstruction_results(stage_outputs, context, success=True, backend_type="CryoSPARC")
+                    # Add output file path to stage_outputs for reference
+                    stage_outputs["output_file"] = output_file
+                    self.logger.info(f"Successfully saved reconstruction results to {output_file}")
+                except Exception as save_error:
+                    self.logger.error(f"Failed to save reconstruction results JSON file: {save_error}")
+                    import traceback
+                    self.logger.error(f"Save error traceback: {traceback.format_exc()}")
+                    # Try to save a minimal version
+                    try:
+                        import datetime
+                        from pathlib import Path
+                        output_dir = Path("outputs")
+                        output_dir.mkdir(exist_ok=True)
+                        timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+                        minimal_results = {
+                            "stage": "3d_reconstruction",
+                            "status": "completed",
+                            "timestamp": timestamp,
+                            "agent_type": "cryosparc",
+                            "project_uid": context.project_uid,
+                            "workspace_uid": context.workspace_uid,
+                            "job_uids": {
+                                "ab_initio": stage_outputs.get("ab_initio_job_uid"),
+                                "homogeneous_refinement": stage_outputs.get("homogeneous_refinement_job_uid"),
+                                "final_volume": stage_outputs.get("final_volume_job_uid")
+                            },
+                            "error": f"Full save failed: {str(save_error)}"
+                        }
+                        output_file = output_dir / f"reconstruction_results_cryosparc_{timestamp}.json"
+                        with open(output_file, 'w') as f:
+                            json.dump(minimal_results, f, indent=2)
+                        stage_outputs["output_file"] = str(output_file)
+                        self.logger.info(f"Saved minimal reconstruction results to {output_file}")
+                    except Exception as minimal_save_error:
+                        self.logger.error(f"Failed to save even minimal reconstruction results: {minimal_save_error}")
                 
                 return StageResult(
                     stage=WorkflowStage.RECONSTRUCTION,
@@ -1198,20 +1232,35 @@ class ReconstructionAgent(StageAgent):
         # Get volume location from the final volume job
         if stage_outputs["final_volume_job_uid"]:
             try:
-                job = self.cryosparc_tools.find_job(self.config.workflow.project_uid, stage_outputs["final_volume_job_uid"])
-                if job:
-                    job.refresh()
-                    doc = getattr(job, "doc", {})
-                    output_group = doc.get("output_result_groups", [{}])[0]
-                    volume_location = output_group.get("output_files", {}).get("volume", [None])[0]
-                    if volume_location:
-                        stage_outputs["volume_location"] = volume_location
-                        # Get absolute path
-                        job_dir = getattr(job, "dir", "")
-                        if job_dir and volume_location:
-                            from pathlib import Path
-                            volume_path = Path(job_dir) / volume_location
-                            stage_outputs["final_volume_absolute_path"] = str(volume_path.absolute())
+                # Use get_job_output_directory which is more reliable
+                if hasattr(self, 'cryosparc_tools') and self.cryosparc_tools:
+                    job_info = self.cryosparc_tools.get_job_output_directory(
+                        self.config.workflow.project_uid, 
+                        stage_outputs["final_volume_job_uid"]
+                    )
+                    job_directory = job_info.get("job_directory")
+                    if job_directory:
+                        stage_outputs["volume_location"] = job_directory
+                        from pathlib import Path
+                        job_path = Path(job_directory)
+                        stage_outputs["final_volume_absolute_path"] = str(job_path.absolute())
+                else:
+                    # Fallback: try direct access to cs.find_job if cryosparc_tools.cs is available
+                    if hasattr(self, 'cryosparc_tools') and hasattr(self.cryosparc_tools, 'cs'):
+                        job = self.cryosparc_tools.cs.find_job(self.config.workflow.project_uid, stage_outputs["final_volume_job_uid"])
+                        if job:
+                            job.refresh()
+                            doc = getattr(job, "doc", {})
+                            output_group = doc.get("output_result_groups", [{}])[0]
+                            volume_location = output_group.get("output_files", {}).get("volume", [None])[0]
+                            if volume_location:
+                                stage_outputs["volume_location"] = volume_location
+                                # Get absolute path
+                                job_dir = getattr(job, "dir", "")
+                                if job_dir and volume_location:
+                                    from pathlib import Path
+                                    volume_path = Path(job_dir) / volume_location
+                                    stage_outputs["final_volume_absolute_path"] = str(volume_path.absolute())
             except Exception as e:
                 self.logger.warning(f"Could not get volume location: {e}")
         
