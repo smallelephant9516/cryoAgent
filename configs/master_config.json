@@ -34,21 +34,21 @@
       {
         "name": "heterogeneity",
         "description": "Heterogeneity analysis stage: Determine true number of classes using ab initio + heterogeneous refinement and density comparison",
-        "enabled": false,
+        "enabled": true,
         "agent_group": "cryosparc",
         "agent_class": "HeterogeneityAgent"
       },
       {
         "name": "heterogeneity_depth",
         "description": "Heterogeneity depth analysis stage: Iteratively refine until only one cluster remains using heterogeneous refinement and density comparison",
-        "enabled": false,
+        "enabled": true,
         "agent_group": "cryosparc",
-        "agent_class": "HeterogeneityDepthAgent"
+        "agent_class": "ReconstructionAgent"
       },
       {
         "name": "optimization",
         "description": "Box size optimization stage: Optimize box size/diameter for 3D reconstruction",
-        "enabled": true,
+        "enabled": false,
         "agent_group": "cryosparc",
         "agent_class": "OptimizerAgent"
       },
@@ -67,10 +67,10 @@
   },
   "cryosparc": {
     "host": "localhost",
-    "base_port": 61000,
+    "base_port": 39000,
     "username": "lidaoyi16@hotmail.com",
     "password": "Password123",
-    "license_id": "30717d7e-8f18-11f0-8d17-8b491a13a8e1"
+    "license_id": "ea7aec62-b1ae-11e9-8554-cb1fba28db1b"
   },
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
@@ -196,7 +196,7 @@
     }
   },
   "workflow": {
-    "project_uid": "P3",
+    "project_uid": "P15",
     "workspace_uid": "W1"
   },
   "job_management": {

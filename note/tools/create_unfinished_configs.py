@@ -52,8 +52,11 @@ def parse_voltage(voltage_str):
     return None
 
 
-def create_microscope_config(empair_id, pixel_size, voltage, cs_mm, dose, symmetry, template_path):
-    """Create microscope_config.json from template with updated parameters"""
+def create_microscope_config(empair_id, pixel_size, voltage, cs_mm, dose, symmetry, data_type, gain_type, template_path):
+    """Create microscope_config.json from template with updated parameters.
+    When gain_type is not N/A: movies_path = .../micrographs/*.{data_type}, micrographs_path = null, gain_ref_path = .../gain/*.{gain_type}.
+    When gain_type is N/A: movies_path = null, micrographs_path = .../micrographs/*.{data_type}, gain_ref_path = null.
+    """
     with open(template_path, 'r') as f:
         config = json.load(f)
     
@@ -72,8 +75,21 @@ def create_microscope_config(empair_id, pixel_size, voltage, cs_mm, dose, symmet
     if symmetry and symmetry.strip():
         config['microscope_parameters']['symmetry'] = symmetry.strip()
     
-    # Update movies_path to use EMPAIR ID
-    config['microscope_parameters']['movies_path'] = f"/lustre2/EMDB/{empair_id}/data/*.mrcs"
+    # Paths under cryoPPP base
+    base_path = f"/home/daoyi/storage_server/cryoPPP/cryoppp/{empair_id}"
+    data_type = (data_type or "mrc").strip().lower()
+    gain_type_raw = (gain_type or "").strip()
+    gain_is_na = gain_type_raw.upper() == "N/A" or gain_type_raw == ""
+    
+    if gain_is_na:
+        config['microscope_parameters']['movies_path'] = None
+        config['microscope_parameters']['micrographs_path'] = f"{base_path}/micrographs/*.{data_type}"
+        config['microscope_parameters']['gain_ref_path'] = None
+    else:
+        gain_ext = gain_type_raw.lower()
+        config['microscope_parameters']['movies_path'] = f"{base_path}/micrographs/*.{data_type}"
+        config['microscope_parameters']['micrographs_path'] = None
+        config['microscope_parameters']['gain_ref_path'] = f"{base_path}/gain/*.{gain_ext}"
     
     return config
 
@@ -115,6 +131,8 @@ def main():
             cs_mm = parse_cs_mm(row.get('Spherical Aberration (mm)', ''))
             dose = parse_dose(row.get('Electron Dose (e/A^2)', ''))
             symmetry = row.get('Point Group', '').strip()
+            data_type = row.get('Data type', '').strip() or row.get('Data Type', '').strip()
+            gain_type = row.get('gain type', '').strip() or row.get('Gain type', '').strip()
             
             # Create directory structure
             config_dir = output_base / empair_id / "configs"
@@ -122,17 +140,24 @@ def main():
             
             # Create microscope_config.json
             microscope_config = create_microscope_config(
-                empair_id, pixel_size, voltage, cs_mm, dose, symmetry, template_microscope
+                empair_id, pixel_size, voltage, cs_mm, dose, symmetry, data_type, gain_type, template_microscope
             )
             microscope_config_path = config_dir / "microscope_config.json"
             with open(microscope_config_path, 'w') as f:
                 json.dump(microscope_config, f, indent=2)
             print(f"  Created: {microscope_config_path}")
             
-            # Copy session.json
+            # Create session.json (heterogeneity and heterogeneity_depth false; polish true when gain type is not N/A)
             session_config_path = config_dir / "session.json"
             with open(template_session, 'r') as f:
                 session_config = json.load(f)
+            gain_is_na = (gain_type or "").strip().upper() == "N/A" or (gain_type or "").strip() == ""
+            for stage in session_config.get("master_workflow", {}).get("stages", []):
+                name = stage.get("name")
+                if name == "heterogeneity" or name == "heterogeneity_depth":
+                    stage["enabled"] = False
+                elif name == "polish" and not gain_is_na:
+                    stage["enabled"] = True
             with open(session_config_path, 'w') as f:
                 json.dump(session_config, f, indent=2)
             print(f"  Created: {session_config_path}")

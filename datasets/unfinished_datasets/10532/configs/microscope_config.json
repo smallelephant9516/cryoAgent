@@ -2,18 +2,18 @@
   "overwrite": true,
   "microscope_info": {
     "name": "microscope_parameters",
-    "description": "Basic microscope parameters for cryoEM data collection - Dataset 10289",
+    "description": "Basic microscope parameters for cryoEM data collection - Dataset 10532",
     "version": "1.0.0"
   },
   "microscope_parameters": {
-    "pixel_size": 1.232,
+    "pixel_size": 1.03,
     "voltage": 300,
     "cs_mm": 2.7,
-    "dose": 35.0,
+    "dose": 40.0,
     "particle_diameter": 200,
-    "symmetry": "C8",
+    "symmetry": "C3",
     "movies_path": null,
-    "micrographs_path": "/home/daoyi/storage_server/cryoPPP/cryoppp/10289/micrographs/*.mrc",
+    "micrographs_path": "/home/daoyi/storage_server/cryoPPP/cryoppp/10532/micrographs/*.mrc",
     "gain_ref_path": null,
     "gain_rot": 0,
     "gain_flip": 0
