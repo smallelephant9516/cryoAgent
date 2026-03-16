@@ -691,6 +691,11 @@ class CryoSPARCTools:
             Dictionary containing job information
         """
         try:
+            if not micrographs_job_uid or not isinstance(micrographs_job_uid, str):
+                raise ValueError(
+                    "micrographs_job_uid is required and must be a non-empty string (e.g. job UID from motion correction like J4). "
+                    f"Got: {type(micrographs_job_uid).__name__} = {micrographs_job_uid!r}"
+                )
             # Find project and workspace
             project = self.cs.find_project(project_uid)
             workspace = project.find_workspace(workspace_uid)

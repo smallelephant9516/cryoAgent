@@ -53,7 +53,7 @@
       {
         "name": "polish",
         "description": "Polish refinement stage: Final refinement steps with CTF refinement and motion correction to achieve best possible resolution",
-        "enabled": true,
+        "enabled": false,
         "agent_group": "cryosparc",
         "agent_class": "PolishAgent"
       }
@@ -73,7 +73,7 @@
     }
   },
   "workflow": {
-    "project_uid": "P27",
+    "project_uid": "P15",
     "workspace_uid": "W1"
   }
 }

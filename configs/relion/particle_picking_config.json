@@ -17,7 +17,7 @@
     "selected_particles_star"
   ],
   "microscope_parameters": {
-    "pixel_size": 1.232,
+    "pixel_size": 0.502,
     "particle_diameter": 200.0
   },
   "workflow": {
@@ -45,7 +45,7 @@
     },
     "particle_extraction": {
       "coord_suffix": "autopick.star",
-      "extract_size": 288,
+      "extract_size": 512,
       "float16": true,
       "scale": 128,
       "norm": true,
@@ -89,7 +89,7 @@
       "particle_diameter": 240
     },
     "particle_extraction2": {
-      "extract_size": 288
+      "extract_size": 512
     }
   },
   "react_workflow": {

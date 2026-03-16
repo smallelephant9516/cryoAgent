@@ -8,8 +8,9 @@ and generate a comprehensive final report of the entire workflow execution.
 import json
 import logging
 import datetime
+import re
 from pathlib import Path
-from typing import Dict, Any, List, Optional, TYPE_CHECKING
+from typing import Dict, Any, List, Optional, Tuple, TYPE_CHECKING
 from dataclasses import dataclass
 
 if TYPE_CHECKING:
@@ -70,6 +71,120 @@ class SummaryAgent:
     def set_workflow_context(self, context: 'WorkflowContext'):
         """Set the workflow context."""
         self.workflow_context = context
+
+    # Stage name -> glob pattern(s) for result JSON (used when result_file is not set, e.g. from cache)
+    _STAGE_RESULT_PATTERNS = {
+        "preprocessing": "preprocessing_results_*.json",
+        "particle_picking": "particle_picking_results_*.json",
+        "optimization_2d": "2d_optimization_results_*.json",
+        "reconstruction": ["reconstruction_results_cryosparc_*.json", "3d_reconstruction_results_relion_*.json"],
+        "optimization": "optimization_results_*.json",
+        "heterogeneity": "heterogeneity_analysis_results_*.json",
+        "polish": "polish_results_*.json",
+    }
+
+    def _resolve_result_file_for_stage(self, stage_name: str, result_file: Optional[str]) -> Optional[Path]:
+        """Resolve path to stage result JSON; use result_file if set, else glob by stage pattern."""
+        if result_file:
+            path = Path(result_file)
+            if not path.is_absolute():
+                cand = self.outputs_dir / path.name
+                path = cand if cand.exists() else self.outputs_dir.parent / result_file
+            return path if path.exists() else None
+        pattern = self._STAGE_RESULT_PATTERNS.get(stage_name)
+        if not pattern:
+            return None
+        patterns = pattern if isinstance(pattern, list) else [pattern]
+        files = []
+        for p in patterns:
+            files.extend(self.outputs_dir.glob(p))
+        if not files:
+            return None
+        return max(files, key=lambda p: p.stat().st_mtime)
+
+    def _parse_timestamp_from_result_file(self, result_file: Optional[str], stage_name: Optional[str] = None) -> Optional[float]:
+        """
+        Parse timestamp from a stage result JSON file.
+        Result files use "timestamp" in format YYYYMMDD_HHMMSS.
+        If result_file is None and stage_name is given, looks up latest result by stage pattern.
+        Returns epoch seconds, or None if not found or parse error.
+        """
+        path = None
+        if result_file or stage_name:
+            path = self._resolve_result_file_for_stage(stage_name or "", result_file)
+        if not path or not path.exists():
+            return None
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            ts_str = data.get("timestamp")
+            if not ts_str:
+                return None
+            # Format: "20260222_095040"
+            dt = datetime.datetime.strptime(ts_str, "%Y%m%d_%H%M%S")
+            return dt.timestamp()
+        except (json.JSONDecodeError, ValueError, IOError):
+            return None
+
+    def _get_workflow_start_from_log(self) -> Optional[float]:
+        """
+        Get workflow start time from LLM conversation log in outputs dir.
+        Log has line "Start Time: 2026-02-22T18:29:44.253806" (ISO format).
+        Returns epoch seconds, or None if not found.
+        """
+        for pattern in ("llm_conversation_*.log", "llm_conversation_*_*.log"):
+            logs = list(self.outputs_dir.glob(pattern))
+            if not logs:
+                continue
+            # Use earliest by mtime as the session start log
+            logs_sorted = sorted(logs, key=lambda p: p.stat().st_mtime)
+            for log_path in logs_sorted:
+                try:
+                    content = log_path.read_text(encoding='utf-8')
+                    match = re.search(r'Start Time:\s*(.+)', content)
+                    if match:
+                        iso_str = match.group(1).strip()
+                        dt = datetime.datetime.fromisoformat(iso_str)
+                        return dt.timestamp()
+                except (ValueError, IOError):
+                    continue
+        return None
+
+    def _compute_stage_durations_from_timestamps(self) -> Tuple[Dict[str, float], float]:
+        """
+        Compute each stage's duration from timestamp lags in result JSON files.
+        - Preprocessing duration = (preprocessing result timestamp) - (workflow start from log)
+        - Particle picking duration = (particle picking result timestamp) - (preprocessing result timestamp)
+        - Similarly for subsequent stages.
+        Returns (stage_name -> duration_seconds, total_execution_time).
+        """
+        durations: Dict[str, float] = {}
+        workflow_start = self.workflow_start_time if self.workflow_start_time is not None else self._get_workflow_start_from_log()
+        prev_time: Optional[float] = workflow_start
+        last_stage_time: Optional[float] = None
+
+        for summary in self.stage_summaries:
+            stage_ts = self._parse_timestamp_from_result_file(summary.result_file, summary.stage_name)
+            if stage_ts is not None:
+                last_stage_time = stage_ts
+                if prev_time is not None:
+                    duration = stage_ts - prev_time
+                    durations[summary.stage_name] = max(0.0, duration)
+                prev_time = stage_ts
+            else:
+                # No timestamp for this stage; next stage's "prev" stays same
+                pass
+
+        # Total: workflow_end - workflow_start if both set; else last_stage - workflow_start; else sum(durations)
+        total = 0.0
+        if self.workflow_start_time is not None and self.workflow_end_time is not None:
+            total = self.workflow_end_time - self.workflow_start_time
+        elif workflow_start is not None and last_stage_time is not None:
+            total = last_stage_time - workflow_start
+        elif durations:
+            total = sum(durations.values())
+
+        return (durations, total)
     
     def add_stage_summary(self, stage_result: 'StageResult', stage_agent: Any) -> StageSummary:
         """
@@ -154,12 +269,17 @@ class SummaryAgent:
         """
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         
-        # Calculate total execution time
+        # Compute stage durations from timestamp lags in result JSON files
+        durations_from_timestamps, total_from_timestamps = self._compute_stage_durations_from_timestamps()
+        use_timestamp_durations = bool(durations_from_timestamps)
+        
+        # Total execution time: prefer timestamp-based total when available
         total_execution_time = 0.0
-        if self.workflow_start_time and self.workflow_end_time:
+        if use_timestamp_durations and total_from_timestamps > 0:
+            total_execution_time = total_from_timestamps
+        elif self.workflow_start_time and self.workflow_end_time:
             total_execution_time = self.workflow_end_time - self.workflow_start_time
         else:
-            # Fallback: sum all stage execution times
             total_execution_time = sum(s.execution_time for s in self.stage_summaries)
         
         # Count successful and failed stages
@@ -172,6 +292,12 @@ class SummaryAgent:
         if self.workflow_context:
             project_uid = self.workflow_context.project_uid
             workspace_uid = self.workflow_context.workspace_uid
+        
+        # Stage execution times: use timestamp-based duration when available
+        def _stage_execution_time(summary: StageSummary) -> float:
+            if use_timestamp_durations and summary.stage_name in durations_from_timestamps:
+                return durations_from_timestamps[summary.stage_name]
+            return summary.execution_time
         
         # Build comprehensive report
         report = {
@@ -200,7 +326,7 @@ class SummaryAgent:
                     "stage_name": summary.stage_name,
                     "stage_description": summary.stage_description,
                     "status": "success" if summary.success else "failed",
-                    "execution_time_seconds": summary.execution_time,
+                    "execution_time_seconds": _stage_execution_time(summary),
                     "error": summary.error,
                     "key_outputs": summary.key_outputs,
                     "job_uids": summary.job_uids,
@@ -210,7 +336,7 @@ class SummaryAgent:
                 }
                 for summary in self.stage_summaries
             ],
-            "workflow_timeline": self._generate_timeline(),
+            "workflow_timeline": self._generate_timeline(durations_override=durations_from_timestamps if use_timestamp_durations else None),
             "output_files": self._collect_output_files(),
             "next_steps": self._suggest_next_steps()
         }
@@ -289,19 +415,22 @@ class SummaryAgent:
         
         return achievements
     
-    def _generate_timeline(self) -> List[Dict[str, Any]]:
-        """Generate a timeline of stage executions."""
+    def _generate_timeline(self, durations_override: Optional[Dict[str, float]] = None) -> List[Dict[str, Any]]:
+        """Generate a timeline of stage executions. If durations_override is provided, use those for duration_seconds."""
         timeline = []
-        current_time = self.workflow_start_time or 0.0
+        current_offset = 0.0
         
         for summary in self.stage_summaries:
+            duration = summary.execution_time
+            if durations_override and summary.stage_name in durations_override:
+                duration = durations_override[summary.stage_name]
             timeline.append({
                 "stage": summary.stage_name,
-                "start_time_offset": current_time - (self.workflow_start_time or 0.0),
-                "duration_seconds": summary.execution_time,
+                "start_time_offset": current_offset,
+                "duration_seconds": duration,
                 "status": "success" if summary.success else "failed"
             })
-            current_time += summary.execution_time
+            current_offset += duration
         
         return timeline
     

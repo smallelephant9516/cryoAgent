@@ -12,16 +12,16 @@
     "dose"
   ],
   "microscope_parameters": {
-    "movies_path": null,
-    "gain_ref_path": null,
-    "pixel_size": 1.232,
+    "movies_path": "/home/daoyi/storage_server/EMPIAR/10816/data/tiffs/full_tiff/*.tif",
+    "gain_ref_path": "/home/daoyi/storage_server/cryoPPP/cryoppp/10816/gain/*.dm4",
+    "pixel_size": 0.502,
     "voltage": 300.0,
     "cs_mm": 2.7,
-    "dose": 35.0,
+    "dose": 74.0,
     "gain_rot": 0,
     "gain_flip": 0,
     "particle_diameter": 200.0,
-    "symmetry": "C8"
+    "symmetry": "C1"
   },
   "outputs": [
     "selected_micrographs",
@@ -30,12 +30,12 @@
   ],
   "workflow": {
     "import_movies": {
-      "movies_path": null,
-      "gain_ref_path": null,
-      "pixel_size": 1.232,
+      "movies_path": "/home/daoyi/storage_server/EMPIAR/10816/data/tiffs/full_tiff/*.tif",
+      "gain_ref_path": "/home/daoyi/storage_server/cryoPPP/cryoppp/10816/gain/*.dm4",
+      "pixel_size": 0.502,
       "voltage": 300.0,
       "cs_mm": 2.7,
-      "dose": 35.0,
+      "dose": 74.0,
       "gain_rot": 0,
       "gain_flip": 0
     },

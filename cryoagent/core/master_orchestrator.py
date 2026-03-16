@@ -2880,6 +2880,9 @@ class MasterOrchestrator:
                 continue
                 
             stage_agent = self.stage_agents[stage_name]
+            # Use orchestrator's outputs_dir so resume-from-halfway finds logs in the dataset outputs folder
+            if hasattr(stage_agent, 'modular_agent') and stage_agent.modular_agent and hasattr(stage_agent.modular_agent, 'realtime_logger'):
+                stage_agent.modular_agent.realtime_logger.outputs_dir = Path(self.outputs_dir)
             print(f"📋 {stage_agent.get_stage_description()}")
             
             # Execute stage
@@ -3164,6 +3167,9 @@ class MasterOrchestrator:
                 continue
                 
             stage_agent = self.stage_agents[stage_name]
+            # Use orchestrator's outputs_dir so resume-from-halfway finds logs in the dataset outputs folder
+            if hasattr(stage_agent, 'modular_agent') and stage_agent.modular_agent and hasattr(stage_agent.modular_agent, 'realtime_logger'):
+                stage_agent.modular_agent.realtime_logger.outputs_dir = Path(self.outputs_dir)
             print(f"📋 {stage_agent.get_stage_description()}")
             
             # Execute stage

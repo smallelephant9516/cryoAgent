@@ -2,6 +2,7 @@
 
 import json
 import logging
+import re
 from typing import Dict, Any, List
 from langchain.tools import Tool
 from langchain_core.language_models import BaseLanguageModel
@@ -140,6 +141,33 @@ class PreprocessingAgent(BaseReActAgent):
             self.logger.warning("Invalid %s value '%s'; defaulting to %s", param_name, value, default)
         return default
 
+    def _parse_float_param(self, value: Any, default: float = 0.0, param_name: str = "value") -> float:
+        """Parse float parameter; accepts strings with trailing junk (e.g. '40.0)', '40.0 e-/Å²')."""
+        if value is None or value == "":
+            return default
+        try:
+            if isinstance(value, (int, float)):
+                return float(value)
+            if isinstance(value, str):
+                stripped = value.strip()
+                if stripped == "":
+                    return default
+                # Extract leading numeric part (handles "40.0)", "40.0 e-/Å²", etc.)
+                match = re.match(r"[-+]?\d*\.?\d+(?:[eE][-+]?\d+)?", stripped)
+                if match:
+                    return float(match.group(0))
+                return float(stripped)
+        except (TypeError, ValueError):
+            self.logger.warning("Invalid %s value '%s'; defaulting to %s", param_name, value, default)
+        return default
+
+    @staticmethod
+    def _sanitize_uid(uid: str) -> str:
+        """Strip trailing punctuation from project/workspace UID (e.g. 'W1.' -> 'W1')."""
+        if not uid or not isinstance(uid, str):
+            return uid
+        return uid.rstrip(".).;,:!?")
+
     def _create_tools(self) -> List[Tool]:
         """Create preprocessing-specific tools."""
         return [
@@ -262,9 +290,13 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
         used_params: Dict[str, Any] = {}
         try:
             params = self._parse_tool_input(input_str)
-            project_uid = params.get("project_uid", self.config.workflow.project_uid)
-            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
-            
+            project_uid = self._sanitize_uid(
+                params.get("project_uid", self.config.workflow.project_uid)
+            )
+            workspace_uid = self._sanitize_uid(
+                params.get("workspace_uid", self.config.workflow.workspace_uid)
+            )
+
             # Safely get microscope config values, handling case where it might not be set yet
             microscope_config = getattr(self, 'microscope_config', {})
             
@@ -296,10 +328,22 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 "workspace_uid": workspace_uid,
                 "movies_path": params.get("movies_path", microscope_config.get("movies_path", "/path/to/movies/*.tif")),
                 "gain_ref_path": params.get("gain_ref_path", microscope_config.get("gain_ref_path")),
-                "pixel_size": float(params.get("pixel_size", microscope_config.get("pixel_size", 0.6575))),
-                "voltage": float(params.get("voltage", microscope_config.get("voltage", 300.0))),
-                "cs_mm": float(params.get("cs_mm", microscope_config.get("cs_mm", 2.7))),
-                "dose": float(params.get("dose", microscope_config.get("dose", 53.0))),
+                "pixel_size": self._parse_float_param(
+                    params.get("pixel_size", microscope_config.get("pixel_size", 0.6575)),
+                    default=0.6575, param_name="pixel_size"
+                ),
+                "voltage": self._parse_float_param(
+                    params.get("voltage", microscope_config.get("voltage", 300.0)),
+                    default=300.0, param_name="voltage"
+                ),
+                "cs_mm": self._parse_float_param(
+                    params.get("cs_mm", microscope_config.get("cs_mm", 2.7)),
+                    default=2.7, param_name="cs_mm"
+                ),
+                "dose": self._parse_float_param(
+                    params.get("dose", microscope_config.get("dose", 53.0)),
+                    default=53.0, param_name="dose"
+                ),
                 "gainref_flip_x": gainref_flip_x,
                 "gainref_flip_y": gainref_flip_y,
                 "gainref_rotate_num": gainref_rotate_num,
@@ -326,8 +370,12 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
         used_params: Dict[str, Any] = {}
         try:
             params = self._parse_tool_input(input_str)
-            project_uid = params.get("project_uid", self.config.workflow.project_uid)
-            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            project_uid = self._sanitize_uid(
+                params.get("project_uid", self.config.workflow.project_uid)
+            )
+            workspace_uid = self._sanitize_uid(
+                params.get("workspace_uid", self.config.workflow.workspace_uid)
+            )
             
             # Safely get microscope config values, handling case where it might not be set yet
             microscope_config = getattr(self, 'microscope_config', {})
@@ -369,14 +417,17 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
         used_params: Dict[str, Any] = {}
         try:
             params = self._parse_tool_input(input_str)
-            project_uid = params.get("project_uid", self.config.workflow.project_uid)
-            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
-            
+            project_uid = self._sanitize_uid(
+                params.get("project_uid", self.config.workflow.project_uid)
+            )
+            workspace_uid = self._sanitize_uid(
+                params.get("workspace_uid", self.config.workflow.workspace_uid)
+            )
+
             # Extract movies_job_uid - try parameter first, then extract from text
             movies_job_uid = params.get("movies_job_uid")
             if not movies_job_uid:
                 # Try to extract job UID from input text (e.g., "from job J16" or "job J16")
-                import re
                 # Look for patterns like "J" followed by digits (e.g., J16, J123)
                 job_uid_pattern = r'\bJ\d+\b'
                 matches = re.findall(job_uid_pattern, input_str)
@@ -417,9 +468,38 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
         used_params: Dict[str, Any] = {}
         try:
             params = self._parse_tool_input(input_str)
-            project_uid = params.get("project_uid", self.config.workflow.project_uid)
-            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
-            
+            project_uid = self._sanitize_uid(
+                params.get("project_uid", self.config.workflow.project_uid)
+            )
+            workspace_uid = self._sanitize_uid(
+                params.get("workspace_uid", self.config.workflow.workspace_uid)
+            )
+
+            # Resolve micrographs_job_uid: params first, then extract from text (e.g. "from job J4"), then last motion_correction result
+            micrographs_job_uid = params.get("micrographs_job_uid")
+            if not micrographs_job_uid:
+                job_uid_pattern = r'\bJ\d+\b'
+                matches = re.findall(job_uid_pattern, input_str)
+                if matches:
+                    micrographs_job_uid = matches[0]
+                    self.logger.info(f"Extracted micrographs_job_uid '{micrographs_job_uid}' from input text")
+            if not micrographs_job_uid:
+                for entry in reversed(self.tool_execution_log):
+                    if entry.get("tool") == "motion_correction" and "result" in entry:
+                        result = entry["result"]
+                        if isinstance(result, dict) and result.get("job_uid"):
+                            micrographs_job_uid = result["job_uid"]
+                            self.logger.info(f"Using micrographs_job_uid '{micrographs_job_uid}' from last motion_correction result")
+                            break
+            if not micrographs_job_uid and self.import_micrographs_job_uid:
+                micrographs_job_uid = self.import_micrographs_job_uid
+                self.logger.info(f"Using micrographs_job_uid '{micrographs_job_uid}' from import_micrographs")
+            if not micrographs_job_uid:
+                return (
+                    "❌ Error starting CTF estimation: Missing required parameter 'micrographs_job_uid'. "
+                    "Please specify the job UID from the motion correction step (e.g., micrographs_job_uid=J4 or 'from job J4')."
+                )
+
             # Safely get preprocessing config values, handling case where it might not be set yet
             preprocessing_config = getattr(self, 'preprocessing_config', {}).get('workflow', {})
             ctf_config = preprocessing_config.get('ctf_estimation', {})
@@ -430,9 +510,7 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             # 3. Otherwise, default to "micrographs"
             group_job_uid = params.get("group_job_uid")
             if group_job_uid is None:
-                # Check if we have an import_micrographs job UID and if the micrographs_job_uid matches it
-                micrographs_job_uid = params.get("micrographs_job_uid")
-                if (self.import_micrographs_job_uid and 
+                if (self.import_micrographs_job_uid and
                     micrographs_job_uid == self.import_micrographs_job_uid):
                     # Previous job was import_micrographs, use its job UID as group_job_uid
                     group_job_uid = "imported_micrographs"
@@ -443,7 +521,7 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
             used_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
-                "micrographs_job_uid": params.get("micrographs_job_uid"),
+                "micrographs_job_uid": micrographs_job_uid,
                 "group_job_uid": group_job_uid,
                 "min_res": float(params.get("min_res", ctf_config.get("min_res", 30.0))),
                 "max_res": float(params.get("max_res", ctf_config.get("max_res", 4.0))),
@@ -467,9 +545,13 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
         used_params: Dict[str, Any] = {}
         try:
             params = self._parse_tool_input(input_str)
-            project_uid = params.get("project_uid", self.config.workflow.project_uid)
-            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
-            
+            project_uid = self._sanitize_uid(
+                params.get("project_uid", self.config.workflow.project_uid)
+            )
+            workspace_uid = self._sanitize_uid(
+                params.get("workspace_uid", self.config.workflow.workspace_uid)
+            )
+
             # Safely get preprocessing config values, handling case where it might not be set yet
             preprocessing_config = getattr(self, 'preprocessing_config', {}).get('workflow', {})
             micrograph_selection_config = preprocessing_config.get('micrograph_selection', {})

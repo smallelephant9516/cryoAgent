@@ -18,14 +18,14 @@
   ],
   "microscope_parameters": {
     "particle_diameter": 200.0,
-    "symmetry": "C8"
+    "symmetry": "C1"
   },
   "workflow": {
     "ab_initio_reconstruction": {
       "iter": 200,
       "K": 1,
       "sym": "C1",
-      "align_sym": "C8",
+      "align_sym": "C1",
       "particle_diameter": 240,
       "oversampling": 1,
       "healpix_order": 1,
@@ -45,7 +45,7 @@
       "denovo_3dref": true
     },
     "particle_reextraction": {
-      "extract_size": 288,
+      "extract_size": 512,
       "norm": true,
       "bg_radius": -1,
       "white_dust": -1,
@@ -55,7 +55,7 @@
       "only_do_unfinished": false
     },
     "refinement_3d": {
-      "sym": "C8",
+      "sym": "C1",
       "particle_diameter": 240,
       "oversampling": 1,
       "healpix_order": 2,
