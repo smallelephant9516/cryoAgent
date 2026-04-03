@@ -7,7 +7,7 @@
   },
   "microscope_parameters": {
     "pixel_size": 0.5585,
-    "voltage": 300,
+    "voltage": 200,
     "cs_mm": 2.7,
     "dose": 69.0,
     "particle_diameter": 80,

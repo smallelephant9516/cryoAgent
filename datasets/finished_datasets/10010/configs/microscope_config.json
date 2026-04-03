@@ -8,11 +8,11 @@
   "microscope_parameters": {
     "pixel_size": 0.99,
     "voltage": 300,
-    "cs_mm": 2.7,
+    "cs_mm": 5.2,
     "dose": 52.0,
     "particle_diameter": 290,
     "symmetry": "I",
-    "movies_path": "/lustre2/EMDB/10010/data/micrographs/gain_corrected/BMV_DE12/movies/*.mrcs",
+    "movies_path": "/lustre2/EMDB/10010/data/micrographs/gain_corrected/BMV_DE12/movies_37/*.mrcs",
     "micrographs_path": null,
     "gain_ref_path": null,
     "gain_rot": 0,
