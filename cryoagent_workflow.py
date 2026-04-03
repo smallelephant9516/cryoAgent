@@ -590,8 +590,15 @@ Examples:
             # Use provided conversation ID or generate a unique one to ensure fresh start
             conversation_id = args.conversation_id or f"preprocessing_workflow_{int(time.time())}"
             success = master_workflow.run_preprocessing_workflow(args.dry_run, conversation_id)
-            
-        
+
+        elif args.workflow == "custom":
+            if not args.stages:
+                print("❌ --workflow custom requires --stages (comma-separated stage names)")
+                sys.exit(1)
+            stage_list = [s.strip() for s in args.stages.split(",") if s.strip()]
+            conversation_id = args.conversation_id or f"custom_workflow_{int(time.time())}"
+            success = master_workflow.run_custom_workflow(stage_list, args.dry_run, conversation_id)
+
         # Exit with appropriate code
         if success:
             print("\n🎉 CryoAgent master workflow completed successfully!")

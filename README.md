@@ -1,495 +1,132 @@
-
 # CryoAgent
 
-CryoAgent is an intelligent, agentic workflow framework for cryoEM/cryoET image processing using CryoSPARC and LangChain. It implements the **ReAct (Reasoning + Acting)** framework for transparent and reliable automated cryoEM data processing workflows.
+## 1. Introduction
 
-## 🧠 ReAct Framework
+CryoAgent is an agent-driven pipeline for single-particle cryo-EM. It drives **RELION** and **CryoSPARC** through a shared configuration model, uses an LLM-backed ReAct loop to choose actions, and runs a multi-stage workflow from preprocessing through reconstruction and optional polish and heterogeneity steps.
 
-CryoAgent uses the ReAct framework, which combines **Reasoning** and **Acting** in structured cycles:
+## 2. Features
 
-1. **Reasoning**: The agent thinks through the problem step by step
-2. **Acting**: The agent executes specific tools based on its reasoning  
-3. **Observing**: The agent analyzes results and updates its understanding
+- **RELION and CryoSPARC integration** — One workflow can use both stacks where each stage expects them (CryoSPARC jobs, RELION directories and executables, and Helicon-style transitions when configured).
+- **Workflow monitoring and failure handling** — Stages are tracked; the orchestrator can retry, apply fallback strategies, and surface errors so runs do not fail silently.
+- **Automated heterogeneity analysis** — Optional stages (`heterogeneity`, `heterogeneity_depth`) explore multiple structural states using ab initio, heterogeneous refinement, and density comparison (enable them in `session.json` when you need this).
+- **Iterative optimization** — Built-in 2D optimization (e.g. classification and CryoSift-assisted refinement), box-size / diameter optimization, and repeated refinement loops toward better maps.
 
-This approach provides transparent, reliable workflow execution with intelligent error handling and dependency management.
+## 3. Installation
 
-## ✨ Features
+### Prerequisites
 
-- **🧠 ReAct Intelligence**: Transparent reasoning and acting cycles
-- **⚙️ Comprehensive Configuration**: JSON-based configuration management
-- **🔗 CryoSPARC Integration**: Seamless integration with CryoSPARC for professional cryoEM processing
-- **🛠️ Modular Design**: Extensible framework for adding new processing steps
-- **🔄 Error Handling**: Robust error handling and job status monitoring
-- **📊 Workflow Monitoring**: Real-time workflow state tracking and reasoning history
-- **🎯 Unified Interface**: Single script for all workflow types
-- **📁 Output Path Tracking**: Automatic absolute path resolution for final picking results (see [docs/particle_picking_output_format.md](docs/particle_picking_output_format.md))
+- [Conda](https://docs.conda.io/) (Anaconda or Miniconda) on your `PATH`, since the main installer is conda-based.
 
-## 🚀 Quick Start
-
-### 1. Installation
+### Clone the repository
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/cryoagent.git
+git clone https://gitee.com/fei_sun_lab/cryoagent.git
 cd cryoagent
+```
 
-# Install dependencies
+### Recommended: `install_all_envs.sh`
+
+The script [`install_all_envs.sh`](install_all_envs.sh) lives at the repo root. It `cd`s to its own directory, then creates and wires up conda environments used by CryoAgent (cryoagent core env, Helicon for transitions, Magellon/CryoSift for 2D assessment, optional API/license prompts, and activation hints).
+
+Make it executable once, then run it from the repository root:
+
+```bash
+chmod +x install_all_envs.sh
+./install_all_envs.sh
+```
+
+### Alternative: pip only
+
+If you manage Python yourself:
+
+```bash
 pip install -r requirements.txt
 ```
 
-### 2. Configuration
+You will still need any external tools (RELION, CryoSPARC client access, Helicon, CryoSift) configured separately to match `configs/master_config.json` and `configs/session.json`.
 
-Create a `config.json` file in your project root:
+### Configuration after install
 
-```json
-{
-  "cryosparc": {
-    "host": "localhost",
-    "base_port": 61000,
-    "username": "your-username",
-    "password": "your-password",
-    "license_id": "your-cryosparc-license-id-here"
-  },
-  "agent": {
-    "model_name": "deepseek-chat",
-    "temperature": 0.1,
-    "max_iterations": 15,
-    "verbose": true,
-    "api_key": "your-api-key",
-    "base_url": "https://api.deepseek.com",
-    "memory_control": {
-      "clear_memory_on_new_conversation": true,
-      "maintain_context_between_interactions": false
-    }
-  },
-  "workflow": {
-    "project_uid": "P1",
-    "workspace_uid": "W1",
-    "movies_path": "/path/to/your/movies",
-    "pixel_size": 1.0,
-    "voltage": 300.0,
-    "cs_mm": 2.7,
-    "dose": 1.0,
-    "motion_correction_binning": 1,
-    "motion_correction_patch_size": 5,
-    "ctf_min_res": 30.0,
-    "ctf_max_res": 4.0
-  },
-  "job_management": {
-    "default_timeout": 3600,
-    "status_check_interval": 10
-  }
-}
-```
+Edit **`configs/master_config.json`** for CryoSPARC host, credentials, LLM provider, and shared options. Prefer environment variables for secrets (for example `${DEEPSEEK_API_KEY}` in the `agent.models` block). Step **4** of `install_all_envs.sh` can help set API keys and license values. In the frist round of installation, the script will guide you to input these information accordingly. 
 
-### 3. Basic Usage
+Ensure CryoSPARC is reachable from the machine where you run CryoAgent, and that RELION paths and conda env names in config match your cluster or workstation.
 
-**Using the Unified Workflow Script (Recommended):**
+## 4. Preparing each dataset
+
+Per dataset you mainly maintain two JSON files. Shared templates live under `configs/` in the repo; for batch runs, each dataset folder holds its own copies (see section 5).
+
+### `configs/microscope_config.json` — acquisition and data paths
+
+Set **dataset-specific** acquisition and input paths under `microscope_parameters`:
+
+| Field | Role |
+|--------|------|
+| `pixel_size`, `voltage`, `cs_mm`, `dose` | Microscope / exposure parameters |
+| `particle_diameter`, `symmetry` | Defaults for picking and reconstruction |
+| `movies_path` | Movies to import (wildcards allowed, e.g. `*.mrc`) |
+| `micrographs_path` | Optional: pre-corrected micrographs (skips movie import / motion correction when used) |
+| `gain_ref_path`, `gain_rot`, `gain_flip` | Gain reference and orientation |
+
+Human-readable explanations for these keys are in `parameter_descriptions` in the same file.
+
+### `configs/session.json` — modular pipeline and RELION/CryoSPARC session
+
+- **`master_workflow.stages`** — List of stages with `enabled` flags (e.g. preprocessing, particle picking, `optimization_2d`, reconstruction, `optimization`, `polish`, heterogeneity stages). Turn stages on or off without editing `master_config.json`.
+- **`relion`** — RELION executable, working directory (`relion_dir`), and backend options (timeouts, concurrency, `conda_env`).
+- **`workflow`** — CryoSPARC **`project_uid`** and **`workspace_uid`** for this dataset.
+
+For many datasets you only change **`relion.relion_dir`** (and related RELION paths if needed) and **`workflow.project_uid`** (and workspace if it differs); keep the rest aligned with your standard pipeline.
+
+`session.json` in the same directory as `master_config.json` is **merged on top of** `master_config.json` (session wins on conflicts).
+
+## 5. How to run
+
+Activate the **cryoagent** conda environment if you used `install_all_envs.sh` (step 5 or `conda activate cryoagent` as appropriate on your system).
+
+### Single run — `cryoagent_workflow.py`
+
+From the repository root, the default master config is `configs/master_config.json`. A `session.json` beside it is loaded and merged automatically.
 
 ```bash
-# Test DeepSeek API connection first
-python test_deepseek_connection.py
-
-# Test CryoSPARC connection
+# Verify setup (CryoSPARC / config sanity)
 python cryoagent_workflow.py --workflow test
 
-# Run the complete workflow
-python cryoagent_workflow.py
+# Full enabled pipeline
+python cryoagent_workflow.py --workflow complete
 
-# Run custom workflow
-python cryoagent_workflow.py --workflow custom --steps import_movies,motion_correction
+# Preprocessing only
+python cryoagent_workflow.py --workflow preprocessing
 
-# Single step execution
-python cryoagent_workflow.py --workflow single --steps "Import movies and wait for completion"
-
-# Dry run (show what would be done)
-python cryoagent_workflow.py --dry-run
-
-# Verbose output
-python cryoagent_workflow.py --verbose
-
-# Get help
-python cryoagent_workflow.py --help
+# Only selected stages (comma-separated, no spaces; useful for debugging)
+python cryoagent_workflow.py --workflow custom --stages preprocessing,particle_picking
 ```
 
-**Using the Python API:**
+Other useful flags: `--config`, `--outputs-dir`, `--conversation-id`, `--verbose`, `--dry-run`. Run `python cryoagent_workflow.py --help` for the full list.
 
-```python
-from cryoagent import (
-    ReActCryoEMAgent, 
-    ReActCryoEMWorkflow, 
-    CryoSPARCTools,
-    ConfigLoader
-)
+### Batch runs — `run_batch_datasets.py`
 
-# Load configuration
-config_loader = ConfigLoader("config.json")
-config = config_loader.load_config()
+Runs the same workflow over **many datasets** in sequence. Each dataset is a folder under `datasets/unfinished_datasets/` (default) containing:
 
-# Initialize components
-cryosparc_tools = CryoSPARCTools(config.cryosparc)
-agent = ReActCryoEMAgent(cryosparc_tools=cryosparc_tools, config=config)
-workflow = ReActCryoEMWorkflow(agent=agent, config=config)
+- `configs/session.json`
+- `configs/microscope_config.json`
 
-# Run the workflow
-results = workflow.run_basic_workflow()
-
-# Check results
-for result in results:
-    print(f"Step: {result.step.value}, Success: {result.success}")
-```
-
-## 🔧 Workflow Types
-
-### 1. Basic Workflow
-Executes the complete cryoEM processing pipeline:
-- Import Movies → Motion Correction → CTF Estimation
+The runner copies the repository `configs/master_config.json` into a temporary config for each dataset, overlays that dataset’s `session.json`, points the workflow at the dataset’s `microscope_config.json`, then calls `cryoagent_workflow.py`. Finished datasets can be moved to `datasets/finished_datasets/` (see script behavior and logs).
 
 ```bash
-python cryoagent_workflow.py --workflow basic
+# All dataset folders under the default unfinished directory
+python run_batch_datasets.py --workflow complete
+
+# Only named datasets
+python run_batch_datasets.py --datasets my_dataset_a,my_dataset_b --workflow complete
+
+# Custom unfinished root, preprocessing only, continue after a failure
+python run_batch_datasets.py --datasets-dir /path/to/unfinished_datasets --workflow preprocessing --continue-on-error
 ```
 
-### 2. Custom Workflow
-Execute specific steps in order:
+Useful flags: `--datasets-dir`, `--datasets`, `--workflow`, `--stages`, `--verbose`, `--dry-run`, `--continue-on-error`, `--max-retries`, `--log-file`. Run `python run_batch_datasets.py --help` for details.
 
-```bash
-# Only import movies and motion correction
-python cryoagent_workflow.py --workflow custom --steps import_movies,motion_correction
+---
 
-# Only CTF estimation (requires previous steps completed)
-python cryoagent_workflow.py --workflow custom --steps ctf_estimation
-```
+## License
 
-**Valid Steps:**
-- `import_movies`: Import movie files into CryoSPARC
-- `motion_correction`: Perform motion correction on imported movies
-- `ctf_estimation`: Estimate CTF parameters for micrographs
-
-### 3. Single Step
-Execute a single step with custom description:
-
-```bash
-python cryoagent_workflow.py --workflow single --steps "Import movies from the configured path and wait for completion"
-```
-
-### 4. Connection Test
-Test CryoSPARC connection and configuration:
-
-```bash
-python cryoagent_workflow.py --workflow test
-```
-
-## 🧠 ReAct Process Example
-
-```
-Thought: I need to start the cryoEM workflow. The first step is to import movies 
-from the specified path. I should check if the movies path exists and then 
-start the import process with the configured parameters.
-
-Action: import_movies
-Parameters: movies_path=/path/to/movies, pixel_size=1.0, voltage=300.0, 
-cs_mm=2.7, dose=1.0, project_uid=P1, workspace_uid=W1
-
-Observation: Successfully queued import movies job: J123. The job is now 
-running. I need to wait for this job to complete before proceeding to 
-motion correction.
-
-Thought: The import job J123 is running. I need to wait for it to complete 
-before I can start motion correction, as motion correction depends on the 
-imported movies.
-
-Action: wait_for_job
-Parameters: job_uid=J123
-
-Observation: Job J123 completed successfully. Now I can proceed with motion 
-correction using the imported movies.
-```
-
-## 🏗️ Architecture
-
-### Core Components
-
-- **ReActCryoEMAgent**: ReAct-based agent for intelligent workflow orchestration
-- **ReActCryoEMWorkflow**: Workflow orchestrator using ReAct methodology
-- **CryoSPARCTools**: Direct interface to CryoSPARC operations
-- **ConfigLoader**: JSON-based configuration management with validation
-
-### Modular Stage Agents
-
-CryoAgent includes specialized modular agents for each stage of the cryoEM workflow:
-
-- **PreprocessingAgent**: Handles movie import, motion correction, CTF estimation, and micrograph selection
-- **PickingAgent**: Manages particle detection using blob picker and template-based picking with 2D classification
-- **ReconstructionAgent**: Generates initial 3D models using ab initio reconstruction (see [3D Reconstruction Agent Documentation](docs/3D_RECONSTRUCTION_AGENT.md))
-
-Each modular agent follows the same architectural pattern with:
-- ReAct framework implementation
-- Dedicated tools and workflow orchestration
-- JSON-based configuration
-- Comprehensive documentation
-
-### ReAct Workflow Process
-
-1. **Reasoning Phase**: Agent analyzes current state and determines next actions
-2. **Acting Phase**: Agent executes specific tools with appropriate parameters
-3. **Observation Phase**: Agent analyzes results and updates understanding
-4. **Iteration**: Process repeats until workflow completion
-
-## 🔍 Key Benefits
-
-### ReAct Advantages
-- **Transparent Reasoning**: See exactly how the agent thinks through problems
-- **Better Error Handling**: More intelligent error recovery and retry strategies
-- **Dependency Management**: Automatic handling of workflow dependencies
-- **Self-Reflection**: Agent can analyze its own performance and adjust
-
-### Configuration Benefits
-- **Centralized Settings**: All parameters in one JSON file
-- **Environment Flexibility**: Easy switching between different configurations
-- **Validation**: Pydantic-based configuration validation
-- **Type Safety**: Strong typing for all configuration parameters
-
-## 🚨 Error Handling
-
-The ReAct agent includes sophisticated error handling:
-
-1. **Automatic Retries**: Configurable retry strategies for failed jobs
-2. **Fallback Strategies**: Multiple approaches when primary methods fail
-3. **Graceful Degradation**: Continue workflow when possible, even with partial failures
-4. **Detailed Logging**: Comprehensive logging of all reasoning and actions
-
-## 🧠 Memory Control
-
-CryoAgent includes sophisticated memory control features to manage LLM conversation history and context.
-
-### Memory Control Parameters
-
-Configure memory behavior in your `config.json`:
-
-```json
-{
-  "agent": {
-    "memory_control": {
-      "clear_memory_on_new_conversation": true,
-      "maintain_context_between_interactions": false
-    }
-  }
-}
-```
-
-### Memory Control Options
-
-- **`clear_memory_on_new_conversation`**: Whether to clear conversation history when starting a new conversation
-- **`maintain_context_between_interactions`**: Whether to maintain context between different interactions
-
-### Usage Examples
-
-```python
-# Run workflow with conversation ID for memory management
-result = agent.run_react_workflow(
-    "Process my cryoEM data", 
-    conversation_id="session_1"
-)
-
-# Check memory status
-memory_status = agent.get_memory_status()
-print(f"Conversation count: {memory_status['conversation_count']}")
-
-# Dynamically change memory control settings
-agent.set_memory_control(
-    clear_on_new_conversation=False,
-    maintain_context=True
-)
-
-# Force clear memory when needed
-agent.force_clear_memory()
-```
-
-### Use Cases
-
-- **Debugging**: Set `clear_memory_on_new_conversation=true` for fresh starts each time
-- **Continuous Workflows**: Set `maintain_context_between_interactions=true` for ongoing sessions
-- **Session Management**: Use `conversation_id` to group related interactions
-
-## 📊 Monitoring and Debugging
-
-### Connection Testing
-
-Before running workflows, test your connections:
-
-```bash
-# Test DeepSeek API connection
-python test_deepseek_connection.py
-
-# Test CryoSPARC connection
-python test_cryosparc_connection.py
-```
-
-### Real-time Status Updates
-
-The workflow provides comprehensive status monitoring:
-
-```
-📊 Basic Workflow Results:
-1. import_movies: ✅ SUCCESS
-   Job UID: J81
-   Message: Step import_movies completed successfully
-
-2. motion_correction: ✅ SUCCESS
-   Job UID: J82
-   Message: Step motion_correction completed successfully
-
-3. ctf_estimation: ✅ SUCCESS
-   Job UID: J83
-   Message: Step ctf_estimation completed successfully
-
-📈 Workflow Summary:
-   Total Steps: 3
-   Successful: 3
-   Failed: 0
-   Execution Time: 1250.45 seconds
-
-🧠 ReAct Reasoning History:
-   1. I need to start by importing movies from the configured path
-   2. The import job J81 has started, now I need to wait for completion
-   3. Import job completed successfully, now I can start motion correction
-   ...
-```
-
-### Logging and Debugging
-
-```python
-# Get the agent's reasoning history
-reasoning_history = agent.get_reasoning_history()
-for reasoning in reasoning_history:
-    print(f"Reasoning: {reasoning}")
-
-# Get current workflow state
-current_state = workflow.get_current_state()
-print(f"Current state: {current_state}")
-
-# Get workflow summary
-summary = workflow.get_workflow_summary()
-print(f"Summary: {summary}")
-```
-
-## ⚠️ Troubleshooting
-
-### Common Issues
-
-1. **Connection Failed**
-   ```
-   ❌ Failed to connect to CryoSPARC
-   ```
-   - Check CryoSPARC is running
-   - Verify host, port, and credentials in config
-   - Test connection: `python cryoagent_workflow.py --workflow test`
-
-2. **Configuration Error**
-   ```
-   ❌ Configuration file not found
-   ```
-   - Ensure `config.json` exists
-   - Use `--config` to specify different config file
-
-3. **Job Timeout**
-   ```
-   ⏰ Job J81 timed out after 3600 seconds
-   ```
-   - Increase timeout: `--timeout 7200`
-   - Check CryoSPARC job queue for issues
-
-### Debug Mode
-
-For detailed debugging:
-
-```bash
-python cryoagent_workflow.py --verbose --workflow test
-```
-
-## 🎯 Best Practices
-
-1. **Always test connection first**: `python cryoagent_workflow.py --workflow test`
-2. **Use dry run for new configurations**: `python cryoagent_workflow.py --dry-run`
-3. **Monitor with verbose output**: `python cryoagent_workflow.py --verbose`
-4. **Set appropriate timeouts**: `--timeout 7200` for large datasets
-5. **Check CryoSPARC resources** before running large workflows
-6. **Keep configuration files secure** (don't commit credentials)
-
-## 🔌 API Connection Testing
-
-Before running workflows, test your API connections:
-
-### Comprehensive API Test
-```bash
-# Test all API connections (CryoSPARC + LLM + Integration)
-python test_api_connections.py
-```
-
-This script tests:
-- ✅ Configuration loading and validation
-- ✅ CryoSPARC connection and basic operations
-- ✅ LLM API connection (DeepSeek/OpenAI)
-- ✅ Component integration
-- ✅ Workflow readiness
-
-### CryoSPARC-Only Test
-```bash
-# Test only CryoSPARC connection with performance metrics
-python test_cryosparc_connection.py
-```
-
-This script tests:
-- ✅ CryoSPARC connection
-- ✅ Project and workspace access
-- ✅ Connection performance
-- ✅ Basic operations
-
-### Quick Connection Test
-```bash
-# Test connection using the workflow script
-python cryoagent_workflow.py --workflow test
-```
-
-## 📚 Examples
-
-### Complete Workflow
-```bash
-# Run the full pipeline
-python cryoagent_workflow.py
-```
-
-### Test Connection
-```bash
-# Verify setup
-python cryoagent_workflow.py --workflow test
-```
-
-### Custom Pipeline
-```bash
-# Only import and motion correction
-python cryoagent_workflow.py --workflow custom --steps import_movies,motion_correction
-```
-
-### Development/Testing
-```bash
-# Dry run to see what would happen
-python cryoagent_workflow.py --dry-run
-
-# Verbose output for debugging
-python cryoagent_workflow.py --verbose --workflow test
-```
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit issues, feature requests, or pull requests.
-
-## 📄 License
-
-This project is licensed under the MIT License - see the LICENSE file for details.
-
-## 🙏 Acknowledgments
-
-- CryoSPARC team for the excellent cryoEM processing platform
-- LangChain team for the agentic framework
-- The cryoEM community for feedback and contributions
+This project is licensed under the MIT License; see the `LICENSE` file.
