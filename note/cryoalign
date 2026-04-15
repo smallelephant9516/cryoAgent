@@ -19,3 +19,4 @@ chimerax --nogui --script "/home/daoyi/Github/cryoagent/cryoagent/utils/fitmap_c
 # calfsc
 
 python /home/daoyi/Github/cryoagent/cryoagent/utils/cal_fsc.py /mnt/sda2/relion/10025/10025_subset/Class3D/job038/run_it025_class001.mrc /mnt/sda2/relion/10025/10025_subset/Class3D/job038/run_it025_class003_flip_trans_fitmap.mrc
+

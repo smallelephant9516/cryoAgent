@@ -6,6 +6,7 @@ set -uo pipefail  # Note: removed -e to allow steps to continue on failure
 # - cryoagent        (from Gitee, environment.yml)
 # - helicon          (from GitHub, pip install)
 # - magellon2DAssess (for Magellon / CryoSift 2D assess)
+# - cryoAlign2       (Docker image from cryoalign_env.tar.gz; see note/installation of the cryoalign2)
 #############################################
 
 # Function to show usage
@@ -17,9 +18,13 @@ Install conda environments for CryoAgent.
 
 OPTIONS:
     -h, --help          Show this help message
-    --steps STEP1 ...   Specify which steps to run (1-5)
+    --steps STEP1 ...   Specify which steps to run (1-6)
                         Can specify multiple steps: --steps 1 3 5
                         Or use positional arguments: $0 1 3 5
+    --cryoalign2-tarball PATH
+                        Override path to cryoalign_env.tar.gz (or .tar) for step 6.
+                        Default if unset: \$HOME/cryoalign_env.tar.gz (also tries \$HOME/cryoalign_env.tar).
+                        Same as environment variable CRYOALIGN2_TARBALL.
 
 STEPS:
     1   cryoagent environment
@@ -27,12 +32,15 @@ STEPS:
     3   magellon2DAssess environment
     4   Configure API keys and license
     5   Activate cryoagent environment
+    6   CryoAlign2 Docker image (gzip -d, docker load; see note/installation of the cryoalign2)
 
 EXAMPLES:
-    $0                  # Run all steps
+    $0                  # Run all steps (CryoAlign2 uses ~/cryoalign_env.tar.gz by default)
     $0 3                # Run only step 3
     $0 1 3 5            # Run steps 1, 3, and 5
     $0 --steps 2 4      # Run steps 2 and 4
+    $0 6 --cryoalign2-tarball /path/to/cryoalign_env.tar.gz
+    CRYOALIGN2_TARBALL=/path/to/cryoalign_env.tar.gz $0 6
 
 EOF
 }
@@ -40,12 +48,21 @@ EOF
 # Parse command-line arguments
 RUN_STEPS=()
 USE_STEPS_FLAG=false
+CRYOALIGN2_TARBALL_CLI=""
 
 while [[ $# -gt 0 ]]; do
     case $1 in
         -h|--help)
             show_usage
             exit 0
+            ;;
+        --cryoalign2-tarball)
+            if [[ $# -lt 2 ]]; then
+                echo "⛔ ERROR: --cryoalign2-tarball requires a path to cryoalign_env.tar.gz (or .tar)"
+                exit 1
+            fi
+            CRYOALIGN2_TARBALL_CLI="$2"
+            shift 2
             ;;
         --steps)
             USE_STEPS_FLAG=true
@@ -58,10 +75,10 @@ while [[ $# -gt 0 ]]; do
             ;;
         [0-9]*)
             # Positional argument - step number
-            if [[ "$1" =~ ^[1-5]$ ]]; then
+            if [[ "$1" =~ ^[1-6]$ ]]; then
                 RUN_STEPS+=("$1")
             else
-                echo "⛔ ERROR: Invalid step number: $1 (must be 1-5)"
+                echo "⛔ ERROR: Invalid step number: $1 (must be 1-6)"
                 exit 1
             fi
             shift
@@ -115,6 +132,8 @@ STEP2_SUCCESS=false
 STEP3_SUCCESS=false
 STEP4_SUCCESS=false
 STEP5_SUCCESS=false
+STEP6_SUCCESS=false
+STEP6_SOFT_SKIPPED=false
 
 echo "📂 Working directory: $SCRIPT_DIR"
 if [ ${#RUN_STEPS[@]} -gt 0 ]; then
@@ -590,6 +609,100 @@ else
 fi
 
 #############################################
+# 6. CryoAlign2 Docker image (cryoalign_env)
+# See: note/installation of the cryoalign2
+#   gzip -d cryoalign_env.tar.gz
+#   docker load -i cryoalign_env.tar
+#   docker run -it --name cryo2 cryoalign_env
+#############################################
+
+if should_run_step 6; then
+    echo "============================="
+    echo "6️⃣  CryoAlign2 (Docker image from tarball)"
+    echo "============================="
+
+    STEP6_SUCCESS=false
+    CRYOALIGN2_FROM_DEFAULT=false
+    if [ -z "$CRYOALIGN2_TARBALL_CLI" ] && [ -z "${CRYOALIGN2_TARBALL:-}" ]; then
+        CRYOALIGN2_FROM_DEFAULT=true
+    fi
+    CRYOALIGN2_DEFAULT_GZ="$HOME/cryoalign_env.tar.gz"
+    CRYOALIGN2_DEFAULT_TAR="$HOME/cryoalign_env.tar"
+    CRYOALIGN2_ARCHIVE="${CRYOALIGN2_TARBALL_CLI:-${CRYOALIGN2_TARBALL:-$CRYOALIGN2_DEFAULT_GZ}}"
+
+    if [ "$CRYOALIGN2_FROM_DEFAULT" = true ]; then
+        echo "📂 CryoAlign2 archive (default): $CRYOALIGN2_DEFAULT_GZ"
+    fi
+
+    if [ ! -f "$CRYOALIGN2_ARCHIVE" ] && [ "$CRYOALIGN2_FROM_DEFAULT" = true ] && [ -f "$CRYOALIGN2_DEFAULT_TAR" ]; then
+        CRYOALIGN2_ARCHIVE="$CRYOALIGN2_DEFAULT_TAR"
+        echo "📦 Using existing $CRYOALIGN2_DEFAULT_TAR ('cryoalign_env.tar.gz' not found)."
+    fi
+
+    if [ ! -f "$CRYOALIGN2_ARCHIVE" ]; then
+        if [ "$CRYOALIGN2_FROM_DEFAULT" = true ] && [ ${#RUN_STEPS[@]} -eq 0 ]; then
+            STEP6_SOFT_SKIPPED=true
+            echo "⏭️  Skipping step 6 (CryoAlign2): no archive at default locations:"
+            echo "   $CRYOALIGN2_DEFAULT_GZ"
+            echo "   $CRYOALIGN2_DEFAULT_TAR"
+        elif [ "$CRYOALIGN2_FROM_DEFAULT" = true ]; then
+            echo "⛔ ERROR: CryoAlign2 archive not found at default locations:"
+            echo "   $CRYOALIGN2_DEFAULT_GZ"
+            echo "   $CRYOALIGN2_DEFAULT_TAR"
+            echo "   Override with: --cryoalign2-tarball PATH  or  CRYOALIGN2_TARBALL=PATH"
+        else
+            echo "⛔ ERROR: File not found: $CRYOALIGN2_ARCHIVE"
+        fi
+        echo
+    elif ! command -v docker &> /dev/null; then
+        echo "⛔ ERROR: 'docker' command not found. Install Docker to load the CryoAlign2 image."
+        echo
+    else
+        CRYOALIGN2_ARCHIVE_ABS="$(cd "$(dirname "$CRYOALIGN2_ARCHIVE")" && pwd)/$(basename "$CRYOALIGN2_ARCHIVE")"
+        CRYOALIGN2_DIR="$(dirname "$CRYOALIGN2_ARCHIVE_ABS")"
+        TAR_FOR_LOAD=""
+
+        if [[ "$CRYOALIGN2_ARCHIVE_ABS" == *.tar.gz ]]; then
+            TAR_FOR_LOAD="${CRYOALIGN2_ARCHIVE_ABS%.gz}"
+            if [ -f "$TAR_FOR_LOAD" ]; then
+                echo "📦 Found existing $(basename "$TAR_FOR_LOAD"); skipping gzip -d."
+            else
+                echo "📦 Decompressing: gzip -d $(basename "$CRYOALIGN2_ARCHIVE_ABS")"
+                if ( cd "$CRYOALIGN2_DIR" && gzip -d "$(basename "$CRYOALIGN2_ARCHIVE_ABS")" ); then
+                    echo "✅ Decompressed to $(basename "$TAR_FOR_LOAD")"
+                else
+                    echo "⛔ ERROR: gzip -d failed."
+                    TAR_FOR_LOAD=""
+                fi
+            fi
+        elif [[ "$CRYOALIGN2_ARCHIVE_ABS" == *.tar ]]; then
+            TAR_FOR_LOAD="$CRYOALIGN2_ARCHIVE_ABS"
+        else
+            echo "⛔ ERROR: Expected a .tar.gz or .tar file, got: $CRYOALIGN2_ARCHIVE_ABS"
+        fi
+
+        if [ -n "$TAR_FOR_LOAD" ] && [ -f "$TAR_FOR_LOAD" ]; then
+            echo "📥 Loading Docker image: docker load -i $(basename "$TAR_FOR_LOAD")"
+            if docker load -i "$TAR_FOR_LOAD"; then
+                echo "✅ Docker image loaded (repository tag should include cryoalign_env)."
+                STEP6_SUCCESS=true
+                echo
+                echo "💡 Start an interactive container (matches note/installation of the cryoalign2):"
+                echo "   docker run -it --name cryo2 cryoalign_env"
+                echo "   If a container named 'cryo2' already exists:  docker start -ai cryo2"
+            else
+                echo "⛔ ERROR: docker load failed."
+            fi
+        fi
+        echo
+    fi
+else
+    echo "⏭️  Skipping step 6 (CryoAlign2 Docker image) - not specified"
+    STEP6_SUCCESS=false
+    echo
+fi
+
+#############################################
 # Summary
 #############################################
 
@@ -626,11 +739,18 @@ else
 fi
 
 print_step_status 5 "Activate cryoagent environment" "$STEP5_SUCCESS"
+if ! should_run_step 6; then
+    print_step_status 6 "CryoAlign2 Docker image" "$STEP6_SUCCESS"
+elif [ "$STEP6_SOFT_SKIPPED" = true ]; then
+    echo "⏭️  Step 6: CryoAlign2 Docker image - SKIPPED (no ~/cryoalign_env.tar.gz or ~/cryoalign_env.tar)"
+else
+    print_step_status 6 "CryoAlign2 Docker image" "$STEP6_SUCCESS"
+fi
 
 echo
 echo "==============================================="
-if [ ${#RUN_STEPS[@]} -eq 0 ] || should_run_step 1 || should_run_step 2 || should_run_step 3; then
-    if [ "$STEP1_SUCCESS" = true ] || [ "$STEP2_SUCCESS" = true ] || [ "$STEP3_SUCCESS" = true ]; then
+if [ ${#RUN_STEPS[@]} -eq 0 ] || should_run_step 1 || should_run_step 2 || should_run_step 3 || should_run_step 6; then
+    if [ "$STEP1_SUCCESS" = true ] || [ "$STEP2_SUCCESS" = true ] || [ "$STEP3_SUCCESS" = true ] || [ "$STEP6_SUCCESS" = true ]; then
         echo "🎉 Installation completed with some successes!"
         echo "   You can retry failed steps manually if needed."
     else

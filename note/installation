@@ -1,6 +1,0 @@
-git clone https://gitee.com/fei_sun_lab/cryoagent
-sh ./install_all_envs.sh
-
-# need written permission in the cryosparc and relion folder
-
-# the cryosift need to be updated

@@ -70,7 +70,7 @@
     "base_port": 61000,
     "username": "lidaoyi16@hotmail.com",
     "password": "Password123",
-    "license_id": "30717d7e-8f18-11f0-8d17-8b491a13a8e1"
+    "license_id": "${LICENSE_ID}"
   },
   "relion": {
     "relion_exe": "/usr/local/bin/relion",

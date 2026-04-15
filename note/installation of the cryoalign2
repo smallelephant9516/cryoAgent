@@ -1,11 +1,6 @@
-sudo apt update
-sudo apt install -y \
-    build-essential \
-    git \
-    cmake \
-    libfftw3-dev \
-    libeigen3-dev \
-    libflann-dev \
-    libpcl-dev \
-    libboost-all-dev
+gzip -d cryoalign_env.tar.gz
+
+docker load -i cryoalign_env.tar
+
+docker run -it --name cryo2 cryoalign_env
 
