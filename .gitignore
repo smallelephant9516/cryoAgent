@@ -157,6 +157,7 @@ outputs
 
 # ignore the Magellon directory
 Magellon/
+helicon_clone/
 
 # ignore the cryoEM data temp
 configs_temp/
