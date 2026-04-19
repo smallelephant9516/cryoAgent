@@ -41,6 +41,7 @@ class CryoSPARCSettings(BaseModel):
     username: Optional[str] = Field(default="your-username", description="CryoSPARC username")
     password: Optional[str] = Field(default="your-password", description="CryoSPARC password")
     license_id: Optional[str] = Field(default="your-cryosparc-license-id-here", description="CryoSPARC license ID")
+    lane: Optional[str] = Field(default="default", description="Default CryoSPARC lane name")
     
     @classmethod
     def from_env(cls) -> "CryoSPARCSettings":

@@ -66,16 +66,17 @@
     "max_retries": 2
   },
   "cryosparc": {
-    "host": "localhost",
-    "base_port": 61000,
-    "username": "lidaoyi16@hotmail.com",
-    "password": "Password123",
-    "license_id": "${LICENSE_ID}"
+    "host": "192.168.193.100",
+    "base_port": 39000,
+    "username": "capture@ibp.ac.cn",
+    "password": "capture",
+    "license_id": "${LICENSE_ID}",
+    "lane": "default"
   },
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
     "continue_job": true,
-    "relion_dir": "/home/daoyi/scratch/relion/10028/ccc",
+    "relion_dir": "/home/cryosparcuser/Relion",
     "backend_execution": {
       "enabled": true,
       "default_timeout": 84600,

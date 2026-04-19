@@ -122,6 +122,45 @@ class CryoSPARCTools:
 
         return "particles"
 
+    def _queue_job_with_lane_fallback(
+        self,
+        job,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        log_prefix: str = "⚙️ No lane specified; retrying queue on lane",
+        logger=None,
+    ) -> Optional[str]:
+        """Queue a CryoSPARC job with shared lane fallback behavior.
+
+        Returns:
+            The lane that was explicitly used, or None when queueing succeeded
+            without a lane.
+        """
+        configured_lane = getattr(self.settings, "lane", None)
+        requested_lane = lane if lane is not None else configured_lane
+        used_lane = requested_lane
+        try:
+            job.queue(lane=requested_lane, hostname=hostname)
+        except Exception as queue_error:
+            message = str(queue_error)
+            if (requested_lane is None and hostname is None and "Must specify a lane" in message):
+                try:
+                    lanes = self.cs.get_lanes()
+                    if not lanes:
+                        raise queue_error
+                    used_lane = lanes[0]["name"]
+                    log_message = f"{log_prefix} '{used_lane}'"
+                    if logger is not None:
+                        logger.info(log_message)
+                    else:
+                        print(log_message)
+                    job.queue(lane=used_lane)
+                except Exception:
+                    raise queue_error
+            else:
+                raise queue_error
+        return used_lane
+
     def import_movies(
         self,
         project_uid: str,
@@ -294,23 +333,10 @@ class CryoSPARCTools:
             job = workspace.create_job("import_micrographs", params=job_params)
             
             # Queue the job (handle lane requirement if needed)
-            try:
-                job.queue()
-            except Exception as queue_error:
-                message = str(queue_error)
-                if "Must specify a lane" in message:
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if lanes:
-                            used_lane = lanes[0]["name"]
-                            print(f"No lane specified; using default lane '{used_lane}'")
-                            job.queue(lane=used_lane)
-                        else:
-                            raise queue_error
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            self._queue_job_with_lane_fallback(
+                job,
+                log_prefix="No lane specified; using default lane",
+            )
             
             print(f"Queued import micrographs job: {job.uid}")
             
@@ -434,23 +460,11 @@ class CryoSPARCTools:
                     f"tried variants of params, last error: {errors[-1] if errors else 'unknown'}"
                 )
 
-            used_lane = lane
-            try:
-                job.queue(lane=lane, hostname=hostname)
-            except Exception as queue_error:
-                message = str(queue_error)
-                if (lane is None and hostname is None and "Must specify a lane" in message):
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if not lanes:
-                            raise queue_error
-                        used_lane = lanes[0]["name"]
-                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
-                        job.queue(lane=used_lane)
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            used_lane = self._queue_job_with_lane_fallback(
+                job,
+                lane=lane,
+                hostname=hostname,
+            )
             print(f"Queued import particles job: {job.uid}")
 
             self._job_cache[job.uid] = {
@@ -596,23 +610,11 @@ class CryoSPARCTools:
                 )
             
             # Queue the job
-            used_lane = lane
-            try:
-                job.queue(lane=lane, hostname=hostname)
-            except Exception as queue_error:
-                message = str(queue_error)
-                if (lane is None and hostname is None and "Must specify a lane" in message):
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if not lanes:
-                            raise queue_error
-                        used_lane = lanes[0]["name"]
-                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
-                        job.queue(lane=used_lane)
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            used_lane = self._queue_job_with_lane_fallback(
+                job,
+                lane=lane,
+                hostname=hostname,
+            )
             print(f"Queued motion correction job: {job.uid}")
             
             self._job_cache[job.uid] = {
@@ -717,23 +719,11 @@ class CryoSPARCTools:
             )
             
             # Queue the job
-            used_lane = lane
-            try:
-                job.queue(lane=lane, hostname=hostname)
-            except Exception as queue_error:
-                message = str(queue_error)
-                if (lane is None and hostname is None and "Must specify a lane" in message):
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if not lanes:
-                            raise queue_error
-                        used_lane = lanes[0]["name"]
-                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
-                        job.queue(lane=used_lane)
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            used_lane = self._queue_job_with_lane_fallback(
+                job,
+                lane=lane,
+                hostname=hostname,
+            )
             print(f"Queued CTF estimation job: {job.uid}")
             
             self._job_cache[job.uid] = {
@@ -1127,23 +1117,11 @@ class CryoSPARCTools:
                 )
             
             # Queue the job
-            used_lane = lane
-            try:
-                job.queue(lane=lane, hostname=hostname)
-            except Exception as queue_error:
-                message = str(queue_error)
-                if (lane is None and hostname is None and "Must specify a lane" in message):
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if not lanes:
-                            raise queue_error
-                        used_lane = lanes[0]["name"]
-                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
-                        job.queue(lane=used_lane)
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            used_lane = self._queue_job_with_lane_fallback(
+                job,
+                lane=lane,
+                hostname=hostname,
+            )
             print(f"Queued blob picker GPU job: {job.uid}")
             
             self._job_cache[job.uid] = {
@@ -1323,23 +1301,11 @@ class CryoSPARCTools:
                 )
             
             # Queue the job
-            used_lane = lane
-            try:
-                job.queue(lane=lane, hostname=hostname)
-            except Exception as queue_error:
-                message = str(queue_error)
-                if (lane is None and hostname is None and "Must specify a lane" in message):
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if not lanes:
-                            raise queue_error
-                        used_lane = lanes[0]["name"]
-                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
-                        job.queue(lane=used_lane)
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            used_lane = self._queue_job_with_lane_fallback(
+                job,
+                lane=lane,
+                hostname=hostname,
+            )
             print(f"Queued particle extraction job: {job.uid}")
             
             self._job_cache[job.uid] = {
@@ -1544,23 +1510,11 @@ class CryoSPARCTools:
                     )
             
             # Queue the job
-            used_lane = lane
-            try:
-                job.queue(lane=lane, hostname=hostname)
-            except Exception as queue_error:
-                message = str(queue_error)
-                if (lane is None and hostname is None and "Must specify a lane" in message):
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if not lanes:
-                            raise queue_error
-                        used_lane = lanes[0]["name"]
-                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
-                        job.queue(lane=used_lane)
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            used_lane = self._queue_job_with_lane_fallback(
+                job,
+                lane=lane,
+                hostname=hostname,
+            )
             print(f"Queued 2D classification job: {job.uid}")
             
             self._job_cache[job.uid] = {
@@ -1674,23 +1628,11 @@ class CryoSPARCTools:
             )
             
             # Queue the job
-            used_lane = lane
-            try:
-                job.queue(lane=lane, hostname=hostname)
-            except Exception as queue_error:
-                message = str(queue_error)
-                if (lane is None and hostname is None and "Must specify a lane" in message):
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if not lanes:
-                            raise queue_error
-                        used_lane = lanes[0]["name"]
-                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
-                        job.queue(lane=used_lane)
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            used_lane = self._queue_job_with_lane_fallback(
+                job,
+                lane=lane,
+                hostname=hostname,
+            )
             print(f"Queued 2D class selection job: {job.uid}")
             
             self._job_cache[job.uid] = {
@@ -2081,23 +2023,11 @@ class CryoSPARCTools:
                 )
             
             # Queue the job
-            used_lane = lane
-            try:
-                job.queue(lane=lane, hostname=hostname)
-            except Exception as queue_error:
-                message = str(queue_error)
-                if (lane is None and hostname is None and "Must specify a lane" in message):
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if not lanes:
-                            raise queue_error
-                        used_lane = lanes[0]["name"]
-                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
-                        job.queue(lane=used_lane)
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            used_lane = self._queue_job_with_lane_fallback(
+                job,
+                lane=lane,
+                hostname=hostname,
+            )
             print(f"Queued template picker job: {job.uid}")
             
             self._job_cache[job.uid] = {
@@ -2546,23 +2476,11 @@ class CryoSPARCTools:
             )
             
             # Queue the job with lane auto-detection
-            used_lane = lane
-            try:
-                job.queue(lane=lane, hostname=hostname)
-            except Exception as queue_error:
-                message = str(queue_error)
-                if (lane is None and hostname is None and "Must specify a lane" in message):
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if not lanes:
-                            raise queue_error
-                        used_lane = lanes[0]["name"]
-                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
-                        job.queue(lane=used_lane)
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            used_lane = self._queue_job_with_lane_fallback(
+                job,
+                lane=lane,
+                hostname=hostname,
+            )
             print(f"Queued ab initio reconstruction job: {job.uid}")
             
             job_uid = job.uid
@@ -2824,23 +2742,11 @@ class CryoSPARCTools:
             )
             
             # Queue the job with lane auto-detection
-            used_lane = lane
-            try:
-                job.queue(lane=lane, hostname=hostname)
-            except Exception as queue_error:
-                message = str(queue_error)
-                if (lane is None and hostname is None and "Must specify a lane" in message):
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if not lanes:
-                            raise queue_error
-                        used_lane = lanes[0]["name"]
-                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
-                        job.queue(lane=used_lane)
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            used_lane = self._queue_job_with_lane_fallback(
+                job,
+                lane=lane,
+                hostname=hostname,
+            )
             print(f"Queued homogeneous refinement job: {job.uid}")
             
             job_uid = job.uid
@@ -3097,23 +3003,11 @@ class CryoSPARCTools:
             )
             
             # Queue the job with lane auto-detection
-            used_lane = lane
-            try:
-                job.queue(lane=lane, hostname=hostname)
-            except Exception as queue_error:
-                message = str(queue_error)
-                if (lane is None and hostname is None and "Must specify a lane" in message):
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if not lanes:
-                            raise queue_error
-                        used_lane = lanes[0]["name"]
-                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
-                        job.queue(lane=used_lane)
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            used_lane = self._queue_job_with_lane_fallback(
+                job,
+                lane=lane,
+                hostname=hostname,
+            )
             print(f"Queued non-uniform refinement job: {job.uid}")
             
             job_uid = job.uid
@@ -3268,23 +3162,11 @@ class CryoSPARCTools:
             )
             
             # Queue the job
-            used_lane = lane
-            try:
-                job.queue(lane=lane, hostname=hostname)
-            except Exception as queue_error:
-                message = str(queue_error)
-                if (lane is None and hostname is None and "Must specify a lane" in message):
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if not lanes:
-                            raise queue_error
-                        used_lane = lanes[0]["name"]
-                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
-                        job.queue(lane=used_lane)
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            used_lane = self._queue_job_with_lane_fallback(
+                job,
+                lane=lane,
+                hostname=hostname,
+            )
             
             print(f"Queued reference motion correction job: {job.uid}")
             
@@ -3419,23 +3301,11 @@ class CryoSPARCTools:
             )
             
             # Queue the job with lane auto-detection
-            used_lane = lane
-            try:
-                job.queue(lane=lane, hostname=hostname)
-            except Exception as queue_error:
-                message = str(queue_error)
-                if (lane is None and hostname is None and "Must specify a lane" in message):
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if not lanes:
-                            raise queue_error
-                        used_lane = lanes[0]["name"]
-                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
-                        job.queue(lane=used_lane)
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            used_lane = self._queue_job_with_lane_fallback(
+                job,
+                lane=lane,
+                hostname=hostname,
+            )
             print(f"Queued heterogeneous refinement job: {job.uid}")
             
             job_uid = job.uid
@@ -3686,23 +3556,11 @@ class CryoSPARCTools:
                     print(f"⚠️  Could not set job title: {title_error}")
             
             # Queue the job with lane auto-detection
-            used_lane = lane
-            try:
-                job.queue(lane=lane, hostname=hostname)
-            except Exception as queue_error:
-                message = str(queue_error)
-                if (lane is None and hostname is None and "Must specify a lane" in message):
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if not lanes:
-                            raise queue_error
-                        used_lane = lanes[0]["name"]
-                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
-                        job.queue(lane=used_lane)
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            used_lane = self._queue_job_with_lane_fallback(
+                job,
+                lane=lane,
+                hostname=hostname,
+            )
             print(f"Queued regroup job: {job.uid}")
             
             job_uid = job.uid
@@ -4102,25 +3960,18 @@ class CryoSPARCTools:
             job_b = workspace.create_job("import_volumes", params=job_params_b)
             
             # Queue both jobs
-            used_lane = lane
-            try:
-                job_a.queue(lane=lane, hostname=hostname)
-                job_b.queue(lane=lane, hostname=hostname)
-            except Exception as queue_error:
-                message = str(queue_error)
-                if (lane is None and hostname is None and "Must specify a lane" in message):
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if not lanes:
-                            raise queue_error
-                        used_lane = lanes[0]["name"]
-                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
-                        job_a.queue(lane=used_lane)
-                        job_b.queue(lane=used_lane)
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            used_lane = self._queue_job_with_lane_fallback(
+                job_a,
+                lane=lane,
+                hostname=hostname,
+            )
+            second_lane = self._queue_job_with_lane_fallback(
+                job_b,
+                lane=used_lane if used_lane is not None else lane,
+                hostname=hostname,
+            )
+            if used_lane is None:
+                used_lane = second_lane
             
             print(f"Queued import volumes job A: {job_a.uid}")
             print(f"Queued import volumes job B: {job_b.uid}")
@@ -4287,23 +4138,11 @@ class CryoSPARCTools:
                 raise RuntimeError(f"Failed to connect inputs: {conn_err}")
 
             # 4. Queue the job with lane auto-detection
-            used_lane = lane
-            try:
-                job.queue(lane=lane, hostname=hostname)
-            except Exception as queue_error:
-                message = str(queue_error)
-                if (lane is None and hostname is None and "Must specify a lane" in message):
-                    try:
-                        lanes = self.cs.get_lanes()
-                        if not lanes:
-                            raise queue_error
-                        used_lane = lanes[0]["name"]
-                        print(f"⚙️ No lane specified; retrying queue on lane '{used_lane}'")
-                        job.queue(lane=used_lane)
-                    except Exception:
-                        raise queue_error
-                else:
-                    raise queue_error
+            used_lane = self._queue_job_with_lane_fallback(
+                job,
+                lane=lane,
+                hostname=hostname,
+            )
 
             print(f"Queued FSC validation job: {job.uid}")
 

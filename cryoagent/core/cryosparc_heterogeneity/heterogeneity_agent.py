@@ -409,22 +409,11 @@ Think carefully about convergence criteria and resolution filtering before proce
                 )
                 
                 # Queue the job
-                used_lane = None
-                try:
-                    hetero_job.queue()
-                except Exception as queue_error:
-                    message = str(queue_error)
-                    if "Must specify a lane" in message:
-                        try:
-                            lanes = self.cryosparc_tools.cs.get_lanes()
-                            if lanes:
-                                used_lane = lanes[0]["name"]
-                                self.logger.info(f"⚙️ No lane specified; using lane '{used_lane}'")
-                                hetero_job.queue(lane=used_lane)
-                        except Exception:
-                            raise queue_error
-                    else:
-                        raise queue_error
+                used_lane = self.cryosparc_tools._queue_job_with_lane_fallback(
+                    hetero_job,
+                    log_prefix="⚙️ No lane specified; using lane",
+                    logger=self.logger,
+                )
                 
                 hetero_job_uid = hetero_job.uid
                 self.logger.info(f"✅ Queued heterogeneous refinement job: {hetero_job_uid}")
@@ -812,24 +801,11 @@ Think carefully about convergence criteria and resolution filtering before proce
                     )
                     
                     # Queue the job
-                    used_lane = None
-                    try:
-                        job.queue()
-                    except Exception as queue_error:
-                        message = str(queue_error)
-                        if "Must specify a lane" in message:
-                            try:
-                                lanes = self.cryosparc_tools.cs.get_lanes()
-                                if lanes:
-                                    used_lane = lanes[0]["name"]
-                                    self.logger.info(f"⚙️ No lane specified; using lane '{used_lane}'")
-                                    job.queue(lane=used_lane)
-                                else:
-                                    raise queue_error
-                            except Exception:
-                                raise queue_error
-                        else:
-                            raise queue_error
+                    used_lane = self.cryosparc_tools._queue_job_with_lane_fallback(
+                        job,
+                        log_prefix="⚙️ No lane specified; using lane",
+                        logger=self.logger,
+                    )
                     
                     job_uid = job.uid
                     self.logger.info(f"✅ Non-uniform refinement job queued: {job_uid} (with {len(particles_group_names)} particle groups)")
