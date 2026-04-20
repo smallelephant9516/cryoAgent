@@ -26,6 +26,13 @@ OPTIONS:
                         Default if unset: \$HOME/cryoalign_env.tar.gz (also tries \$HOME/cryoalign_env.tar).
                         Same as environment variable CRYOALIGN2_TARBALL.
 
+Environment (optional):
+    DOCKER_USE_SUDO=1           Step 6: use sudo for docker when your user cannot access /var/run/docker.sock
+                                (e.g. not in the docker group). The script auto-tries sudo if it detects this.
+    CRYOALIGN2_SKIP_CONTAINER=1 Step 6: load the image only; do not create/start the cryo2 container.
+    CRYOALIGN2_CONTAINER_NAME   Step 6: container name (default: cryo2).
+    CRYOALIGN2_IMAGE_NAME         Step 6: image name for docker run (default: cryoalign_env).
+
 STEPS:
     1   cryoagent environment
     2   helicon environment
@@ -107,6 +114,46 @@ should_run_step() {
         fi
     done
     
+    return 1
+}
+
+# Resolve docker vs "sudo docker" for step 6 (Docker socket permission on Linux/WSL).
+cryoalign2_resolve_docker() {
+    CRYOALIGN2_DOCKER_CMD=(docker)
+    if [ "${DOCKER_USE_SUDO:-0}" = "1" ] || [ "${DOCKER_USE_SUDO:-}" = "yes" ] || [ "${DOCKER_USE_SUDO:-}" = "true" ]; then
+        if sudo docker info &>/dev/null; then
+            echo "⚠️  Using sudo for Docker (DOCKER_USE_SUDO is set)."
+            CRYOALIGN2_DOCKER_CMD=(sudo docker)
+            return 0
+        fi
+        echo "⛔ ERROR: DOCKER_USE_SUDO is set but 'sudo docker info' failed."
+        return 1
+    fi
+    if docker info &>/dev/null; then
+        return 0
+    fi
+    local err
+    err=$(docker info 2>&1) || true
+    if [[ "$err" != *permission\ denied* ]] && [[ "$err" != *docker.sock* ]]; then
+        echo "⛔ ERROR: docker info failed:"
+        echo "$err"
+        return 1
+    fi
+    if sudo -n docker info &>/dev/null 2>&1; then
+        echo "⚠️  Docker socket is not accessible as $USER; using sudo for docker load."
+        CRYOALIGN2_DOCKER_CMD=(sudo docker)
+        return 0
+    fi
+    if sudo docker info &>/dev/null; then
+        echo "⚠️  Docker socket is not accessible as $USER; using sudo for docker load."
+        CRYOALIGN2_DOCKER_CMD=(sudo docker)
+        return 0
+    fi
+    echo "⛔ ERROR: permission denied on Docker socket (cannot run docker or sudo docker)."
+    echo "   Add your user to the docker group: sudo usermod -aG docker \"$USER\""
+    echo "   Then log out and back in, or run: newgrp docker"
+    echo "   On WSL2: start Docker Desktop and enable WSL integration for this distro."
+    echo "   Retry step 6 after fixing permissions, or run once: sudo docker load -i <cryoalign_env.tar>"
     return 1
 }
 
@@ -658,43 +705,77 @@ if should_run_step 6; then
         echo "⛔ ERROR: 'docker' command not found. Install Docker to load the CryoAlign2 image."
         echo
     else
-        CRYOALIGN2_ARCHIVE_ABS="$(cd "$(dirname "$CRYOALIGN2_ARCHIVE")" && pwd)/$(basename "$CRYOALIGN2_ARCHIVE")"
-        CRYOALIGN2_DIR="$(dirname "$CRYOALIGN2_ARCHIVE_ABS")"
-        TAR_FOR_LOAD=""
+        if ! cryoalign2_resolve_docker; then
+            echo
+        else
+            CRYOALIGN2_ARCHIVE_ABS="$(cd "$(dirname "$CRYOALIGN2_ARCHIVE")" && pwd)/$(basename "$CRYOALIGN2_ARCHIVE")"
+            CRYOALIGN2_DIR="$(dirname "$CRYOALIGN2_ARCHIVE_ABS")"
+            TAR_FOR_LOAD=""
 
-        if [[ "$CRYOALIGN2_ARCHIVE_ABS" == *.tar.gz ]]; then
-            TAR_FOR_LOAD="${CRYOALIGN2_ARCHIVE_ABS%.gz}"
-            if [ -f "$TAR_FOR_LOAD" ]; then
-                echo "📦 Found existing $(basename "$TAR_FOR_LOAD"); skipping gzip -d."
-            else
-                echo "📦 Decompressing: gzip -d $(basename "$CRYOALIGN2_ARCHIVE_ABS")"
-                if ( cd "$CRYOALIGN2_DIR" && gzip -d "$(basename "$CRYOALIGN2_ARCHIVE_ABS")" ); then
-                    echo "✅ Decompressed to $(basename "$TAR_FOR_LOAD")"
+            if [[ "$CRYOALIGN2_ARCHIVE_ABS" == *.tar.gz ]]; then
+                TAR_FOR_LOAD="${CRYOALIGN2_ARCHIVE_ABS%.gz}"
+                if [ -f "$TAR_FOR_LOAD" ]; then
+                    echo "📦 Found existing $(basename "$TAR_FOR_LOAD"); skipping gzip -d."
                 else
-                    echo "⛔ ERROR: gzip -d failed."
-                    TAR_FOR_LOAD=""
+                    echo "📦 Decompressing: gzip -d $(basename "$CRYOALIGN2_ARCHIVE_ABS")"
+                    if ( cd "$CRYOALIGN2_DIR" && gzip -d "$(basename "$CRYOALIGN2_ARCHIVE_ABS")" ); then
+                        echo "✅ Decompressed to $(basename "$TAR_FOR_LOAD")"
+                    else
+                        echo "⛔ ERROR: gzip -d failed."
+                        TAR_FOR_LOAD=""
+                    fi
+                fi
+            elif [[ "$CRYOALIGN2_ARCHIVE_ABS" == *.tar ]]; then
+                TAR_FOR_LOAD="$CRYOALIGN2_ARCHIVE_ABS"
+            else
+                echo "⛔ ERROR: Expected a .tar.gz or .tar file, got: $CRYOALIGN2_ARCHIVE_ABS"
+            fi
+
+            if [ -n "$TAR_FOR_LOAD" ] && [ -f "$TAR_FOR_LOAD" ]; then
+                echo "📥 Loading Docker image: ${CRYOALIGN2_DOCKER_CMD[*]} load -i $(basename "$TAR_FOR_LOAD")"
+                echo ""
+                if "${CRYOALIGN2_DOCKER_CMD[@]}" load -i "$TAR_FOR_LOAD"; then
+                    echo "✅ Docker image loaded (repository tag should include cryoalign_env)."
+                    STEP6_SUCCESS=true
+                    CRYOALIGN2_CTN="${CRYOALIGN2_CONTAINER_NAME:-cryo2}"
+                    CRYOALIGN2_IMG="${CRYOALIGN2_IMAGE_NAME:-cryoalign_env}"
+                    if [ "${CRYOALIGN2_SKIP_CONTAINER:-0}" != "1" ] && [ "${CRYOALIGN2_SKIP_CONTAINER:-}" != "yes" ]; then
+                        echo
+                        if "${CRYOALIGN2_DOCKER_CMD[@]}" inspect "$CRYOALIGN2_CTN" &>/dev/null; then
+                            running="$("${CRYOALIGN2_DOCKER_CMD[@]}" inspect -f '{{.State.Running}}' "$CRYOALIGN2_CTN" 2>/dev/null)" || running="false"
+                            if [ "$running" = "true" ]; then
+                                echo "✅ CryoAlign2 container '$CRYOALIGN2_CTN' is already running."
+                            else
+                                echo "🚀 Starting CryoAlign2 container '$CRYOALIGN2_CTN'..."
+                                if "${CRYOALIGN2_DOCKER_CMD[@]}" start "$CRYOALIGN2_CTN"; then
+                                    echo "✅ Container started (detached). Attach with: ${CRYOALIGN2_DOCKER_CMD[*]} exec -it $CRYOALIGN2_CTN bash"
+                                else
+                                    echo "⚠️  docker start failed; try manually: ${CRYOALIGN2_DOCKER_CMD[*]} start -ai $CRYOALIGN2_CTN"
+                                fi
+                            fi
+                        else
+                            echo "🚀 Creating and starting CryoAlign2 container '$CRYOALIGN2_CTN' from image '$CRYOALIGN2_IMG'..."
+                            if "${CRYOALIGN2_DOCKER_CMD[@]}" run -d --restart unless-stopped --name "$CRYOALIGN2_CTN" "$CRYOALIGN2_IMG"; then
+                                echo "✅ Container is running in the background."
+                                echo "💡 Interactive shell (matches note/installation of the cryoalign2): ${CRYOALIGN2_DOCKER_CMD[*]} exec -it $CRYOALIGN2_CTN bash"
+                            else
+                                echo "⚠️  docker run failed (image tag may differ). Try: ${CRYOALIGN2_DOCKER_CMD[*]} run -it --name $CRYOALIGN2_CTN $CRYOALIGN2_IMG"
+                            fi
+                        fi
+                    else
+                        echo
+                        echo "⏭️  Skipping container create/start (CRYOALIGN2_SKIP_CONTAINER is set)."
+                    fi
+                    echo
+                    echo "💡 Manual run (interactive, per note/installation of the cryoalign2):"
+                    echo "   ${CRYOALIGN2_DOCKER_CMD[*]} run -it --name $CRYOALIGN2_CTN $CRYOALIGN2_IMG"
+                    echo "   If '$CRYOALIGN2_CTN' already exists and is stopped:  ${CRYOALIGN2_DOCKER_CMD[*]} start -ai $CRYOALIGN2_CTN"
+                else
+                    echo "⛔ ERROR: docker load failed."
                 fi
             fi
-        elif [[ "$CRYOALIGN2_ARCHIVE_ABS" == *.tar ]]; then
-            TAR_FOR_LOAD="$CRYOALIGN2_ARCHIVE_ABS"
-        else
-            echo "⛔ ERROR: Expected a .tar.gz or .tar file, got: $CRYOALIGN2_ARCHIVE_ABS"
+            echo
         fi
-
-        if [ -n "$TAR_FOR_LOAD" ] && [ -f "$TAR_FOR_LOAD" ]; then
-            echo "📥 Loading Docker image: docker load -i $(basename "$TAR_FOR_LOAD")"
-            if docker load -i "$TAR_FOR_LOAD"; then
-                echo "✅ Docker image loaded (repository tag should include cryoalign_env)."
-                STEP6_SUCCESS=true
-                echo
-                echo "💡 Start an interactive container (matches note/installation of the cryoalign2):"
-                echo "   docker run -it --name cryo2 cryoalign_env"
-                echo "   If a container named 'cryo2' already exists:  docker start -ai cryo2"
-            else
-                echo "⛔ ERROR: docker load failed."
-            fi
-        fi
-        echo
     fi
 else
     echo "⏭️  Skipping step 6 (CryoAlign2 Docker image) - not specified"

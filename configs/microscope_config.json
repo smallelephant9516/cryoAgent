@@ -12,9 +12,9 @@
     "dose": 61.4,
     "particle_diameter": 180,
     "symmetry": "D2",
-    "movies_path": "/home/cryosparcuser/Relion/Betagal/*.tiff",
+    "movies_path": "/home/daoyi/relion/relion30_tutorial/Movies/*.tiff",
     "micrographs_path": null,
-    "gain_ref_path": "/home/cryosparcuser/Relion/Betagal/gain.mrc",
+    "gain_ref_path": "/home/daoyi/relion/relion30_tutorial/Movies/gain.mrc",
     "gain_rot": 0,
     "gain_flip": 0
   },

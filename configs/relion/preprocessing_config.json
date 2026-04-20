@@ -22,27 +22,27 @@
     "selected_micrographs_star"
   ],
   "microscope_parameters": {
-    "movies_path": "/lustre2/EMDB/10010/data/micrographs/gain_corrected/BMV_DE12/movies_37/*.mrcs",
-    "gain_ref_path": null,
-    "pixel_size": 0.99,
-    "voltage": 300.0,
-    "cs_mm": 5.2,
+    "movies_path": "/home/daoyi/relion/relion30_tutorial/Movies/*.tiff",
+    "gain_ref_path": "/home/daoyi/relion/relion30_tutorial/Movies/gain.mrc",
+    "pixel_size": 0.88,
+    "voltage": 200.0,
+    "cs_mm": 1.4,
     "q0": 0.1,
     "beamtilt_x": 0.0,
     "beamtilt_y": 0.0,
     "gain_rot": 0,
     "gain_flip": 0,
-    "dose": 52.0,
-    "particle_diameter": 290.0,
-    "symmetry": "I"
+    "dose": 61.4,
+    "particle_diameter": 180.0,
+    "symmetry": "D2"
   },
   "workflow": {
     "import_movies": {
-      "movies_path": "/lustre2/EMDB/10010/data/micrographs/gain_corrected/BMV_DE12/movies_37/*.mrcs",
-      "gain_ref_path": null,
-      "pixel_size": 0.99,
-      "voltage": 300.0,
-      "cs_mm": 5.2,
+      "movies_path": "/home/daoyi/relion/relion30_tutorial/Movies/*.tiff",
+      "gain_ref_path": "/home/daoyi/relion/relion30_tutorial/Movies/gain.mrc",
+      "pixel_size": 0.88,
+      "voltage": 200.0,
+      "cs_mm": 1.4,
       "q0": 0.1,
       "beamtilt_x": 0.0,
       "beamtilt_y": 0.0,
@@ -50,7 +50,7 @@
       "gain_flip": 0,
       "optics_group_name": "opticsGroup1",
       "continue_job": true,
-      "dose": 52.0
+      "dose": 61.4
     },
     "motion_correction": {
       "use_motioncor2": false,

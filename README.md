@@ -13,27 +13,7 @@ CryoAgent is an agent-driven pipeline for single-particle cryo-EM. It drives **R
 
 ## 3. Installation
 
-### Prerequisites
-
-- [Conda](https://docs.conda.io/) (Anaconda or Miniconda) on your `PATH`, since the main installer is conda-based.
-
-### Clone the repository
-
-```bash
-git clone https://gitee.com/fei_sun_lab/cryoagent.git
-cd cryoagent
-```
-
-### Recommended: `install_all_envs.sh`
-
-The script [`install_all_envs.sh`](install_all_envs.sh) lives at the repo root. It `cd`s to its own directory, then creates and wires up conda environments used by CryoAgent (cryoagent core env, Helicon for transitions, Magellon/CryoSift for 2D assessment, optional API/license prompts, and activation hints).
-
-Make it executable once, then run it from the repository root:
-
-```bash
-chmod +x install_all_envs.sh
-./install_all_envs.sh
-```
+Step-by-step prerequisites, Zenodo tarball for CryoAlign2, `install.sh`, and JSON edits are documented in **[note/installation.md](note/installation.md)**.
 
 ### Alternative: pip only
 

@@ -1,5 +1,0 @@
-# This is the basic running based on the set configs 
-python cryoagent_workflow.py
-
-# This is trying all the combination of relion and cryosparcs. 
-python /home/daoyi/Github/cryoagent/run_pipeline_matrix.py --relion-base-dir /home/daoyi/scratch/relion/10025_demo --experiment-name 10025_demo

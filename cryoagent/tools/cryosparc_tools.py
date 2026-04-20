@@ -1600,8 +1600,8 @@ class CryoSPARCTools:
             top_n_classes: Number of top classes to select (used when selection_mode='top_n')
             selection_mode: Strategy for selecting classes ('top_n' or 'cryosift')
             cryosift_options: Additional arguments when selection_mode='cryosift'
-            lane: Compute lane to use
-            hostname: Specific hostname to run on
+            lane: Ignored; select_2D is interactive and must queue on the master without a lane.
+            hostname: Ignored; must be None for interactive queueing.
             wait_for_completion: Whether to wait for job completion
             timeout: Maximum time to wait for completion in seconds
             check_interval: Time between status checks in seconds
@@ -1627,12 +1627,10 @@ class CryoSPARCTools:
                 }
             )
             
-            # Queue the job
-            used_lane = self._queue_job_with_lane_fallback(
-                job,
-                lane=lane,
-                hostname=hostname,
-            )
+            # select_2D is interactive: CryoSPARC requires lane=None and hostname=None
+            # (see validate_enqueue_job). Do not use settings.lane or lane fallback here.
+            job.queue(lane=None, hostname=None)
+            used_lane: Optional[str] = None
             print(f"Queued 2D class selection job: {job.uid}")
             
             self._job_cache[job.uid] = {
