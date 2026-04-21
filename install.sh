@@ -23,7 +23,7 @@ OPTIONS:
                         Or use positional arguments: $0 1 3 5
     --cryoalign2-tarball PATH
                         Override path to cryoalign_env.tar.gz (or .tar) for step 6.
-                        Default if unset: \$HOME/cryoalign_env.tar.gz (also tries \$HOME/cryoalign_env.tar).
+                        Default if unset: <install.sh dir>/cryoalign_env.tar.gz (also tries <install.sh dir>/cryoalign_env.tar).
                         Same as environment variable CRYOALIGN2_TARBALL.
 
 Environment (optional):
@@ -42,7 +42,7 @@ STEPS:
     6   CryoAlign2 Docker image (gzip -d, docker load; see note/installation of the cryoalign2)
 
 EXAMPLES:
-    $0                  # Run all steps (CryoAlign2 uses ~/cryoalign_env.tar.gz by default)
+    $0                  # Run all steps (CryoAlign2 uses ./cryoalign_env.tar.gz by default)
     $0 3                # Run only step 3
     $0 1 3 5            # Run steps 1, 3, and 5
     $0 --steps 2 4      # Run steps 2 and 4
@@ -673,8 +673,8 @@ if should_run_step 6; then
     if [ -z "$CRYOALIGN2_TARBALL_CLI" ] && [ -z "${CRYOALIGN2_TARBALL:-}" ]; then
         CRYOALIGN2_FROM_DEFAULT=true
     fi
-    CRYOALIGN2_DEFAULT_GZ="$HOME/cryoalign_env.tar.gz"
-    CRYOALIGN2_DEFAULT_TAR="$HOME/cryoalign_env.tar"
+    CRYOALIGN2_DEFAULT_GZ="$SCRIPT_DIR/cryoalign_env.tar.gz"
+    CRYOALIGN2_DEFAULT_TAR="$SCRIPT_DIR/cryoalign_env.tar"
     CRYOALIGN2_ARCHIVE="${CRYOALIGN2_TARBALL_CLI:-${CRYOALIGN2_TARBALL:-$CRYOALIGN2_DEFAULT_GZ}}"
 
     if [ "$CRYOALIGN2_FROM_DEFAULT" = true ]; then
@@ -823,7 +823,7 @@ print_step_status 5 "Activate cryoagent environment" "$STEP5_SUCCESS"
 if ! should_run_step 6; then
     print_step_status 6 "CryoAlign2 Docker image" "$STEP6_SUCCESS"
 elif [ "$STEP6_SOFT_SKIPPED" = true ]; then
-    echo "⏭️  Step 6: CryoAlign2 Docker image - SKIPPED (no ~/cryoalign_env.tar.gz or ~/cryoalign_env.tar)"
+    echo "⏭️  Step 6: CryoAlign2 Docker image - SKIPPED (no ./cryoalign_env.tar.gz or ./cryoalign_env.tar)"
 else
     print_step_status 6 "CryoAlign2 Docker image" "$STEP6_SUCCESS"
 fi

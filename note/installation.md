@@ -11,7 +11,7 @@ git clone https://gitee.com/fei_sun_lab/cryoagent
 
 # download the cryoAlign2
 
-curl -L https://zenodo.org/records/19552663/files/cryoalign_env.tar.gz?download=1 -o ~/cryoalign_env.tar.gz
+curl -L https://zenodo.org/records/19552663/files/cryoalign_env.tar.gz?download=1 -o ./cryoalign_env.tar.gz
 
 # Install the necessary envs and code
 

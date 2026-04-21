@@ -164,3 +164,6 @@ configs_temp/
 configs/session.json
 configs/microscope_config.json
 configs/master_config.json
+
+# cryoalign2
+cryoalign_env.tar.gz
