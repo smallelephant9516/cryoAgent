@@ -67,10 +67,10 @@
   },
   "cryosparc": {
     "host": "localhost",
-    "base_port": 39000,
-    "username": "lidaoyi16@hotmail.com",
-    "password": "Password123",
-    "license_id": "ea7aec62-b1ae-11e9-8554-cb1fba28db1b",
+    "base_port": 62000,
+    "username": "capture@ibp.ac.cn",
+    "password": "capture",
+    "license_id": "5213ed66-d2cb-11ec-a411-c7b6ab592fe4",
     "lane": "default"
   },
   "relion": {
@@ -111,9 +111,9 @@
     }
   },
   "cryosift": {
-    "cryosift_weights_path": "/home/daoyi/Github/cryoagent/Magellon/Sandbox/2dclass_evaluator/CNNTraining/final_model/final_model_cont.pth",
+    "cryosift_weights_path": "/data/user/cryosparcuser/Data/Github/cryoagent/Magellon/Sandbox/2dclass_evaluator/CNNTraining/final_model/final_model_cont.pth",
     "cryosift_weights_path_description": "Path to the CryoSift neural network weights file. This can be overridden by stage-specific configs.",
-    "cryosift_evaluator_script_path": "/home/daoyi/Github/cryoagent/Magellon/Sandbox/2dclass_evaluator/CNNTraining/output_class_list.py",
+    "cryosift_evaluator_script_path": "/data/user/cryosparcuser/Data/Github/cryoagent/Magellon/Sandbox/2dclass_evaluator/CNNTraining/output_class_list.py",
     "cryosift_evaluator_script_path_description": "Path to the CryoSift evaluator script (output_class_list.py). This can be overridden by stage-specific configs.",
     "cryosift_env": "magellon2DAssess",
     "cryosift_env_description": "Conda environment used to run CryoSift evaluation. This can be overridden by stage-specific configs."
@@ -139,8 +139,8 @@
         "base_url": "https://api.deepseek.com",
         "model_name": "deepseek-chat",
         "possible_models": [
-          "deepseek-chat",
-          "deepseek-reasoner"
+          "deepseek-v4-flash",
+          "deepseek-v4-pro"
         ],
         "temperature": 0.1,
         "timeout": 60
