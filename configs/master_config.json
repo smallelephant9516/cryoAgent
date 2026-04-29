@@ -196,10 +196,6 @@
       }
     }
   },
-  "workflow": {
-    "project_uid": "P3",
-    "workspace_uid": "W1"
-  },
   "job_management": {
     "default_timeout": 84600,
     "status_check_interval": 10,
