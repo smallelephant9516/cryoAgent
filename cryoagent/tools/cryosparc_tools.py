@@ -3094,6 +3094,8 @@ class CryoSPARCTools:
                 if param in kwargs:
                     job_params[param] = kwargs[param]
             
+            job_params["mem_cache_sz"] = 0.95
+            
             # Add any other parameters from kwargs
             for key, value in kwargs.items():
                 if key not in ['project_uid', 'workspace_uid', 'micrographs_job_uid', 

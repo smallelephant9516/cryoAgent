@@ -94,6 +94,14 @@ class ModelConfig(BaseModel):
     model_name: str = Field(description="Model name")
     temperature: float = Field(default=0.1, description="Model temperature")
     timeout: int = Field(default=60, description="Request timeout in seconds")
+    extra_body: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Optional provider-specific request payload extension"
+    )
+    deepseek_v4_extra_body: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="DeepSeek V4-only request payload overrides"
+    )
 
 
 class AgentSettings(BaseModel):

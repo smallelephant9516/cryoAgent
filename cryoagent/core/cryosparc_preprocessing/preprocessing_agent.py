@@ -347,7 +347,7 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 "gainref_flip_x": gainref_flip_x,
                 "gainref_flip_y": gainref_flip_y,
                 "gainref_rotate_num": gainref_rotate_num,
-                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion"), default=False),
                 "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
                 "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
             }
@@ -393,7 +393,7 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 "voltage": float(params.get("voltage", microscope_config.get("voltage", 300.0))),
                 "cs_mm": float(params.get("cs_mm", microscope_config.get("cs_mm", 2.7))),
                 "dose": float(params.get("dose", microscope_config.get("dose", 53.0))),
-                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion"), default=False),
                 "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
                 "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
             }
@@ -448,7 +448,7 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 "movies_job_uid": movies_job_uid,
                 "binning": self._parse_int_param(params.get("binning", motion_correction_config.get("binning", 1)), default=1, param_name="binning"),
                 "patch_size": self._parse_int_param(params.get("patch_size", motion_correction_config.get("patch_size", 5)), default=5, param_name="patch_size"),
-                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion"), default=False),
                 "timeout": self._parse_int_param(params.get("timeout", self.config.job_management.default_timeout), default=self.config.job_management.default_timeout, param_name="timeout"),
                 "check_interval": self._parse_int_param(params.get("check_interval", self.config.job_management.status_check_interval), default=self.config.job_management.status_check_interval, param_name="check_interval")
             }
@@ -525,7 +525,7 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 "group_job_uid": group_job_uid,
                 "min_res": float(params.get("min_res", ctf_config.get("min_res", 30.0))),
                 "max_res": float(params.get("max_res", ctf_config.get("max_res", 4.0))),
-                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion"), default=False),
                 "timeout": self._parse_int_param(params.get("timeout", self.config.job_management.default_timeout), default=self.config.job_management.default_timeout, param_name="timeout"),
                 "check_interval": self._parse_int_param(params.get("check_interval", self.config.job_management.status_check_interval), default=self.config.job_management.status_check_interval, param_name="check_interval")
             }
@@ -561,7 +561,7 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 "workspace_uid": workspace_uid,
                 "ctf_job_uid": params.get("ctf_job_uid"),
                 "min_resolution": float(params.get("min_resolution", micrograph_selection_config.get("min_resolution", 5.0))),
-                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion"), default=False),
                 "timeout": self._parse_int_param(params.get("timeout", self.config.job_management.default_timeout), default=self.config.job_management.default_timeout, param_name="timeout"),
                 "check_interval": self._parse_int_param(params.get("check_interval", self.config.job_management.status_check_interval), default=self.config.job_management.status_check_interval, param_name="check_interval")
             }

@@ -47,9 +47,9 @@ project_id = config.workflow.project_uid
 workspace_id = config.workflow.workspace_uid
 
 # 2. Inspect the job type to find the exact parameter name
-job_type = 'regroup_3D_new' 
+job_type = 'reference_motion_correction' 
 
-job = cs.find_job("P2", "J799")
+job = cs.find_job("P10", "J77")
 
 # 3. Inspect the 'params_base' dictionary
 # This contains the default key-value pairs for the job parameters.

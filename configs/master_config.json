@@ -71,7 +71,7 @@
     "username": "capture@ibp.ac.cn",
     "password": "capture",
     "license_id": "5213ed66-d2cb-11ec-a411-c7b6ab592fe4",
-    "lane": "default"
+    "lane": "4090"
   },
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
@@ -137,11 +137,15 @@
       "deepseek": {
         "api_key": "${DEEPSEEK_API_KEY}",
         "base_url": "https://api.deepseek.com",
-        "model_name": "deepseek-chat",
+        "model_name": "deepseek-v4-flash",
         "possible_models": [
+          "deepseek-chat",
+          "deepseek-reasoner",  
           "deepseek-v4-flash",
           "deepseek-v4-pro"
         ],
+        "extra_body": {},
+        "deepseek_v4_extra_body": {},
         "temperature": 0.1,
         "timeout": 60
       },
