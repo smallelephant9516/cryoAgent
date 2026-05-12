@@ -216,84 +216,6 @@ def cleanup_dataset_configs(temp_config_dir: Path, project_root: Path, logger: l
         logger.warning(f"Failed to cleanup configs: {e}")
 
 
-def collect_outputs_after_timestamp(outputs_dir: Path, timestamp: float) -> List[Path]:
-    """
-    Collect all output files created after a given timestamp.
-    
-    Args:
-        outputs_dir: Directory to search for outputs
-        timestamp: Unix timestamp to compare against
-        
-    Returns:
-        List of file paths created after the timestamp
-    """
-    if not outputs_dir.exists():
-        return []
-    
-    new_files = []
-    for file_path in outputs_dir.rglob("*"):
-        if file_path.is_file():
-            try:
-                file_mtime = file_path.stat().st_mtime
-                if file_mtime >= timestamp:
-                    new_files.append(file_path)
-            except (OSError, AttributeError):
-                continue
-    
-    return sorted(new_files)
-
-
-def move_outputs_to_dataset(output_files: List[Path], dataset_output_dir: Path, outputs_root: Path, logger: logging.Logger) -> None:
-    """
-    Move output files to the dataset-specific output directory.
-    
-    Args:
-        output_files: List of output file paths to move
-        dataset_output_dir: Target directory for dataset outputs
-        outputs_root: Root outputs directory (to calculate relative paths)
-        logger: Logger instance
-    """
-    dataset_output_dir.mkdir(parents=True, exist_ok=True)
-    
-    for src_file in output_files:
-        try:
-            # Calculate relative path from outputs root
-            try:
-                rel_path = src_file.relative_to(outputs_root)
-                # If file is directly in outputs/, move it to dataset/outputs/
-                # If file is in a subdirectory, preserve that structure
-                if rel_path.parent == Path('.'):
-                    dst_file = dataset_output_dir / rel_path.name
-                else:
-                    # Preserve subdirectory structure by creating it in dataset/outputs/
-                    dst_file = dataset_output_dir / rel_path
-            except ValueError:
-                # If relative_to fails, just use the filename
-                dst_file = dataset_output_dir / src_file.name
-            
-            # Create parent directories if needed
-            dst_file.parent.mkdir(parents=True, exist_ok=True)
-            
-            # Move the file
-            shutil.move(str(src_file), str(dst_file))
-            logger.info(f"Moved output: {src_file.name} -> {dst_file.relative_to(dataset_output_dir.parent)}")
-            
-            # Also move parent directories if they become empty
-            parent = src_file.parent
-            while parent != outputs_root and parent.exists():
-                try:
-                    if not any(parent.iterdir()):  # Directory is empty
-                        parent.rmdir()
-                        logger.debug(f"Removed empty directory: {parent}")
-                        parent = parent.parent
-                    else:
-                        break
-                except OSError:
-                    break
-            
-        except Exception as e:
-            logger.warning(f"Failed to move output file {src_file}: {e}")
-
 
 def check_workflow_summary_exists(dataset_output_dir: Path, logger: logging.Logger) -> Optional[Dict[str, Any]]:
     """
@@ -590,10 +512,6 @@ def run_workflow_for_dataset(
     logger.info(f"Conversation ID: {unique_conversation_id}")
     logger.info(f"Outputs directory: {dataset_output_dir}")
     
-    # Record timestamp before workflow starts to identify new outputs
-    outputs_dir = project_root / "outputs"
-    timestamp_before = time.time()
-    
     # Change to project root directory to run workflow
     start_time = time.time()
     try:
@@ -613,17 +531,6 @@ def run_workflow_for_dataset(
             logger.info(f"✅ Dataset {dataset_name} completed successfully in {elapsed_time:.1f} seconds")
         else:
             logger.error(f"❌ Dataset {dataset_name} failed with return code {result.returncode} after {elapsed_time:.1f} seconds")
-        
-        # Collect outputs created during this workflow run
-        logger.info("Collecting outputs for dataset...")
-        new_output_files = collect_outputs_after_timestamp(outputs_dir, timestamp_before)
-        
-        if new_output_files:
-            logger.info(f"Found {len(new_output_files)} output file(s) to move to dataset folder")
-            move_outputs_to_dataset(new_output_files, dataset_output_dir, outputs_dir, logger)
-            logger.info(f"✅ Moved outputs to {dataset_output_dir}")
-        else:
-            logger.warning(f"No new output files found in {outputs_dir} after workflow run")
         
         # Cleanup temporary configs
         cleanup_dataset_configs(temp_config_dir, project_root, logger)

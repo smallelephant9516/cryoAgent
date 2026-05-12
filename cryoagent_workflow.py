@@ -59,21 +59,21 @@ def check_stage_output_exists(stage: WorkflowStage, outputs_dir: Optional[str] =
     
     Args:
         stage: The workflow stage to check
-        outputs_dir: Custom directory where output files are stored (checked first)
-        default_outputs_dir: Default directory to check if outputs_dir is None or files not found
+        outputs_dir: Custom directory where output files are stored. When provided,
+                     only this directory is checked (no fallback to default).
+        default_outputs_dir: Default directory to check when outputs_dir is not provided
         
     Returns:
         Dictionary with output file information if exists, None otherwise
     """
-    # First check the custom outputs directory if provided
+    # When a custom outputs directory is explicitly provided, only check that directory
     if outputs_dir:
         outputs_path = Path(outputs_dir)
-        if outputs_path.exists():
-            result = _check_output_in_directory(stage, outputs_path)
-            if result:
-                return result
+        if not outputs_path.exists():
+            return None
+        return _check_output_in_directory(stage, outputs_path)
     
-    # Fall back to default outputs directory
+    # No custom dir specified: check the default outputs directory
     outputs_path = Path(default_outputs_dir)
     if not outputs_path.exists():
         return None
@@ -143,7 +143,7 @@ class CryoAgentMasterWorkflow:
         self.outputs_dir = outputs_dir
         self.orchestrator = None
         self.start_time = None
-        self.llm_logger = GeneralLLMLogger()
+        self.llm_logger = GeneralLLMLogger(outputs_dir=outputs_dir)
         
     def initialize(self) -> bool:
         """
@@ -257,7 +257,7 @@ class CryoAgentMasterWorkflow:
             if stages_to_skip:
                 print()
                 print("ℹ️  Some stages already completed and will be skipped.")
-                print("💡 To re-run all stages, delete or move output files in the outputs/ folder.")
+                print(f"💡 To re-run all stages, delete or move output files in the {self.outputs_dir}/ folder.")
                 print()
             
             if len(stages_to_skip) == len(enabled_stages):
@@ -325,7 +325,7 @@ class CryoAgentMasterWorkflow:
         
         try:
             # Check if preprocessing output already exists
-            existing_output = check_stage_output_exists(WorkflowStage.PREPROCESSING)
+            existing_output = check_stage_output_exists(WorkflowStage.PREPROCESSING, outputs_dir=self.outputs_dir)
             
             if existing_output:
                 print("✅ Pre-processing stage already completed!")
@@ -336,7 +336,7 @@ class CryoAgentMasterWorkflow:
                 print(f"📦 Project: {existing_output['project_uid']}, Workspace: {existing_output['workspace_uid']}")
                 print()
                 print("ℹ️  Skipping pre-processing stage to avoid re-running.")
-                print("💡 To re-run, delete or move the output file in the outputs/ folder.")
+                print(f"💡 To re-run, delete or move the output file in the {self.outputs_dir}/ folder.")
                 return True
             
             print("🎯 Starting Pre-processing Workflow")
@@ -424,7 +424,7 @@ class CryoAgentMasterWorkflow:
             if stages_to_skip:
                 print()
                 print("ℹ️  Some stages already completed and will be skipped.")
-                print("💡 To re-run these stages, delete or move output files in the outputs/ folder.")
+                print(f"💡 To re-run these stages, delete or move output files in the {self.outputs_dir}/ folder.")
                 print()
             
             if len(stages_to_skip) == len(workflow_stages):

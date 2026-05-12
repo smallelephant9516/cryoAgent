@@ -41,25 +41,24 @@ class WorkflowStage(Enum):
 def check_stage_output_exists(stage: WorkflowStage, outputs_dir: Optional[str] = None, default_outputs_dir: str = "outputs") -> Optional[Dict[str, Any]]:
     """
     Check if output file for a given stage already exists.
-    Checks custom outputs_dir first, then falls back to default_outputs_dir.
     
     Args:
         stage: The workflow stage to check
-        outputs_dir: Custom directory where output files are stored (checked first)
-        default_outputs_dir: Default directory to check if outputs_dir is None or files not found
+        outputs_dir: Custom directory where output files are stored. When provided,
+                     only this directory is checked (no fallback to default).
+        default_outputs_dir: Default directory to check when outputs_dir is not provided
         
     Returns:
         Dictionary with output file information if exists, None otherwise
     """
-    # First check custom outputs directory if provided
+    # When a custom outputs directory is explicitly provided, only check that directory
     if outputs_dir:
         outputs_path = Path(outputs_dir)
-        if outputs_path.exists():
-            result = _check_output_in_directory_orch(stage, outputs_path)
-            if result:
-                return result
+        if not outputs_path.exists():
+            return None
+        return _check_output_in_directory_orch(stage, outputs_path)
     
-    # Fall back to default outputs directory
+    # No custom dir specified: check the default outputs directory
     outputs_path = Path(default_outputs_dir)
     if not outputs_path.exists():
         return None
