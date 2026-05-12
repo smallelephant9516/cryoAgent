@@ -741,7 +741,7 @@ class ReconstructionAgent(BaseReActAgent):
 
         # Prefer cached RELION picking results when available
         try:
-            outputs_dir = Path("outputs")
+            outputs_dir = Path(getattr(self, 'outputs_dir', 'outputs'))
             if outputs_dir.exists():
                 result_files = sorted(
                     outputs_dir.glob("particle_picking_results_relion_*.json"),
@@ -876,7 +876,7 @@ class ReconstructionAgent(BaseReActAgent):
         # Method 1: Try to find from preprocessing results JSON file
         try:
             import glob
-            outputs_dir = Path("outputs")
+            outputs_dir = Path(getattr(self, 'outputs_dir', 'outputs'))
             if outputs_dir.exists():
                 # Look for preprocessing results JSON files
                 result_files = glob.glob(str(outputs_dir / "preprocessing_results_relion_*.json"))

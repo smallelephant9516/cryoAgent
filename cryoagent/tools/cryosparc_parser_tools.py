@@ -162,8 +162,8 @@ class CryoSPARCPreprocessingParser:
         from datetime import datetime
         
         try:
-            output_dir = Path("outputs")
-            output_dir.mkdir(exist_ok=True)
+            output_dir = Path(getattr(context, 'metadata', {}).get('output_dir', 'outputs'))
+            output_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
             status = "completed" if success else "failed"
 
@@ -341,8 +341,8 @@ class CryoSPARCPickingParser:
         """Save particle picking results to a JSON file."""
         from datetime import datetime
         
-        output_dir = Path("outputs")
-        output_dir.mkdir(exist_ok=True)
+        output_dir = Path(getattr(context, 'metadata', {}).get('output_dir', 'outputs'))
+        output_dir.mkdir(parents=True, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         status = "completed" if success else "failed"
@@ -498,8 +498,8 @@ class CryoSPARCReconstructionParser:
         """Save 3D reconstruction results to a JSON file."""
         from datetime import datetime
         
-        output_dir = Path("outputs")
-        output_dir.mkdir(exist_ok=True)
+        output_dir = Path(getattr(context, 'metadata', {}).get('output_dir', 'outputs'))
+        output_dir.mkdir(parents=True, exist_ok=True)
         
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         status = "completed" if success else "failed"

@@ -93,90 +93,71 @@ def find_datasets(datasets_dir: Path, dataset_names: Optional[List[str]] = None)
 
 def setup_dataset_configs(dataset_path: Path, project_root: Path, logger: logging.Logger) -> tuple[Path, bool]:
     """
-    Set up configuration files for a dataset by creating a temporary config structure.
-    
-    The user only provides session.json and microscope_config.json. This function
-    dynamically copies all other configs from the main configs directory.
-    
+    Set up configuration files for a dataset by creating a self-contained temporary
+    config directory.
+
+    The user provides session.json and microscope_config.json in their dataset folder.
+    This function copies those together with the shared master config and stage config
+    subdirectories (cryosparc/, relion/) so that the workflow can resolve all paths
+    relative to the temp directory — regardless of the current working directory.
+
     Args:
         dataset_path: Path to the dataset folder
         project_root: Path to the project root
         logger: Logger instance
-        
+
     Returns:
         Tuple of (temp_config_path, success). temp_config_path is the path to the
         temporary config directory that should be used for the workflow.
     """
     try:
         dataset_configs = dataset_path / "configs"
-        
+
         # Check required files exist
         required_files = ["session.json", "microscope_config.json"]
         for req_file in required_files:
             if not (dataset_configs / req_file).exists():
                 logger.error(f"Missing required file: {dataset_configs / req_file}")
                 return None, False
-        
+
         # Create temporary config directory in dataset folder
         temp_config_dir = dataset_path / "configs_temp"
-        
+
         # Clean up any existing temp directory
         if temp_config_dir.exists():
             shutil.rmtree(temp_config_dir)
-        
+
         temp_config_dir.mkdir(parents=True, exist_ok=True)
         logger.debug(f"Created temporary config directory: {temp_config_dir}")
-        
+
         # Copy master_config.json from main configs
         main_master_config = project_root / "configs" / "master_config.json"
         if not main_master_config.exists():
             logger.error(f"Main master_config.json not found: {main_master_config}")
             return None, False
-        
+
         shutil.copy2(main_master_config, temp_config_dir / "master_config.json")
-        
+
         # Copy dataset-specific session.json to temp config
         # (The workflow looks for session.json in the same directory as master_config.json)
         shutil.copy2(dataset_configs / "session.json", temp_config_dir / "session.json")
-        
-        # Note: cryosparc and relion configs are shared and already exist at
-        # project_root/configs/cryosparc/ and project_root/configs/relion/
-        # They will be found by the workflow when it runs from project_root
-        logger.debug(f"Cryosparc and relion configs will be loaded from {project_root / 'configs'}")
-        
-        # Copy dataset-specific microscope_config.json to main configs/ for workflow to find
-        # (The workflow looks for it at project_root/configs/microscope_config.json)
+
+        # Copy dataset-specific microscope_config.json into the temp directory so the
+        # workflow resolves it relative to the master config location.
+        shutil.copy2(dataset_configs / "microscope_config.json", temp_config_dir / "microscope_config.json")
+        logger.info(f"Copied microscope_config.json for dataset {dataset_path.name}")
+
+        # Copy shared stage config subdirectories (cryosparc/, relion/) into the temp
+        # directory so that all stage configs are resolved from the same root.
         main_configs_dir = project_root / "configs"
-        main_microscope_config = main_configs_dir / "microscope_config.json"
-        dataset_microscope_config = dataset_configs / "microscope_config.json"
-        
-        # Backup existing microscope_config.json if it exists and is different
-        backup_path = None
-        if main_microscope_config.exists():
-            try:
-                with open(main_microscope_config, 'r') as f:
-                    existing_content = json.load(f)
-                with open(dataset_microscope_config, 'r') as f:
-                    new_content = json.load(f)
-                
-                # Only backup if different
-                if existing_content != new_content:
-                    backup_path = main_configs_dir / "microscope_config.json.backup"
-                    shutil.copy2(main_microscope_config, backup_path)
-                    logger.debug(f"Backed up existing microscope_config.json to {backup_path}")
-            except Exception as e:
-                logger.warning(f"Could not compare microscope configs: {e}")
-        
-        # Copy dataset-specific microscope_config.json to main location
-        shutil.copy2(dataset_microscope_config, main_microscope_config)
-        logger.info(f"Set microscope_config.json for dataset {dataset_path.name}")
-        
-        # Store backup path in temp directory for cleanup
-        if backup_path:
-            (temp_config_dir / ".backup_path").write_text(str(backup_path))
-        
+        for subdir in main_configs_dir.iterdir():
+            if subdir.is_dir():
+                dest = temp_config_dir / subdir.name
+                shutil.copytree(subdir, dest)
+                logger.debug(f"Copied stage configs: {subdir.name}/ -> {dest}")
+
         return temp_config_dir, True
-        
+
     except Exception as e:
         logger.error(f"Failed to setup configs for {dataset_path.name}: {e}")
         import traceback
@@ -186,32 +167,20 @@ def setup_dataset_configs(dataset_path: Path, project_root: Path, logger: loggin
 
 def cleanup_dataset_configs(temp_config_dir: Path, project_root: Path, logger: logging.Logger) -> None:
     """
-    Clean up temporary config directory and restore microscope_config.json backup if exists.
-    
+    Remove the temporary self-contained config directory created for this dataset run.
+
     Args:
         temp_config_dir: Path to temporary config directory
-        project_root: Path to the project root
+        project_root: Path to the project root (unused, kept for API compatibility)
         logger: Logger instance
     """
     try:
         if not temp_config_dir.exists():
             return
-        
-        # Restore microscope_config.json backup if it exists
-        backup_path_file = temp_config_dir / ".backup_path"
-        if backup_path_file.exists():
-            backup_path = Path(backup_path_file.read_text().strip())
-            main_microscope_config = project_root / "configs" / "microscope_config.json"
-            
-            if backup_path.exists() and main_microscope_config.exists():
-                shutil.copy2(backup_path, main_microscope_config)
-                backup_path.unlink()
-                logger.debug(f"Restored microscope_config.json from backup")
-        
-        # Remove temporary config directory
+
         shutil.rmtree(temp_config_dir)
         logger.debug(f"Cleaned up temporary config directory: {temp_config_dir}")
-        
+
     except Exception as e:
         logger.warning(f"Failed to cleanup configs: {e}")
 

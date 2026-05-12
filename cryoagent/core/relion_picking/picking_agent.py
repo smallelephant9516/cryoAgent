@@ -1289,8 +1289,8 @@ class PickingAgent(BaseReActAgent):
         from pathlib import Path
         
         # Create output directory if it doesn't exist
-        output_dir = Path("outputs")
-        output_dir.mkdir(exist_ok=True)
+        output_dir = Path(getattr(context, 'metadata', {}).get('output_dir', 'outputs'))
+        output_dir.mkdir(parents=True, exist_ok=True)
         
         # Create picking results dictionary
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")

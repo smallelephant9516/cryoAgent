@@ -159,7 +159,7 @@ class BaseReActAgent(ABC):
         if self._microscope_override_enabled is not None:
             return
 
-        config_path = Path("configs/microscope_config.json")
+        config_path = Path(self.config.workflow.microscope_config_path)
         if not config_path.is_absolute():
             config_path = Path.cwd() / config_path
         self._microscope_override_path = config_path

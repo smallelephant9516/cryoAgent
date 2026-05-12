@@ -334,7 +334,7 @@ class TransitionWorkflow:
                 json.dump(config_data, f, indent=2)
             
             # Also save a copy in outputs/transitions folder for easy access
-            transitions_dir = Path("outputs") / "transitions"
+            transitions_dir = Path(self.outputs_dir) / "transitions"
             transitions_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             transitions_config_file = transitions_dir / f"transition_{self.stage_name}_{timestamp}.json"
@@ -416,7 +416,7 @@ class TransitionWorkflow:
 
     def _load_cached_cryosparc_picking_results(self) -> Dict[str, Any]:
         """Load the most recent CryoSPARC particle picking results JSON if available."""
-        outputs_dir = Path("outputs")
+        outputs_dir = Path(self.outputs_dir)
         if not outputs_dir.exists():
             return {}
 
@@ -873,7 +873,7 @@ class TransitionWorkflow:
                 json.dump(config_data, f, indent=2)
             
             # Also save a copy in transitions folder for easy access
-            transitions_dir = Path("outputs") / "transitions"
+            transitions_dir = Path(self.outputs_dir) / "transitions"
             transitions_dir.mkdir(parents=True, exist_ok=True)
             timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
             transitions_config_file = transitions_dir / f"transition_particle_picking_{timestamp}.json"
@@ -1380,7 +1380,7 @@ class TransitionWorkflow:
 class TransitionAgent:
     """Agent for handling format transitions between CryoSparc and Relion."""
     
-    def __init__(self, master_config_path: str = "configs/master_config.json", cryosparc_tools: Optional[Any] = None, relion_tools: Optional[Any] = None):
+    def __init__(self, master_config_path: str = "configs/master_config.json", cryosparc_tools: Optional[Any] = None, relion_tools: Optional[Any] = None, outputs_dir: str = "outputs"):
         """
         Initialize the transition agent.
         
@@ -1388,9 +1388,11 @@ class TransitionAgent:
             master_config_path: Path to the master configuration file
             cryosparc_tools: Optional pre-initialized CryoSparc tools (if available from master orchestrator)
             relion_tools: Optional pre-initialized Relion tools (if available from master orchestrator)
+            outputs_dir: Directory where output files are stored
         """
         self.master_config_path = master_config_path
         self.master_config = None
+        self.outputs_dir = outputs_dir
         self.logger = logging.getLogger("TransitionAgent")
         self.conversion_tools = FileConversionTools()
         self.cryosparc_tools = cryosparc_tools
@@ -1560,7 +1562,7 @@ class TransitionAgent:
         if isinstance(serialized, dict):
             return dict(serialized)
 
-        outputs_dir = Path("outputs")
+        outputs_dir = Path(self.outputs_dir)
         if outputs_dir.exists():
             pattern = "particle_picking_results_relion_*.json"
             files = sorted(outputs_dir.glob(pattern), key=lambda f: f.stat().st_mtime, reverse=True)
@@ -1668,7 +1670,7 @@ class TransitionAgent:
         self.logger.info(f"🔍 [check_existing_transition] Starting check for {current_stage} -> {next_stage}")
         
         # Use absolute path to ensure we find the transitions directory
-        transitions_dir = Path("outputs") / "transitions"
+        transitions_dir = Path(self.outputs_dir) / "transitions"
         if not transitions_dir.is_absolute():
             # Try to resolve relative to current working directory
             transitions_dir = Path.cwd() / transitions_dir
@@ -2019,7 +2021,7 @@ class TransitionAgent:
             return {}
         
         if output_dir is None:
-            output_dir = Path("outputs") / "transitions"
+            output_dir = Path(self.outputs_dir) / "transitions"
         else:
             output_dir = Path(output_dir)
         output_dir.mkdir(parents=True, exist_ok=True)
@@ -2410,7 +2412,7 @@ class TransitionAgent:
                 self.logger.info(f"Micrograph selection completed: job {selection_job_uid}")
                 
                 # Generate transition JSON file in outputs/transitions directory
-                transitions_dir = Path("outputs") / "transitions"
+                transitions_dir = Path(self.outputs_dir) / "transitions"
                 transitions_dir.mkdir(parents=True, exist_ok=True)
                 transition_json_path = transitions_dir / f"transition_{stage_name}_{datetime.datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
                 
@@ -2665,7 +2667,7 @@ class TransitionAgent:
                     raise RuntimeError("CryoSPARC import_particles job did not return a job UID")
 
                 # Record transition metadata
-                transitions_dir = Path("outputs") / "transitions"
+                transitions_dir = Path(self.outputs_dir) / "transitions"
                 transitions_dir.mkdir(parents=True, exist_ok=True)
                 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                 transition_json_path = transitions_dir / f"transition_{stage_name}_{timestamp}.json"
@@ -2721,7 +2723,7 @@ class TransitionAgent:
 
                 # Update cached RELION particle picking results with CryoSPARC import info
                 try:
-                    outputs_dir = Path("outputs")
+                    outputs_dir = Path(self.outputs_dir)
                     if outputs_dir.exists():
                         result_files = sorted(
                             outputs_dir.glob("particle_picking_results_relion_*.json"),

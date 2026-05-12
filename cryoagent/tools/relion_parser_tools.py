@@ -156,8 +156,8 @@ class RelionPreprocessingParser:
         import time
         
         try:
-            outputs_dir = Path("outputs")
-            outputs_dir.mkdir(exist_ok=True)
+            outputs_dir = Path(getattr(context, 'metadata', {}).get('output_dir', 'outputs'))
+            outputs_dir.mkdir(parents=True, exist_ok=True)
 
             timestamp = time.strftime("%Y%m%d_%H%M%S")
             result_file = outputs_dir / f"preprocessing_results_relion_{timestamp}.json"

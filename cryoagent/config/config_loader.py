@@ -381,9 +381,15 @@ class ConfigLoader:
         # Parse workflow settings - keep it simple, just pass the raw data
         workflow_data = config_data.get("workflow", {})
         
+        # Derive default microscope config path from the master config directory when available
+        if self.master_config_path:
+            default_microscope_path = str(Path(self.master_config_path).parent / "microscope_config.json")
+        else:
+            default_microscope_path = "configs/microscope_config.json"
+
         # Only extract the essential parameters that are actually used
         workflow_params = {
-            "microscope_config_path": workflow_data.get("import_movies", {}).get("microscope_config_path", "configs/microscope_config.json"),
+            "microscope_config_path": workflow_data.get("import_movies", {}).get("microscope_config_path", default_microscope_path),
             "project_uid": workflow_data.get("project_uid", "P1"),
             "workspace_uid": workflow_data.get("workspace_uid", "W1"),
             "particle_diameter": workflow_data.get("particle_diameter"),

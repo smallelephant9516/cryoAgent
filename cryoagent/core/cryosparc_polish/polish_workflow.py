@@ -346,12 +346,12 @@ Begin by executing step 1 (verify_inputs) and proceed through all steps sequenti
         
         return summary
     
-    def save_results(self, execution_time: float = 0.0) -> str:
+    def save_results(self, execution_time: float = 0.0, output_dir: Optional[str] = None) -> str:
         """Save polish results to a JSON file."""
         import datetime
         
-        output_dir = Path("outputs")
-        output_dir.mkdir(exist_ok=True)
+        output_dir = Path(output_dir) if output_dir else Path("outputs")
+        output_dir.mkdir(parents=True, exist_ok=True)
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         

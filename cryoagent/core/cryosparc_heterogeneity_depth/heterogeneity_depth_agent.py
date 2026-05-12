@@ -349,7 +349,7 @@ DO NOT stop after a heterogeneous refinement job completes - always continue wit
                                     return json.dumps(json.load(jf))
             
             # Otherwise, search for JSON files in outputs directory
-            outputs_path = Path("outputs")
+            outputs_path = Path(getattr(self, 'outputs_dir', 'outputs'))
             if not outputs_path.exists():
                 return json.dumps({
                     "success": False,

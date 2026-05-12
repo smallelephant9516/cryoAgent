@@ -354,7 +354,7 @@ Polish refinement jobs can take significant time, especially with CTF refinement
     def _verify_inputs_tool(self, tool_input: str) -> str:
         """Verify optimization and preprocessing results exist and read job UIDs."""
         try:
-            outputs_path = Path("outputs")
+            outputs_path = Path(getattr(self, 'outputs_dir', 'outputs'))
             if not outputs_path.exists():
                 return json.dumps({
                     "success": False,

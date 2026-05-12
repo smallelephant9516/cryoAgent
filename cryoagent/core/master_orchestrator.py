@@ -763,6 +763,7 @@ class ReconstructionAgent(StageAgent):
     def execute_stage(self, context: WorkflowContext, conversation_id: Optional[str] = None) -> StageResult:
         """Execute the 3D reconstruction stage."""
         start_time = time.time()
+        self._current_outputs_dir = getattr(context, 'metadata', {}).get('output_dir', 'outputs')
         
         try:
             # Detect backend type
@@ -918,8 +919,8 @@ class ReconstructionAgent(StageAgent):
                     try:
                         import datetime
                         from pathlib import Path
-                        output_dir = Path("outputs")
-                        output_dir.mkdir(exist_ok=True)
+                        output_dir = Path(getattr(context, 'metadata', {}).get('output_dir', 'outputs'))
+                        output_dir.mkdir(parents=True, exist_ok=True)
                         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
                         minimal_results = {
                             "stage": "3d_reconstruction",
@@ -1085,7 +1086,7 @@ class ReconstructionAgent(StageAgent):
         
         try:
             # Find the most recent particle picking results file
-            outputs_path = Path("outputs")
+            outputs_path = Path(getattr(self, '_current_outputs_dir', 'outputs'))
             if not outputs_path.exists():
                 return None
             
@@ -1135,7 +1136,7 @@ class ReconstructionAgent(StageAgent):
         
         try:
             # Find the most recent particle picking results file
-            outputs_path = Path("outputs")
+            outputs_path = Path(getattr(self, '_current_outputs_dir', 'outputs'))
             if not outputs_path.exists():
                 return None
             
@@ -1272,8 +1273,8 @@ class ReconstructionAgent(StageAgent):
         from pathlib import Path
         
         # Create output directory if it doesn't exist
-        output_dir = Path("outputs")
-        output_dir.mkdir(exist_ok=True)
+        output_dir = Path(getattr(context, 'metadata', {}).get('output_dir', 'outputs'))
+        output_dir.mkdir(parents=True, exist_ok=True)
         
         # Create reconstruction results dictionary
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -1594,8 +1595,8 @@ class Optimizer2DAgent(StageAgent):
         import datetime
         from pathlib import Path
         
-        output_dir = Path("outputs")
-        output_dir.mkdir(exist_ok=True)
+        output_dir = Path(getattr(context, 'metadata', {}).get('output_dir', 'outputs'))
+        output_dir.mkdir(parents=True, exist_ok=True)
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         status = "completed" if success else "failed"
@@ -1805,8 +1806,8 @@ class OptimizerAgent(StageAgent):
         import datetime
         from pathlib import Path
         
-        output_dir = Path("outputs")
-        output_dir.mkdir(exist_ok=True)
+        output_dir = Path(getattr(context, 'metadata', {}).get('output_dir', 'outputs'))
+        output_dir.mkdir(parents=True, exist_ok=True)
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         status = "completed" if success else "failed"
@@ -1933,7 +1934,10 @@ class PolishAgent(StageAgent):
             execution_time = time.time() - start_time
             
             # Save results
-            output_file = self.modular_workflow.save_results(execution_time)
+            output_file = self.modular_workflow.save_results(
+                execution_time,
+                output_dir=getattr(context, 'metadata', {}).get('output_dir')
+            )
             stage_outputs["output_file"] = output_file
             
             # Determine error message if any step failed
@@ -2131,8 +2135,7 @@ class HeterogeneityAgent(StageAgent):
                 )
             
             # Execute heterogeneity analysis workflow
-            # Use "outputs" as default output directory (same as other agents)
-            output_dir = "outputs"
+            output_dir = getattr(context, 'metadata', {}).get('output_dir', 'outputs')
             result = self.modular_workflow.execute_heterogeneity_analysis(
                 refinement_job_uid=refinement_job_uid,
                 particles_job_uid=particles_job_uid,
@@ -2182,7 +2185,7 @@ class HeterogeneityAgent(StageAgent):
         import datetime
         from pathlib import Path
         
-        output_dir = Path("outputs")
+        output_dir = Path(getattr(context, 'metadata', {}).get('output_dir', 'outputs'))
         output_dir.mkdir(parents=True, exist_ok=True)
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2274,7 +2277,7 @@ class HeterogeneityDepthAgent(StageAgent):
             # Execute the workflow
             result = self.modular_workflow.execute_heterogeneity_depth_analysis(
                 conversation_id=conversation_id,
-                output_dir=None  # Let workflow handle output directory
+                output_dir=getattr(context, 'metadata', {}).get('output_dir')
             )
             
             execution_time = time.time() - start_time
@@ -2326,7 +2329,7 @@ class HeterogeneityDepthAgent(StageAgent):
         import datetime
         from pathlib import Path
         
-        output_dir = Path("outputs")
+        output_dir = Path(getattr(context, 'metadata', {}).get('output_dir', 'outputs'))
         output_dir.mkdir(parents=True, exist_ok=True)
         
         timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -2431,8 +2434,9 @@ class MasterOrchestrator:
                     self.logger.info(f"Skipping disabled stage: {stage_name}")
                     continue
                 
-                # Dynamically construct config file path
-                config_path = f"configs/{agent_group}/{stage_name}_config.json"
+                # Dynamically construct config file path relative to the master config directory
+                config_dir = Path(self.master_config_path).parent
+                config_path = str(config_dir / agent_group / f"{stage_name}_config.json")
                 
                 self.logger.info(f"Initializing stage agent: {stage_name}")
                 
@@ -2493,7 +2497,8 @@ class MasterOrchestrator:
                 self.transition_agent = TransitionAgent(
                     self.master_config_path,
                     cryosparc_tools=cryosparc_tools,
-                    relion_tools=relion_tools
+                    relion_tools=relion_tools,
+                    outputs_dir=self.outputs_dir
                 )
                 self.logger.info("Transition agent initialized successfully")
             except Exception as e:
@@ -2726,7 +2731,8 @@ class MasterOrchestrator:
             metadata={
                 "workflow_type": "complete_cryoem",
                 "start_time": self.start_time,
-                "conversation_id": conversation_id
+                "conversation_id": conversation_id,
+                "output_dir": self.outputs_dir
             }
         )
 
@@ -2880,8 +2886,10 @@ class MasterOrchestrator:
                 
             stage_agent = self.stage_agents[stage_name]
             # Use orchestrator's outputs_dir so resume-from-halfway finds logs in the dataset outputs folder
-            if hasattr(stage_agent, 'modular_agent') and stage_agent.modular_agent and hasattr(stage_agent.modular_agent, 'realtime_logger'):
-                stage_agent.modular_agent.realtime_logger.outputs_dir = Path(self.outputs_dir)
+            if hasattr(stage_agent, 'modular_agent') and stage_agent.modular_agent:
+                if hasattr(stage_agent.modular_agent, 'realtime_logger'):
+                    stage_agent.modular_agent.realtime_logger.outputs_dir = Path(self.outputs_dir)
+                stage_agent.modular_agent.outputs_dir = self.outputs_dir
             print(f"📋 {stage_agent.get_stage_description()}")
             
             # Execute stage
@@ -2991,7 +2999,8 @@ class MasterOrchestrator:
                 "workflow_type": "partial_cryoem",
                 "stages": [s.value for s in stages],
                 "start_time": self.start_time,
-                "conversation_id": conversation_id
+                "conversation_id": conversation_id,
+                "output_dir": self.outputs_dir
             }
         )
 
@@ -3167,8 +3176,10 @@ class MasterOrchestrator:
                 
             stage_agent = self.stage_agents[stage_name]
             # Use orchestrator's outputs_dir so resume-from-halfway finds logs in the dataset outputs folder
-            if hasattr(stage_agent, 'modular_agent') and stage_agent.modular_agent and hasattr(stage_agent.modular_agent, 'realtime_logger'):
-                stage_agent.modular_agent.realtime_logger.outputs_dir = Path(self.outputs_dir)
+            if hasattr(stage_agent, 'modular_agent') and stage_agent.modular_agent:
+                if hasattr(stage_agent.modular_agent, 'realtime_logger'):
+                    stage_agent.modular_agent.realtime_logger.outputs_dir = Path(self.outputs_dir)
+                stage_agent.modular_agent.outputs_dir = self.outputs_dir
             print(f"📋 {stage_agent.get_stage_description()}")
             
             # Execute stage
