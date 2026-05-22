@@ -111,7 +111,7 @@ The complete workflow consists of TWO ROUNDS of picking and classification:
 
 3. **2D Classification (Round 1)**: Group extracted particles into classes
    - Required: particles_job_uid (from extraction step 2)
-   - Optional: num_classes (default: 20)
+   - Optional: num_classes, batchsize_per_class (defaults from stage config)
    - Groups particles by similarity to identify different views and remove junk
    - Helps assess particle quality and data heterogeneity
 
@@ -168,7 +168,7 @@ For each step, you MUST follow this pattern:
   
 - class_2d: Perform 2D classification on extracted particles
   * Requires: particles_job_uid (from extraction job)
-  * Optional: num_classes (number of 2D classes, default: 20)
+  * Optional: num_classes, batchsize_per_class (from config when omitted)
   * Start the job, then wait for completion
   
 - get_job_status: Check status of a specific job (use job UID only, e.g., "J85")
@@ -404,11 +404,20 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 if not particles_job_uid:
                     return f"❌ Error: Missing required parameter: particles_job_uid (or job_uid)"
                 
-                # Get num_classes from params or config (default 20)
+                # Get num_classes from params or config (default 200, matches optimization_2d stage)
                 num_classes = params.get("num_classes")
                 if not num_classes:
-                    num_classes = self._get_stage_param("2d_classification", "num_classes", 20)
-                
+                    num_classes = self._get_stage_param("2d_classification", "num_classes", 200)
+
+                batchsize_per_class = (
+                    params.get("batchsize_per_class")
+                    or params.get("batch_size_per_class")
+                )
+                if batchsize_per_class is None:
+                    batchsize_per_class = self._get_stage_param("2d_classification", "batch_size_per_class")
+                if batchsize_per_class is None:
+                    batchsize_per_class = self._get_stage_param("2d_classification", "batchsize_per_class")
+
                 used_params = {
                     "project_uid": project_uid,
                     "workspace_uid": workspace_uid,
@@ -418,6 +427,8 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                     "timeout": int(params.get("timeout", self.config.job_management.default_timeout * 2)),  # 2D classification takes longer
                     "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
                 }
+                if batchsize_per_class is not None:
+                    used_params["batchsize_per_class"] = int(batchsize_per_class)
 
                 result = self.cryosparc_tools.class_2d(**used_params)
                 self._record_tool_execution("class_2d", used_params, result=result)
@@ -626,7 +637,7 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
   * Larger boxes provide more context but increase computational cost
 
 - **Number of Classes**: Number of 2D classes for classification
-  * Default: 20 classes
+  * Default: from stage config (same scale as 2D optimization, typically 200 classes)
   * More classes: Better separation of views and junk, but slower
   * Fewer classes: Faster but less detailed classification
   * Typical range: 10-100 depending on dataset size and heterogeneity

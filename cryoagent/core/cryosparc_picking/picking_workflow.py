@@ -88,7 +88,7 @@ class PickingWorkflow:
         
         # 2D classification parameters
         classification_config = workflow_config.get("2d_classification", {})
-        num_classes = classification_config.get("num_classes", 50)
+        num_classes = classification_config.get("num_classes", 200)
         max_iterations = classification_config.get("max_iterations", 20)
         initial_resolution = classification_config.get("initial_resolution", 12.0)
         final_resolution = classification_config.get("final_resolution", 6.0)
@@ -833,13 +833,17 @@ Begin by executing step 1 (blob_picker) and proceed sequentially through all 9 s
         timeout: int,
         check_interval: int
     ) -> Dict[str, Any]:
-        return {
+        payload: Dict[str, Any] = {
             "particles_job_uid": particles_job_uid,
             "num_classes": params.get("num_classes"),
             "wait_for_completion": "true",
             "timeout": timeout,
-            "check_interval": check_interval
+            "check_interval": check_interval,
         }
+        bspc = params.get("batch_size_per_class")
+        if bspc is not None:
+            payload["batchsize_per_class"] = int(bspc)
+        return payload
 
     def _build_select_params(
         self,

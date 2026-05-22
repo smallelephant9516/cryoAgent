@@ -69,7 +69,7 @@ class PickingTools:
             name="class_2d",
             description="Perform 2D classification on extracted particles. "
                        "Required parameters: particles_job_uid (from extraction). "
-                       "Optional parameters: num_classes (default: 20), project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
+                       "Optional parameters: num_classes, batchsize_per_class (defaults from particle_picking_config 2d_classification), project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
             func=agent._class_2d_tool
         )
     
