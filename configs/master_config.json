@@ -70,7 +70,7 @@
     "base_port": 62000,
     "username": "capture@ibp.ac.cn",
     "password": "capture",
-    "license_id": "5213ed66-d2cb-11ec-a411-c7b6ab592fe4",
+    "license_id": "${LICENSE_ID}",
     "lane": "4090"
   },
   "relion": {
