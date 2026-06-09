@@ -2,6 +2,7 @@
 
 import json
 import csv
+import re
 from typing import Dict, Any, List, Optional
 from dataclasses import dataclass
 from enum import Enum
@@ -109,127 +110,65 @@ class HeterogeneityDepthWorkflow:
         k = self.workflow_params.get("k", 4)
         resolution_threshold = self.workflow_params.get("resolution_threshold", 10.0)
         
-        prompt = f"""Perform heterogeneity depth analysis to iteratively refine until only one cluster remains OR no cluster passes resolution threshold for EACH cluster from the heterogeneity analysis results.
+        prompt = f"""Perform heterogeneity depth analysis on EACH starting cluster from the heterogeneity analysis results.
 
-**CRITICAL: You MUST start by reading the input JSON file using the read_input_json tool. DO NOT start any reconstruction or refinement jobs until you have read the JSON file first.**
+**MANDATORY FIRST STEP:** call `read_input_json` before any refinement job. Do not proceed until clusters are loaded from `heterogeneity_analysis_results_*.json`.
 
-**Resolution threshold: {resolution_threshold} Å**
-- Classes with resolution BETTER (lower) than {resolution_threshold} Å PASS the threshold
-- Classes with resolution WORSE (higher) than {resolution_threshold} Å FAIL the threshold
-- If NO cluster passes the threshold, terminate the branch with homogeneous refinement
+## Goal
+Among structures that refine below {resolution_threshold} Å, determine whether further heterogeneity exists. Split good branches recursively; discard bad density clusters; terminate every branch with non-uniform refinement + FSC resolution.
 
-Workflow:
-1. **FIRST STEP - Read input JSON** (MANDATORY - do this before anything else):
-   - Use the `read_input_json` tool to read from heterogeneity job (heterogeneity_analysis_results_*.json)
-   - This file contains the clusters from the previous heterogeneity analysis stage
-   - The tool will return all clusters from final_refinement_jobs
-   - Each cluster contains: refinement_job_uid (e.g., J83, J84), particles_job_uid, volume_job_uid, particles_group_names, volume_group_name
-   - **IMPORTANT**: When using refinement jobs (non-uniform or homogeneous), they use standard group names:
-     * particles_group_names: ["particles"] (not particles_class_X)
-     * volume_group_name: "volume" (not volume_class_X)
-   - Class-specific group names (particles_class_X, volume_class_X) only exist in heterogeneous refinement jobs
-   - You need to process EACH cluster separately
-   - **DO NOT proceed to step 2 until you have successfully read the JSON file**
+## Resolution threshold: {resolution_threshold} Å
+- GOOD class: resolution < {resolution_threshold} Å (lower is better)
+- BAD class: resolution ≥ {resolution_threshold} Å
+- PER CLUSTER / PER BRANCH filtering — a passing sibling does NOT rescue a failed cluster
 
-2. For EACH cluster from the heterogeneity analysis results:
-   a. **Initial Heterogeneous Refinement** (ALWAYS do this first - do NOT skip to homogeneous refinement):
-      - Use particles_job_uid and volume_job_uid from the cluster (these are from the refinement job, e.g., J83 or J84)
-      - Use particles_group_names and volume_group_name from the cluster
-      - **IMPORTANT**: Refinement jobs use standard group names:
-        * particles_group_names: ["particles"] (standard group, not class-specific)
-        * volume_group_name: "volume" (standard group, not class-specific)
-      - Run heterogeneous refinement with K={k} using:
-        * Particles: Use particles_group_names from the cluster (will be ["particles"] for refinement jobs)
-        * Volume: Use volume_group_name from the cluster (will be "volume" for refinement jobs)
-      - Wait for completion
+## After each `run_heterogeneous_refinement` (auto-includes density comparison)
+Use the returned fields directly — do NOT manually re-run compare unless re-analyzing an old job.
 
-   b. **Extract and Compare Densities**:
-      - Extract density maps from heterogeneous refinement job
-      - Compare all density maps using compare_all_densities tool
-      - Check number of clusters from comparison results
-      - **CRITICAL**: Get class resolutions using `get_hetero_class_resolutions` tool
-      - Check if any class passes the resolution threshold (resolution_threshold from config, default: 10.0 Å)
-      - Resolution threshold means: classes with resolution BETTER (lower) than threshold pass, classes with resolution WORSE (higher) than threshold fail
+### Case A — ZERO good classes (`good_classes` empty or `fallback_non_uniform` present)
+- Do NOT discard the branch
+- `run_non_uniform_refinement` with:
+  * `particles_group_names=["particles_all_classes"]` from the hetero job
+  * `volume_group_name` = best-volume class among ALL classes (lowest resolution)
+- `wait_for_job` → `get_fsc_info` → branch COMPLETE
 
-   c. **Tree Structure Expansion (Recursive)**:
-      - **CRITICAL**: After the initial heterogeneous refinement, ALWAYS check comparison results AND class resolutions
-      - **If NO cluster passes resolution threshold** (all classes have resolution worse than threshold):
-        * This branch should terminate with homogeneous refinement
-        * **CRITICAL**: Use `particles_all_classes` from the heterogeneous refinement job (NOT particles_class_X)
-        * Get best volume from all classes (volume_class_X with best resolution, even if it doesn't pass threshold)
-        * Run homogeneous refinement with:
-          - particles_job_uid: the heterogeneous refinement job UID
-          - particles_group_name: "particles_all_classes" (or leave empty to default to particles_all_classes)
-          - volume_job_uid: the heterogeneous refinement job UID
-          - volume_group_name: volume_class_X with best resolution
-        * Record this final refinement job UID - this branch is COMPLETE
-        * Move to next starting cluster
-      
-      - **If comparison shows multiple clusters (e.g., 2, 3, or more) AND at least one cluster passes resolution threshold:**
-        * This creates a TREE STRUCTURE - the hetero job splits into multiple branches
-        * For EACH new cluster found in the comparison:
-          i. Extract which classes belong to this cluster from comparison results
-          ii. **CRITICAL**: Determine how many classes are in this cluster:
-             - If cluster has only 1 class (e.g., class 3): Use `particles_group_names=["particles_class_3"]` (list with single element)
-             - If cluster has multiple classes (e.g., classes 0 and 2): Use `particles_group_names=["particles_class_0", "particles_class_2"]` (list with all classes)
-          iii. Get volume from best class in that cluster (volume_class_X with best resolution)
-          iv. Run heterogeneous refinement with K={k} using:
-             * particles_group_names: List of particles_class_X for each class in the cluster
-             * volume_group_name: volume_class_X with best resolution
-          v. Wait for completion → get new hetero job
-          vi. **CRITICAL - DO NOT STOP HERE**: After the heterogeneous refinement job completes, you MUST continue:
-             a. Extract density maps from the new hetero job using `extract_density_maps` tool
-             b. Compare all density maps using `compare_all_densities` tool
-             c. Get class resolutions using `get_hetero_class_resolutions` tool
-             d. Check if any class passes the resolution threshold
-          vii. **Recursively apply the same logic based on comparison and resolution results:**
-             - If NO cluster passes resolution threshold → use particles_all_classes from that hetero job + best volume → run homogeneous refinement → record final job UID → branch COMPLETE
-             - If 1 cluster → use particles_all_classes from that hetero job + best volume → run homogeneous refinement → record final job UID → branch COMPLETE
-             - If multiple clusters AND at least one passes threshold → split into more branches → repeat steps i-vii recursively for EACH new cluster
-        * **CRITICAL**: Do NOT stop after a heterogeneous refinement job completes. ALWAYS extract density maps, compare, check resolutions, and continue recursively until the branch terminates.
-        * Continue this recursive expansion until EVERY branch reaches only 1 cluster OR no cluster passes resolution threshold
-        * Each branch that reaches 1 cluster OR no cluster passes threshold gets a final homogeneous refinement job UID
-      
-      - **If comparison shows only 1 cluster:**
-        * This branch is ready for final homogeneous refinement
-        * **CRITICAL**: Use `particles_all_classes` from the heterogeneous refinement job (NOT particles_class_X)
-        * This uses ALL particles from the heterogeneous refinement job, regardless of which classes are in the cluster
-        * Get best volume from the classes in this cluster (volume_class_X with best resolution)
-        * Run homogeneous refinement with:
-          - particles_job_uid: the heterogeneous refinement job UID
-          - particles_group_name: "particles_all_classes" (or leave empty to default to particles_all_classes)
-          - volume_job_uid: the heterogeneous refinement job UID
-          - volume_group_name: volume_class_X with best resolution
-        * Record this final refinement job UID - this branch is COMPLETE
-        * Move to next starting cluster
+### Case B — one or more good classes
+1. Read KEPT vs FILTERED OUT clusters from `density_comparison`
+2. **Throw away every BAD / FILTERED OUT density cluster** — no further hetero or refinement on them
+3. Among KEPT clusters only:
 
-   d. **Final Homogeneous Refinement** (for each terminal branch):
-      - A branch terminates when:
-        * Comparison shows only 1 cluster in a heterogeneous refinement job, OR
-        * NO cluster passes the resolution threshold (all classes have resolution worse than threshold)
-      - **CRITICAL**: Use `particles_all_classes` from that heterogeneous refinement job (NOT particles_class_X)
-      - This uses ALL particles from the heterogeneous refinement job, not just specific classes
-      - Get best volume from the classes (volume_class_X with best resolution)
-      - Run homogeneous refinement with:
-        - particles_job_uid: the heterogeneous refinement job UID
-        - particles_group_name: "particles_all_classes" (or leave empty to default to particles_all_classes)
-        - volume_job_uid: the heterogeneous refinement job UID
-        - volume_group_name: volume_class_X with best resolution
-      - Record the final refinement job UID for this branch
-      - This completes the depth analysis for this branch
+**B1 — ONE KEPT cluster** → branch converged:
+- `run_non_uniform_refinement` on that cluster's good `particles_class_X` + best `volume_class_X`
+- `wait_for_job` → `get_fsc_info` → branch COMPLETE
 
-3. After processing all clusters:
-   - All starting clusters have been analyzed independently
-   - Each starting cluster has been expanded into a tree structure
-   - Every branch in every tree has been refined until only one cluster remains OR no cluster passes resolution threshold
-   - Final homogeneous refinement has been performed for each terminal branch
-   - ALL final refinement job UIDs from ALL terminal branches have been recorded
+**B2 — MULTIPLE KEPT clusters** → split and recurse:
+- For EACH KEPT cluster only (skip discarded ones):
+  * `run_heterogeneous_refinement` with K={k} on that cluster's good classes
+  * Repeat Case A / B on the new hetero result
 
-**CRITICAL**: 
-- Track and record ALL final refinement job UIDs from ALL terminal branches. The output JSON must include all branches and their final job UIDs.
-- Always check class resolutions after each heterogeneous refinement using `get_hetero_class_resolutions` tool
-- If NO cluster passes the resolution threshold, terminate the branch with homogeneous refinement (even if multiple clusters exist)
-- Resolution threshold is {resolution_threshold} Å (from config) - classes with resolution BETTER (lower) than this pass, classes with resolution WORSE (higher) than this fail"""
+## Execution steps
+
+1. **Read input JSON** → get all starting clusters from `final_refinement_jobs`
+   - Each cluster: refinement_job_uid, particles_job_uid, volume_job_uid, particles_group_names, volume_group_name
+   - Upstream refinement jobs use `particles_group_names=["particles"]`, `volume_group_name="volume"`
+   - Process each starting cluster as an independent tree
+
+2. **For each starting cluster:**
+   a. `run_heterogeneous_refinement` with K={k} on cluster particles + volume (always hetero first — never skip to non-uniform)
+   b. Apply Case A / B / B1 / B2 to the result
+   c. Recurse on KEPT sub-branches until all branches terminate
+
+3. **Record outputs for every terminated branch:**
+   - Final refinement job UID
+   - `final_resolution_angstroms` from `get_fsc_info`
+   - Bad clusters discarded at every round (never refined further)
+
+## Rules you must follow
+- BAD density clusters after comparison → discard completely, even if another cluster in the same job passed
+- Zero good classes → fallback non-uniform on all particles (branch is NOT abandoned)
+- One KEPT good cluster → converged → non-uniform refinement (NOT homogeneous)
+- Multiple KEPT good clusters → hetero on each good cluster separately
+- Before each job, state which case (A, B1, B2) applies and which clusters you keep vs discard"""
         
         try:
             # Execute analysis using the agent
@@ -240,6 +179,7 @@ Workflow:
             
             # Collect results - track all branches and final job UIDs
             final_refinement_job_uids = []  # List of ALL final job UIDs from all terminal branches
+            final_refinement_resolutions = {}  # job_uid -> resolution_angstroms after non-uniform refinement
             hetero_jobs = []  # All heterogeneous refinement jobs
             branches = []  # Tree structure with branch information
             comparison_results = []
@@ -272,10 +212,19 @@ Workflow:
                                     "parent_job_uid": parent_job,
                                     "k": tool_params.get("k", 4)
                                 })
+                                density_comparison = result_data.get("density_comparison")
+                                if density_comparison:
+                                    comparison_results.append(density_comparison)
+                                    cluster_match = re.search(
+                                        r"Number of clusters \(groups\): (\d+)",
+                                        density_comparison,
+                                    )
+                                    if cluster_match:
+                                        hetero_to_clusters[hetero_job_uid] = int(cluster_match.group(1))
                     except (json.JSONDecodeError, TypeError, ValueError):
                         continue
                 
-                elif tool_name == "run_homogeneous_refinement" and tool_result:
+                elif tool_name in ("run_non_uniform_refinement", "run_homogeneous_refinement") and tool_result:
                     try:
                         if isinstance(tool_result, str):
                             result_data = json.loads(tool_result)
@@ -284,16 +233,34 @@ Workflow:
                         
                         if result_data.get("success") and result_data.get("job_uid"):
                             final_job_uid = result_data.get("job_uid")
-                            final_refinement_job_uids.append(final_job_uid)
-                            # Track which hetero job this final refinement came from
-                            parent_hetero = tool_params.get("particles_job_uid") or tool_params.get("volume_job_uid")
+                            if final_job_uid not in final_refinement_job_uids:
+                                final_refinement_job_uids.append(final_job_uid)
+                            parent_hetero = tool_params.get("hetero_job_uid") or tool_params.get("particles_job_uid") or tool_params.get("volume_job_uid")
                             branches.append({
-                                "type": "homogeneous_refinement",
+                                "type": tool_name,
                                 "job_uid": final_job_uid,
                                 "parent_job_uid": parent_hetero,
                                 "is_terminal": True,
-                                "final_refinement_job_uid": final_job_uid
+                                "final_refinement_job_uid": final_job_uid,
+                                "final_resolution_angstroms": final_refinement_resolutions.get(final_job_uid),
                             })
+                    except (json.JSONDecodeError, TypeError, ValueError):
+                        continue
+
+                elif tool_name == "get_fsc_info" and tool_result:
+                    try:
+                        if isinstance(tool_result, str):
+                            result_data = json.loads(tool_result)
+                        else:
+                            result_data = tool_result
+                        if result_data.get("success"):
+                            job_uid = result_data.get("refinement_job_uid")
+                            resolution = result_data.get("resolution_angstroms")
+                            if job_uid and resolution is not None:
+                                final_refinement_resolutions[job_uid] = resolution
+                                for branch in branches:
+                                    if branch.get("job_uid") == job_uid:
+                                        branch["final_resolution_angstroms"] = resolution
                     except (json.JSONDecodeError, TypeError, ValueError):
                         continue
                 
@@ -301,8 +268,6 @@ Workflow:
                     try:
                         if isinstance(tool_result, str):
                             comparison_results.append(tool_result)
-                            # Try to extract number of clusters from the result
-                            import re
                             cluster_match = re.search(r"Number of clusters \(groups\): (\d+)", tool_result)
                             if cluster_match:
                                 num_clusters = int(cluster_match.group(1))
@@ -316,9 +281,18 @@ Workflow:
             tree_structure = self._build_tree_structure(branches, hetero_to_clusters)
             
             # Create output JSON with comprehensive information
+            converged_branches = [
+                {
+                    "final_refinement_job_uid": uid,
+                    "final_resolution_angstroms": final_refinement_resolutions.get(uid),
+                }
+                for uid in final_refinement_job_uids
+            ]
             output_data = {
                 "status": "completed",
-                "final_refinement_job_uids": final_refinement_job_uids,  # All final job UIDs from all branches
+                "final_refinement_job_uids": final_refinement_job_uids,
+                "final_refinement_resolutions": final_refinement_resolutions,
+                "converged_branches": converged_branches,
                 "total_final_refinements": len(final_refinement_job_uids),
                 "hetero_jobs": hetero_jobs,
                 "branches": branches,
@@ -326,7 +300,8 @@ Workflow:
                 "summary": {
                     "total_hetero_jobs": len(hetero_jobs),
                     "total_final_refinements": len(final_refinement_job_uids),
-                    "final_refinement_job_uids": final_refinement_job_uids
+                    "final_refinement_job_uids": final_refinement_job_uids,
+                    "converged_branches": converged_branches,
                 }
             }
             

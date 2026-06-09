@@ -90,7 +90,17 @@ class CompareAllDensitiesTool:
                 params = _parse_tool_input(input_str)
                 
                 # Get folder path (required)
-                folder = params.get("folder") or params.get("folder_path") or input_str.strip()
+                folder = (
+                    params.get("folder")
+                    or params.get("folder_path")
+                    or params.get("input")
+                )
+                if not folder:
+                    stripped = input_str.strip()
+                    # Do not treat a JSON blob as a folder path
+                    if stripped.startswith("{") and stripped.endswith("}"):
+                        return "❌ Error: 'folder' parameter is required (use 'folder' or 'input' key with the density map directory path)"
+                    folder = stripped
                 if not folder:
                     return "❌ Error: 'folder' parameter is required"
                 

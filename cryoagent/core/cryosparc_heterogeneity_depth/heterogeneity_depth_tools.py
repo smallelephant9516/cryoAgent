@@ -83,12 +83,14 @@ class HeterogeneityDepthTools:
         return StructuredTool.from_function(
             func=run_heterogeneous_refinement_wrapper,
             name="run_heterogeneous_refinement",
-            description="Run heterogeneous refinement with K classes using particles and volume from a refinement job. "
-                       "Required parameters: particles_job_uid, volume_job_uid, k (number of classes, default: 4). "
-                       "Optional parameters: particles_group_names (list, e.g., ['particles_class_0', 'particles_class_2'] for multiple classes, or ['particles_class_1'] for single class), "
-                       "particles_group_name (legacy single group name), volume_group_name (e.g., 'volume_class_0'), project_uid, workspace_uid. "
-                       "CRITICAL: For clusters with multiple classes, use particles_group_names with a list of particles_class_X for each class in the cluster. "
-                       "Returns: hetero_job_uid, status.",
+            description="Run heterogeneous refinement with K classes. Waits for completion, then auto-runs "
+                       "class resolutions + density comparison. Use the returned result to decide: "
+                       "Case A (zero good classes → fallback non-uniform on particles_all_classes), "
+                       "Case B1 (one KEPT cluster → non-uniform refinement), "
+                       "Case B2 (multiple KEPT clusters → hetero per KEPT cluster; discard FILTERED OUT clusters). "
+                       "Required: particles_job_uid, volume_job_uid, k. "
+                       "Optional: particles_group_names, particles_group_name, volume_group_name, project_uid, workspace_uid. "
+                       "Returns: hetero_job_uid, good_classes, bad_classes, density_comparison, next_action, fallback_non_uniform.",
             args_schema=RunHeterogeneousRefinementInput
         )
     
@@ -201,11 +203,49 @@ class HeterogeneityDepthTools:
         """Create tool for getting class resolutions from heterogeneous refinement job."""
         return Tool(
             name="get_hetero_class_resolutions",
-            description="Get resolution information for each class in a heterogeneous refinement job. "
+            description="Get resolution for each class and label GOOD vs BAD relative to the depth threshold. "
+                       "Normally auto-run inside run_heterogeneous_refinement — call manually only to re-analyze an older job UID. "
                        "You can pass just the job UID (e.g., 'JXXX') or JSON with job_uid parameter. "
-                       "Returns a list of classes with resolution_angstroms and fsc_loosemask_last for each class. "
-                       "Optional parameters: project_uid, workspace_uid. "
-                       "Returns: classes (list with class_id, resolution_angstroms, fsc_loosemask_last), num_classes, and success status.",
+                       "Returns: good_classes, bad_classes, fallback_non_uniform (when zero good classes), "
+                       "resolution_threshold_angstroms, next_action, and per-class quality labels.",
             func=agent._get_hetero_class_resolutions_tool
+        )
+
+    @staticmethod
+    def create_compare_all_densities_tool(agent) -> Tool:
+        """Create resolution-aware density comparison tool for depth analysis."""
+        return Tool(
+            name="compare_all_densities",
+            description="Compare density maps in a folder and filter clusters by resolution. "
+                       "Normally auto-run inside run_heterogeneous_refinement — call manually only to re-analyze an older job UID. "
+                       "Required: folder (path to hetero job directory). "
+                       "Do NOT pass the full get_hetero_class_resolutions JSON — only folder + optional class_resolutions. "
+                       "KEPT clusters continue; FILTERED OUT (BAD) clusters must be thrown away with no further processing.",
+            func=agent._compare_all_densities_tool
+        )
+
+    @staticmethod
+    def create_run_non_uniform_refinement_tool(agent) -> Tool:
+        """Create tool for final non-uniform refinement when a good branch converges."""
+        return Tool(
+            name="run_non_uniform_refinement",
+            description="Run non-uniform refinement to terminate a branch. "
+                       "Converged good cluster: hetero_job_uid + particles_group_names (good class(es)) + best volume. "
+                       "Zero good classes fallback: hetero_job_uid + particles_group_names=['particles_all_classes'] + best volume_class_X. "
+                       "Required: hetero_job_uid, particles_group_names (list), volume_group_name. "
+                       "Optional: project_uid, workspace_uid, refine_res_init. "
+                       "After completion, call wait_for_job then get_fsc_info to report final resolution.",
+            func=agent._run_non_uniform_refinement_tool
+        )
+
+    @staticmethod
+    def create_get_fsc_info_tool(agent) -> Tool:
+        """Create tool for reporting FSC resolution after non-uniform refinement."""
+        return Tool(
+            name="get_fsc_info",
+            description="Get FSC resolution and box size from a completed non-uniform refinement job. "
+                       "Pass job UID (e.g. 'JXXX') or JSON with refinement_job_uid. "
+                       "MUST be called after wait_for_job on the final non-uniform refinement job.",
+            func=agent._get_fsc_info_tool
         )
 

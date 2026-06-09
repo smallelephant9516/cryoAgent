@@ -21,8 +21,8 @@
     "voltage": 200.0,
     "cs_mm": 1.4,
     "symmetry": "D2",
-    "movies_path": "/data/user/cryosparcuser/Data/cryoAgent_test/Dataset/relion_tutorial/relion30_tutorial/Movies/*.tiff",
-    "gain_ref_path": "/data/user/cryosparcuser/Data/cryoAgent_test/Dataset/relion_tutorial/relion30_tutorial/Movies/gain.mrc",
+    "movies_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/*.tiff",
+    "gain_ref_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/gain.mrc",
     "gain_rot": 0,
     "gain_flip": 0
   },

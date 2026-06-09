@@ -37,6 +37,14 @@ class HeterogeneityDepthAgent(BaseReActAgent):
         self.workflow_defaults: Dict[str, Any] = {}
         self.stage_config = self._load_stage_config()
         self.stage_workflow = self.stage_config.get("workflow", {})
+        self._last_class_resolutions: Optional[Dict[str, Any]] = None
+        self._compare_densities_delegate = CompareAllDensitiesTool.create_compare_all_densities_tool(
+            compare_script=self._get_stage_param("script_paths", "compare_all_densities_script", None),
+            align_script=self._get_stage_param("script_paths", "align_and_compare_script", None),
+            default_voxel_size=self._get_stage_param("density_comparison", "voxel_size", 5.0),
+            default_alg_type=self._get_stage_param("density_comparison", "alg_type", "global"),
+            default_resolution_threshold=self._get_stage_param("density_comparison", "resolution_threshold", None),
+        )
         
         # Now call super().__init__() which will call _create_tools()
         super().__init__(cryosparc_tools, config, llm)
@@ -51,23 +59,30 @@ class HeterogeneityDepthAgent(BaseReActAgent):
             HeterogeneityDepthTools.create_run_heterogeneous_refinement_tool(self),
             HeterogeneityDepthTools.create_extract_density_maps_tool(self),
             HeterogeneityDepthTools.create_get_hetero_class_resolutions_tool(self),
-            HeterogeneityDepthTools.create_run_homogeneous_refinement_tool(self),
+            HeterogeneityDepthTools.create_run_non_uniform_refinement_tool(self),
+            HeterogeneityDepthTools.create_get_fsc_info_tool(self),
             HeterogeneityDepthTools.create_get_job_status_tool(self),
             HeterogeneityDepthTools.create_wait_for_job_tool(self),
             HeterogeneityDepthTools.create_get_job_log_tool(self),
         ]
         
-        # Add compare_all_densities tool
-        compare_tool = CompareAllDensitiesTool.create_compare_all_densities_tool(
-            compare_script=self._get_stage_param("script_paths", "compare_all_densities_script", None),
-            align_script=self._get_stage_param("script_paths", "align_and_compare_script", None),
-            default_voxel_size=self._get_stage_param("density_comparison", "voxel_size", 5.0),
-            default_alg_type=self._get_stage_param("density_comparison", "alg_type", "global"),
-            default_resolution_threshold=self._get_stage_param("density_comparison", "resolution_threshold", None)
-        )
-        tools.append(compare_tool)
+        tools.append(HeterogeneityDepthTools.create_compare_all_densities_tool(self))
         
         return tools
+    
+    def _get_resolution_filter_threshold(self) -> float:
+        """Resolution cutoff (Å): classes/clusters must be better (lower) than this to continue."""
+        return float(self._get_stage_param("heterogeneity_depth_analysis", "resolution_threshold", 10.0))
+    
+    def _classify_resolution(self, resolution_angstroms: float) -> Dict[str, Any]:
+        """Label a class GOOD/BAD relative to the depth-analysis resolution threshold."""
+        threshold = self._get_resolution_filter_threshold()
+        is_good = resolution_angstroms < threshold
+        return {
+            "passes_threshold": is_good,
+            "quality": "GOOD" if is_good else "BAD",
+            "action": "continue_hetero_or_final_non_uniform" if is_good else "discard_no_further_processing",
+        }
     
     def _load_stage_config(self) -> Dict[str, Any]:
         """Load heterogeneity depth analysis stage configuration."""
@@ -134,193 +149,100 @@ class HeterogeneityDepthAgent(BaseReActAgent):
     def _get_react_system_prompt(self) -> str:
         """Get the heterogeneity depth analysis-specific ReAct system prompt."""
         k_value = self._get_stage_param("heterogeneity_depth_analysis", "k", 4)
-        resolution_threshold = self._get_stage_param("heterogeneity_depth_analysis", "resolution_threshold", 12.0)
+        resolution_threshold = self._get_stage_param("heterogeneity_depth_analysis", "resolution_threshold", 10.0)
         
         return f"""You are a CryoEM heterogeneity depth analysis assistant using the ReAct (Reasoning + Acting) framework.
-You specialize in performing deep heterogeneity analysis by:
-1. Reading input from refinement or heterogeneity job JSON files
-2. Running heterogeneous refinement with K={k_value} classes
-3. Validating clusters using density comparison
-4. Iteratively refining until only one cluster remains
-5. Running final homogeneous refinement
 
-## ReAct Framework Rules:
-1. **REASONING**: Always think through the problem step by step before taking action
-2. **ACTING**: Execute specific tools based on your reasoning
-3. **OBSERVING**: Analyze the results and update your understanding
+## Goal
+For each starting cluster from the upstream heterogeneity stage, determine whether further structural heterogeneity exists among classes that genuinely refine below {resolution_threshold} Å. Recursively split good branches until each converges to one valid structure, then run final non-uniform refinement and report resolution.
 
-## Current Configuration:
+## Configuration
 - Project UID: {self.config.workflow.project_uid}
 - Workspace UID: {self.config.workflow.workspace_uid}
-- K value: {k_value}
+- K (hetero classes): {k_value}
 - Resolution threshold: {resolution_threshold} Å
 
-## Heterogeneity Depth Analysis Workflow:
+## Resolution rules (apply at EVERY round)
+- **GOOD class**: resolution < {resolution_threshold} Å (numerically lower is better, e.g. 5 Å is GOOD, 13 Å is BAD)
+- **BAD class**: resolution ≥ {resolution_threshold} Å
+- Filtering is **per density cluster / per branch** — a sibling passing does NOT save a failed cluster
 
-**Step 1: Read Input JSON (MANDATORY FIRST STEP)**
-1. **CRITICAL: You MUST start by reading the input JSON file. DO NOT run any reconstruction or refinement jobs until you have read the JSON file first.**
-2. Use `read_input_json` tool to read JSON file from either:
-   - Heterogeneity job: heterogeneity_analysis_results_*.json (preferred if available)
-   - Refinement job: reconstruction_results_*.json (fallback if heterogeneity not available)
-3. If reading from heterogeneity analysis results:
-   - The tool will return all clusters from `final_refinement_jobs`
-   - Each cluster has: refinement_job_uid (e.g., J83, J84), particles_job_uid, volume_job_uid, particles_group_names, volume_group_name
-   - particles_job_uid and volume_job_uid are from the refinement job (not the hetero job)
-   - **IMPORTANT**: Refinement jobs (non-uniform or homogeneous) use standard group names:
-     * particles_group_names: ["particles"] (standard group, NOT particles_class_X)
-     * volume_group_name: "volume" (standard group, NOT volume_class_X)
-   - Class-specific group names (particles_class_X, volume_class_X) only exist in heterogeneous refinement jobs
-   - You will process EACH cluster separately
-   - **DO NOT proceed to Step 2 until you have successfully read the JSON file**
+## Two-level filtering after each hetero job
+`run_heterogeneous_refinement` waits for completion, then automatically returns:
+`class_resolutions`, `good_classes`, `bad_classes`, `density_comparison`, `next_action`, and `fallback_non_uniform` (when applicable).
 
-**Step 2: Process Each Cluster**
-For EACH cluster from the heterogeneity analysis results:
-1. **Initial Heterogeneous Refinement**:
-   - Use particles_job_uid and volume_job_uid from the cluster (these are from the refinement job)
-   - Use particles_group_name and volume_group_name from the cluster
-   - Run heterogeneous refinement with K={k_value} using:
-     * Particles from refinement_job_uid with particles_group_name (e.g., "particles" or "particles_class_0")
-     * Volume from refinement_job_uid with volume_group_name (e.g., "volume" or "volume_class_0")
-   - Wait for completion
+**Level 1 — per class:** use `good_classes` / `bad_classes` from the hetero result.
 
-2. **Extract and Compare Densities**:
-   - Extract density maps from heterogeneous refinement job
-   - Compare all density maps using `compare_all_densities` tool
-   - Check the number of clusters from the comparison results
-   - **CRITICAL**: Extract which classes belong to each cluster from the comparison output
-     * Map names contain class IDs: "J39_class_00_00042_volume.mrc" → class 0, "J39_class_02_00042_volume.mrc" → class 2
-     * The comparison results show which maps (and thus which classes) belong to each cluster
-     * Use this information to determine particles_group_names for the next refinement
+**Level 2 — per density cluster:** read `density_comparison`:
+- **KEPT** = structurally similar group whose best class resolution is GOOD (< {resolution_threshold} Å)
+- **FILTERED OUT** = BAD density cluster → **throw away completely** (no hetero, no refinement, no output)
+- Map filenames encode class IDs (e.g. `J34_class_03_00042_volume.mrc` → class 3)
 
-3. **Tree Structure Expansion (Recursive)**:
-   - **If comparison shows only 1 cluster:**
-     * Extract which classes belong to this cluster from the comparison results (map names like "J34_class_03_volume.mrc" → class 3)
-     * **CRITICAL**: Determine how many classes are in this cluster:
-       - If cluster has only 1 class (e.g., only class 3): Use `particles_class_3` (NOT particles_all_classes)
-       - If cluster has multiple classes: Use particles from all classes in this cluster (particles_class_X for each class in the cluster)
-     * Use the best volume from the classes in this cluster (volume_class_X where X has best resolution)
-     * Run homogeneous refinement using the appropriate particles group(s) and best volume
-     * Record this final refinement job UID - this branch is COMPLETE
-     * Move to the next starting cluster
-   
-   - **If comparison shows multiple clusters (e.g., 2, 3, or more):**
-     * This creates a TREE STRUCTURE - the hetero job splits into multiple branches
-     * For EACH new cluster found in the comparison:
-       a. Extract which classes belong to this cluster from the comparison results (map names like "J39_class_00_volume.mrc" → class 0)
-       b. **CRITICAL**: Determine how many classes are in this cluster:
-          - If cluster has only 1 class (e.g., class 3): Use `particles_group_names=["particles_class_3"]` (list with single element)
-          - If cluster has multiple classes (e.g., classes 0 and 2): Use `particles_group_names=["particles_class_0", "particles_class_2"]` (list with all classes)
-       c. Get volume from the best class in that cluster (volume_class_X where X has best resolution)
-       d. Run heterogeneous refinement with K={k_value} using:
-          * particles_group_names: List of particles_class_X for each class in the cluster
-          * volume_group_name: volume_class_X with best resolution
-       e. Wait for completion → get new hetero job
-       f. **CRITICAL - DO NOT STOP HERE**: After the heterogeneous refinement job completes, you MUST continue:
-          - Extract density maps from the new hetero job using `extract_density_maps` tool
-          - Compare all density maps using `compare_all_densities` tool
-          - Get class resolutions using `get_hetero_class_resolutions` tool
-          - Check if any class passes the resolution threshold
-       g. **Recursively apply the same logic based on comparison and resolution results:**
-          - If NO cluster passes resolution threshold → use particles_all_classes from that hetero job + best volume → run homogeneous refinement → record final job UID → branch COMPLETE
-          - If 1 cluster → use particles_all_classes from that hetero job + best volume → run homogeneous refinement → record final job UID → branch COMPLETE
-          - If multiple clusters AND at least one passes threshold → split into more branches → repeat steps a-g recursively for EACH new cluster
-     * **CRITICAL**: Do NOT stop after a heterogeneous refinement job completes. ALWAYS extract density maps, compare, check resolutions, and continue recursively until the branch terminates.
-     * Continue this recursive expansion until EVERY branch reaches only 1 cluster OR no cluster passes resolution threshold
-     * Each branch that reaches 1 cluster OR no cluster passes threshold gets a final homogeneous refinement job UID
+Do NOT re-call `get_hetero_class_resolutions` or `compare_all_densities` unless re-analyzing an older job UID.
 
-4. **Final Homogeneous Refinement** (for each terminal branch):
-   - A branch terminates when comparison shows only 1 cluster in a heterogeneous refinement job
-   - Extract which classes belong to this cluster from the comparison results
-   - **CRITICAL**: Use particles based on cluster composition:
-     * If cluster has only 1 class: Use `particles_class_X` for that specific class
-     * If cluster has multiple classes: Use particles from all classes in this cluster (particles_class_X for each class)
-   - Use the best volume from the classes in this cluster (volume_class_X with best resolution)
-   - Run homogeneous refinement using the appropriate particles group(s) and best volume
-   - Record the final refinement job UID for this branch
-   - This completes the depth analysis for this branch
+## Decision tree after EVERY hetero job (follow exactly)
 
-**IMPORTANT TREE STRUCTURE LOGIC:**
-- Each heterogeneous refinement can split into multiple branches if multiple clusters are found
-- Each branch is processed independently and recursively
-- The tree expands until every branch reaches 1 cluster
-- Each terminal branch (reaching 1 cluster) gets a final homogeneous refinement job UID
-- You must track and record ALL final refinement job UIDs from ALL terminal branches
-- Process ALL starting clusters from the heterogeneity analysis results independently
+Read the `run_heterogeneous_refinement` result, then branch:
 
-## Tool Usage:
+**Case A — ZERO good classes** (`good_classes` is empty, or `fallback_non_uniform` is present):
+- Do NOT discard the branch
+- Run `run_non_uniform_refinement` using `fallback_non_uniform` (or manually):
+  * `hetero_job_uid` = current hetero job
+  * `particles_group_names=["particles_all_classes"]`
+  * `volume_group_name` = best-volume class among ALL classes (lowest resolution, even if ≥ {resolution_threshold} Å)
+- `wait_for_job` → `get_fsc_info` → record final job UID and resolution → **branch COMPLETE**
 
-- **read_input_json**: Read JSON file from refinement or heterogeneity job
-  * Optional: config_path
-  * If reading from heterogeneity_analysis_results_*.json:
-    * Returns: success, source, num_clusters, clusters (array with refinement_job_uid, particles_job_uid, volume_job_uid, particles_group_name, volume_group_name for each cluster)
-  * If reading from reconstruction_results_*.json:
-    * Returns: refinement_job_uid, particles_job_uid, volume_job_uid
+**Case B — one or more good classes exist:**
+1. Identify **KEPT** clusters from `density_comparison`
+2. **Discard every FILTERED OUT / BAD density cluster** — do not process them further, even if another cluster in the same job passed
+3. Then decide among KEPT clusters only:
 
-- **run_heterogeneous_refinement**: Run heterogeneous refinement with K classes
-  * Required: particles_job_uid, volume_job_uid, k (default: {k_value})
-  * Optional: particles_group_names (list, e.g., ["particles_class_0", "particles_class_2"] for multiple classes, or ["particles_class_1"] for single class)
-  * Optional: particles_group_name (legacy single group name), volume_group_name, project_uid, workspace_uid
-  * **CRITICAL**: For clusters with multiple classes, use particles_group_names with a list of particles_class_X for each class
-  * Returns: hetero_job_uid, status
+   **B1 — exactly ONE KEPT good cluster** (branch converged):
+   - Run `run_non_uniform_refinement` with:
+     * `hetero_job_uid` = current hetero job
+     * `particles_group_names` = good class(es) in that cluster (e.g. `["particles_class_1"]` or `["particles_class_0", "particles_class_2"]`)
+     * `volume_group_name` = best-resolution `volume_class_X` within that cluster
+   - `wait_for_job` → `get_fsc_info` → record final job UID and resolution → **branch COMPLETE**
 
-- **extract_density_maps**: Get job directory containing density maps
-  * Required: hetero_job_uid (can pass just "JXXX")
-  * Returns: output_folder, num_maps_extracted, map_files
+   **B2 — MULTIPLE KEPT good clusters** (heterogeneity still present):
+   - Split into separate sub-branches — one per KEPT cluster only
+   - For EACH KEPT cluster (skip all discarded clusters):
+     * Extract member GOOD classes from `density_comparison`
+     * Run `run_heterogeneous_refinement` with K={k_value} using those `particles_class_X` groups and best `volume_class_X`
+   - Each sub-branch repeats this decision tree recursively
 
-- **compare_all_densities**: Compare all density maps in a folder
-  * Required: folder (path to folder with *_volume.mrc files)
-  * Optional: voxel_size, alg_type, resolution_threshold, n_clusters, cluster_method
-  * Returns: clustering results with number of clusters and which maps belong to each cluster
-  * **IMPORTANT**: Map names contain class IDs (e.g., "J34_class_03_00042_volume.mrc" → class 3)
-  * Extract class IDs from map names to determine which classes belong to each cluster
-  * Use this to select the correct particles group: particles_class_X for single class, or particles_class_X for each class if multiple
+## Starting workflow
 
-- **run_homogeneous_refinement**: Run homogeneous refinement
-  * Required: particles_job_uid, volume_job_uid
-  * Optional: particles_group_name (e.g., "particles_all_classes"), volume_group_name (e.g., "volume_class_0")
-  * Returns: job_uid, status
+**Step 1 — Read input JSON (MANDATORY FIRST)**
+- Call `read_input_json` before any refinement job
+- Prefer `heterogeneity_analysis_results_*.json`; fallback: `reconstruction_results_*.json`
+- Returns clusters from `final_refinement_jobs`, each with: refinement_job_uid, particles_job_uid, volume_job_uid, particles_group_names, volume_group_name
+- Upstream refinement jobs use standard groups: `particles_group_names=["particles"]`, `volume_group_name="volume"`
+- Class-specific groups (`particles_class_X`, `volume_class_X`) exist only on hetero jobs
+- Process **each starting cluster as an independent tree**
 
-- **get_job_status**: Check status of a job
-- **wait_for_job**: Wait for job completion
-- **get_job_log**: Read and analyze job logs
+**Step 2 — For each starting cluster**
+1. Run `run_heterogeneous_refinement` with K={k_value} on the cluster's particles_job_uid + volume_job_uid and group names
+2. Apply the decision tree above to the returned result
+3. Recurse on KEPT sub-branches until every branch terminates
 
-## CRITICAL: Tree-Based Recursive Refinement Logic
-- Always validate with comparison tool after EACH heterogeneous refinement
-- Extract which classes belong to each cluster from comparison results (map names contain class IDs)
-- **CRITICAL WORKFLOW**: For EACH cluster from initial heterogeneity analysis:
-  * ALWAYS start with heterogeneous refinement (do NOT skip to homogeneous refinement)
-  * After heterogeneous refinement completes, you MUST:
-    1. Extract density maps using `extract_density_maps` tool
-    2. Compare all density maps using `compare_all_densities` tool
-    3. Get class resolutions using `get_hetero_class_resolutions` tool
-    4. Check if any class passes the resolution threshold (default: 10.0 Å, check config for actual value)
-  * **DO NOT STOP** after a heterogeneous refinement job completes - you MUST continue with extraction, comparison, and recursive refinement
-  * **If comparison shows multiple clusters**: Create branches - one for each cluster, continue with heterogeneous refinement for each
-  * **If comparison shows only 1 cluster**: This is when you do homogeneous refinement using `particles_all_classes` from that hetero job + best volume
-  * **If NO cluster passes resolution threshold** (all classes have resolution worse than threshold): Also run homogeneous refinement using `particles_all_classes` from that hetero job + best volume (even if multiple clusters exist)
-- **CRITICAL PARTICLE SELECTION FOR HETEROGENEOUS REFINEMENT**:
-  * When running heterogeneous refinement for a cluster: Use particles_class_X for each class in the cluster
-  * If cluster has only 1 class: Use `particles_group_names=["particles_class_X"]` (list with single element)
-  * If cluster has multiple classes: Use `particles_group_names=["particles_class_X", "particles_class_Y", ...]` (list with all classes)
-- **CRITICAL PARTICLE SELECTION FOR HOMOGENEOUS REFINEMENT**:
-  * When a heterogeneous refinement job shows only 1 cluster: Use `particles_all_classes` from that hetero job (NOT particles_class_X)
-  * When NO cluster passes resolution threshold: Use `particles_all_classes` from that hetero job (NOT particles_class_X)
-  * This uses ALL particles from the heterogeneous refinement job, not just specific classes
-- Each branch recursively continues with heterogeneous refinement until it reaches only 1 cluster OR no cluster passes resolution threshold
-- When a branch reaches 1 cluster OR no cluster passes threshold, use particles_all_classes from the hetero job + best volume → homogeneous refinement
-- Track ALL final refinement job UIDs from ALL terminal branches
-- The workflow creates a tree structure where each split represents multiple clusters found
+## What you must NOT do
+- Do NOT continue a BAD / FILTERED OUT density cluster because a sibling passed
+- Do NOT run hetero or non-uniform refinement on discarded bad clusters
+- Do NOT use homogeneous refinement — terminal refinement is always non-uniform
+- Do NOT skip reading the input JSON
+- Do NOT treat resolution filtering as global across all classes in a hetero job
 
-Remember: Always follow the Thought → Action → Observation pattern!
-Think carefully about cluster validation and iteration logic before proceeding.
+## Tool reference
+- **read_input_json**: mandatory first step; returns starting clusters
+- **run_heterogeneous_refinement**: hetero + auto resolutions + density comparison; primary driver of each round
+- **run_non_uniform_refinement**: terminates a branch (converged good cluster OR zero-good-classes fallback)
+- **wait_for_job** / **get_fsc_info**: always after non-uniform refinement
+- **get_hetero_class_resolutions** / **compare_all_densities** / **extract_density_maps**: only for re-analysis of an old job UID
+- **get_job_status** / **get_job_log**: diagnostics only
 
-**CRITICAL REMINDER**: After EACH heterogeneous refinement job completes, you MUST:
-1. Extract density maps (extract_density_maps)
-2. Compare densities (compare_all_densities)
-3. Get class resolutions (get_hetero_class_resolutions)
-4. Continue recursively based on results
-
-DO NOT stop after a heterogeneous refinement job completes - always continue with the recursive workflow until the branch terminates (1 cluster OR no cluster passes threshold)."""
+## ReAct discipline
+Always: Thought → Action → Observation. Before launching any job, state which decision-tree case (A, B1, or B2) applies and which clusters you are keeping vs discarding."""
     
     # =================================================================
     # Tool Implementation Methods
@@ -648,18 +570,81 @@ DO NOT stop after a heterogeneous refinement job completes - always continue wit
             
             hetero_job_uid = hetero_result["job_uid"]
             self.logger.info(f"✅ Heterogeneous refinement completed for K={k}, job: {hetero_job_uid}")
-            
-            return json.dumps({
+
+            self.logger.info("📊 Auto-running class resolutions + density comparison after hetero job...")
+            post_analysis = self._analyze_hetero_densities_after_completion(hetero_job_uid)
+
+            result: Dict[str, Any] = {
                 "success": True,
                 "k": k,
                 "hetero_job_uid": hetero_job_uid,
-                "status": "completed"
-            })
+                "status": "completed",
+                "auto_density_analysis": True,
+                "density_folder": post_analysis.get("density_folder"),
+                "density_maps": post_analysis.get("density_maps", []),
+                "density_comparison": post_analysis.get("density_comparison"),
+            }
+            class_resolutions = post_analysis.get("class_resolutions")
+            if class_resolutions:
+                result["class_resolutions"] = class_resolutions
+                result["good_classes"] = class_resolutions.get("good_classes", [])
+                result["bad_classes"] = class_resolutions.get("bad_classes", [])
+                result["next_action"] = class_resolutions.get("next_action")
+                if class_resolutions.get("fallback_non_uniform"):
+                    result["fallback_non_uniform"] = class_resolutions["fallback_non_uniform"]
+
+            return json.dumps(result)
             
         except Exception as e:
             error_result = {"success": False, "error": str(e)}
             self._record_tool_execution("run_heterogeneous_refinement", params if 'params' in locals() else {}, error=str(e))
             return json.dumps(error_result)
+
+    def _analyze_hetero_densities_after_completion(self, hetero_job_uid: str) -> Dict[str, Any]:
+        """Run class resolutions, map extraction, and density comparison after hetero completes."""
+        analysis: Dict[str, Any] = {
+            "class_resolutions": None,
+            "density_folder": None,
+            "density_maps": [],
+            "density_comparison": None,
+        }
+        try:
+            res_raw = self._get_hetero_class_resolutions_tool(
+                json.dumps({"job_uid": hetero_job_uid})
+            )
+            res_data = json.loads(res_raw) if isinstance(res_raw, str) else res_raw
+            if res_data.get("success"):
+                analysis["class_resolutions"] = res_data
+            else:
+                self.logger.warning(
+                    f"Auto class resolutions failed for {hetero_job_uid}: {res_data.get('error')}"
+                )
+                return analysis
+
+            extract_raw = self._extract_density_maps_tool(
+                json.dumps({"hetero_job_uid": hetero_job_uid})
+            )
+            extract_data = json.loads(extract_raw) if isinstance(extract_raw, str) else extract_raw
+            if not extract_data.get("success"):
+                self.logger.warning(
+                    f"Auto density extraction failed for {hetero_job_uid}: {extract_data.get('error')}"
+                )
+                return analysis
+
+            analysis["density_folder"] = extract_data.get("output_folder")
+            analysis["density_maps"] = extract_data.get("map_files", [])
+
+            compare_raw = self._compare_all_densities_tool(
+                json.dumps({"folder": analysis["density_folder"]})
+            )
+            analysis["density_comparison"] = (
+                compare_raw if isinstance(compare_raw, str) else json.dumps(compare_raw)
+            )
+        except Exception as exc:
+            self.logger.warning(
+                f"Post-hetero density analysis failed for {hetero_job_uid}: {exc}"
+            )
+        return analysis
     
     def _extract_density_maps_tool(self, tool_input: str) -> str:
         """
@@ -719,6 +704,68 @@ DO NOT stop after a heterogeneous refinement job completes - always continue wit
             self._record_tool_execution("extract_density_maps", params if 'params' in locals() else {}, error=str(e))
             return json.dumps(error_result)
     
+    def _compare_all_densities_tool(self, tool_input: str) -> str:
+        """
+        Compare density maps and filter clusters using the depth-analysis resolution threshold.
+        Auto-injects class resolutions from the most recent get_hetero_class_resolutions call.
+        """
+        try:
+            params = self._parse_tool_input(tool_input)
+            threshold = self._get_resolution_filter_threshold()
+
+            # LLM may pass folder path as "input" instead of "folder"
+            if not params.get("folder") and params.get("input"):
+                candidate = params["input"]
+                if isinstance(candidate, str) and not candidate.strip().startswith("{"):
+                    params["folder"] = candidate
+
+            if params.get("class_resolutions") is None and self._last_class_resolutions:
+                params["class_resolutions"] = self._last_class_resolutions.get("classes", [])
+
+            # Compare only needs class_id + resolution; drop bulky FSC curves from LLM copies
+            if params.get("class_resolutions"):
+                slim = []
+                for class_data in params["class_resolutions"]:
+                    if isinstance(class_data, dict):
+                        slim.append({
+                            "class_id": class_data.get("class_id"),
+                            "resolution_angstroms": class_data.get("resolution_angstroms"),
+                            "group_name": class_data.get("group_name"),
+                        })
+                params["class_resolutions"] = [c for c in slim if c.get("class_id") is not None]
+
+            if params.get("resolution_filter_threshold") is None:
+                params["resolution_filter_threshold"] = threshold
+
+            if params.get("voxel_size") is None:
+                params["voxel_size"] = self._get_stage_param("density_comparison", "voxel_size", 5.0)
+            if params.get("alg_type") is None:
+                params["alg_type"] = self._get_stage_param("density_comparison", "alg_type", "global")
+            if params.get("n_clusters") is None:
+                n_clusters = self._get_stage_param("density_comparison", "n_clusters", None)
+                if n_clusters is not None:
+                    params["n_clusters"] = n_clusters
+            if params.get("cluster_method") is None:
+                params["cluster_method"] = self._get_stage_param("density_comparison", "cluster_method", "spectral")
+
+            if not params.get("class_resolutions"):
+                self.logger.warning(
+                    "compare_all_densities called without class_resolutions — "
+                    "call get_hetero_class_resolutions on the same hetero job first"
+                )
+
+            result = self._compare_densities_delegate.func(json.dumps(params))
+            self._record_tool_execution("compare_all_densities", params, result=result)
+            return result
+        except Exception as e:
+            error_result = {"success": False, "error": str(e)}
+            self._record_tool_execution(
+                "compare_all_densities",
+                params if "params" in locals() else {},
+                error=str(e),
+            )
+            return json.dumps(error_result)
+
     def _get_hetero_class_resolutions_tool(self, tool_input: str) -> str:
         """
         Get resolution information for each class in a heterogeneous refinement job.
@@ -749,12 +796,71 @@ DO NOT stop after a heterogeneous refinement job completes - always continue wit
                     "error": f"Failed to get class resolutions: {class_resolutions.get('error', 'Unknown error')}"
                 })
             
+            threshold = self._get_resolution_filter_threshold()
+            raw_classes = class_resolutions.get("classes", [])
+            annotated_classes = []
+            good_classes = []
+            bad_classes = []
+
+            for class_data in raw_classes:
+                entry = dict(class_data)
+                resolution = entry.get("resolution_angstroms")
+                if resolution is not None:
+                    classification = self._classify_resolution(float(resolution))
+                    entry.update(classification)
+                    class_id = entry.get("class_id")
+                    summary = {
+                        "class_id": class_id,
+                        "group_name": entry.get("group_name"),
+                        "resolution_angstroms": resolution,
+                        **classification,
+                    }
+                    if classification["passes_threshold"]:
+                        good_classes.append(summary)
+                    else:
+                        bad_classes.append(summary)
+                annotated_classes.append(entry)
+
+            self._last_class_resolutions = {
+                "job_uid": job_uid,
+                "resolution_threshold_angstroms": threshold,
+                "classes": annotated_classes,
+            }
+
+            best_class = None
+            if not good_classes:
+                best_class = min(
+                    (c for c in annotated_classes if c.get("resolution_angstroms") is not None),
+                    key=lambda c: c["resolution_angstroms"],
+                    default=None,
+                )
+                next_action = "terminate_non_uniform_all_particles_best_volume"
+            elif len(good_classes) == 1:
+                next_action = "compare_densities_then_non_uniform_if_one_kept_cluster"
+            else:
+                next_action = "compare_densities_then_hetero_per_kept_cluster_only"
+
             result = {
                 "success": True,
                 "job_uid": job_uid,
                 "num_classes": class_resolutions.get("num_classes", 0),
-                "classes": class_resolutions.get("classes", [])
+                "resolution_threshold_angstroms": threshold,
+                "classes": annotated_classes,
+                "good_classes": good_classes,
+                "bad_classes": bad_classes,
+                "num_good_classes": len(good_classes),
+                "num_bad_classes": len(bad_classes),
+                "filter_rule": f"GOOD if resolution < {threshold} Å; BAD if ≥ {threshold} Å — discard bad only when good classes exist",
+                "next_action": next_action,
             }
+            if not good_classes and best_class is not None:
+                result["fallback_non_uniform"] = {
+                    "particles_group_names": ["particles_all_classes"],
+                    "volume_group_name": best_class.get("group_name"),
+                    "best_class_id": best_class.get("class_id"),
+                    "best_resolution_angstroms": best_class.get("resolution_angstroms"),
+                    "reason": "No good classes — refine all particles with best available volume",
+                }
             
             self._record_tool_execution("get_hetero_class_resolutions", {"job_uid": job_uid, "project_uid": project_uid}, result=result)
             return json.dumps(result)
@@ -871,5 +977,170 @@ DO NOT stop after a heterogeneous refinement job completes - always continue wit
         except Exception as e:
             error_result = {"success": False, "error": str(e)}
             self._record_tool_execution("run_homogeneous_refinement", params if 'params' in locals() else {}, error=str(e))
+            return json.dumps(error_result)
+
+    def _run_non_uniform_refinement_tool(self, tool_input: str) -> str:
+        """Run non-uniform refinement for a converged good cluster."""
+        try:
+            params = self._parse_tool_input(tool_input)
+
+            hetero_job_uid = params.get("hetero_job_uid")
+            particles_group_names = params.get("particles_group_names")
+            volume_group_name = params.get("volume_group_name")
+
+            if not hetero_job_uid or not particles_group_names or not volume_group_name:
+                missing = []
+                if not hetero_job_uid:
+                    missing.append("hetero_job_uid")
+                if not particles_group_names:
+                    missing.append("particles_group_names")
+                if not volume_group_name:
+                    missing.append("volume_group_name")
+                return json.dumps({
+                    "success": False,
+                    "error": f"Missing required parameters: {', '.join(missing)}"
+                })
+
+            if isinstance(particles_group_names, str):
+                try:
+                    parsed = json.loads(particles_group_names)
+                    particles_group_names = parsed if isinstance(parsed, list) else [particles_group_names]
+                except (json.JSONDecodeError, ValueError, TypeError):
+                    particles_group_names = [particles_group_names]
+            if not isinstance(particles_group_names, list):
+                particles_group_names = [particles_group_names]
+
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+            refine_res_init = params.get("refine_res_init")
+            if refine_res_init is None:
+                refine_res_init = self._get_refinement_res_init()
+            symmetry = self._get_refinement_symmetry()
+
+            self.logger.info(
+                f"Running non-uniform refinement: hetero={hetero_job_uid}, "
+                f"particles={particles_group_names}, volume={volume_group_name}"
+            )
+
+            if len(particles_group_names) > 1:
+                project = self.cryosparc_tools.cs.find_project(project_uid)
+                workspace = project.find_workspace(workspace_uid)
+                job_params = {
+                    "refine_do_init_scale_est": True,
+                    "refine_symmetry_do_align": True,
+                    "refine_defocus_refine": True,
+                    "refine_ctf_global_refine": True,
+                }
+                if symmetry and symmetry != "C1":
+                    job_params["refine_symmetry"] = symmetry
+                if refine_res_init is not None:
+                    job_params["refine_res_init"] = float(refine_res_init)
+
+                particle_connections = [(hetero_job_uid, group_name) for group_name in particles_group_names]
+                connections = {
+                    "particles": particle_connections,
+                    "volume": (hetero_job_uid, volume_group_name),
+                }
+                job = workspace.create_job("nonuniform_refine_new", connections=connections, params=job_params)
+                used_lane = self.cryosparc_tools._queue_job_with_lane_fallback(
+                    job, log_prefix="No lane specified; using lane", logger=self.logger
+                )
+                refine_result = {
+                    "success": True,
+                    "job_uid": job.uid,
+                    "job_type": "nonuniform_refine_new",
+                    "lane": used_lane,
+                }
+            else:
+                refine_params = {
+                    "project_uid": project_uid,
+                    "workspace_uid": workspace_uid,
+                    "particles_job_uid": hetero_job_uid,
+                    "volume_job_uid": hetero_job_uid,
+                    "symmetry": symmetry,
+                    "refine_defocus_refine": True,
+                    "refine_ctf_global_refine": True,
+                    "particles_group_name": particles_group_names[0],
+                    "volume_group_name": volume_group_name,
+                    "wait_for_completion": False,
+                    "timeout": self.config.job_management.default_timeout,
+                    "check_interval": self.config.job_management.status_check_interval,
+                }
+                if refine_res_init is not None:
+                    refine_params["refine_res_init"] = float(refine_res_init)
+                refine_result = self.cryosparc_tools.nonuniform_refine_new(**refine_params)
+
+            if not refine_result.get("success", False):
+                error_msg = refine_result.get("error") or "Unknown error"
+                return json.dumps({"success": False, "error": f"Non-uniform refinement failed: {error_msg}"})
+
+            job_uid = refine_result.get("job_uid")
+            result = {
+                "success": True,
+                "job_uid": job_uid,
+                "job_type": "nonuniform_refine_new",
+                "hetero_job_uid": hetero_job_uid,
+                "particles_group_names": particles_group_names,
+                "volume_group_name": volume_group_name,
+                "status": "queued",
+                "next_step": "wait_for_job then get_fsc_info to report final_resolution_angstroms",
+                "refinement_result": refine_result,
+            }
+            tool_params = {
+                "hetero_job_uid": hetero_job_uid,
+                "particles_group_names": particles_group_names,
+                "volume_group_name": volume_group_name,
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+            }
+            self._record_tool_execution("run_non_uniform_refinement", tool_params, result=result)
+            return json.dumps(result)
+        except Exception as e:
+            error_result = {"success": False, "error": str(e)}
+            self._record_tool_execution(
+                "run_non_uniform_refinement", params if "params" in locals() else {}, error=str(e)
+            )
+            return json.dumps(error_result)
+
+    def _get_fsc_info_tool(self, tool_input: str) -> str:
+        """Get FSC resolution from a completed non-uniform refinement job."""
+        try:
+            params = self._parse_tool_input(tool_input)
+            refinement_job_uid = params.get("refinement_job_uid") or params.get("job_uid")
+            if not refinement_job_uid:
+                input_stripped = tool_input.strip().strip("\"'")
+                if input_stripped.startswith("J") and len(input_stripped) <= 10:
+                    refinement_job_uid = input_stripped
+
+            if not refinement_job_uid:
+                return json.dumps({
+                    "success": False,
+                    "error": "Missing required parameter: refinement_job_uid (or pass job UID e.g. 'JXXX')",
+                })
+
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            fsc_info = self.cryosparc_tools.get_refinement_fsc_info(project_uid, refinement_job_uid)
+            if not fsc_info.get("success"):
+                return json.dumps({
+                    "success": False,
+                    "error": f"Failed to get FSC info: {fsc_info.get('error', 'Unknown error')}",
+                })
+
+            result = {
+                "success": True,
+                "refinement_job_uid": refinement_job_uid,
+                "box_size": fsc_info.get("box_size"),
+                "resolution_angstroms": fsc_info.get("resolution_angstroms"),
+                "final_resolution_angstroms": fsc_info.get("resolution_angstroms"),
+            }
+            self._record_tool_execution(
+                "get_fsc_info",
+                {"refinement_job_uid": refinement_job_uid, "project_uid": project_uid},
+                result=result,
+            )
+            return json.dumps(result)
+        except Exception as e:
+            error_result = {"success": False, "error": str(e)}
+            self._record_tool_execution("get_fsc_info", params if "params" in locals() else {}, error=str(e))
             return json.dumps(error_result)
 

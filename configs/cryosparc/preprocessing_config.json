@@ -12,8 +12,8 @@
     "dose"
   ],
   "microscope_parameters": {
-    "movies_path": "/data/user/cryosparcuser/Data/cryoAgent_test/Dataset/relion_tutorial/relion30_tutorial/Movies/*.tiff",
-    "gain_ref_path": "/data/user/cryosparcuser/Data/cryoAgent_test/Dataset/relion_tutorial/relion30_tutorial/Movies/gain.mrc",
+    "movies_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/*.tiff",
+    "gain_ref_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/gain.mrc",
     "pixel_size": 0.88,
     "voltage": 200.0,
     "cs_mm": 1.4,
@@ -30,8 +30,8 @@
   ],
   "workflow": {
     "import_movies": {
-      "movies_path": "/data/user/cryosparcuser/Data/cryoAgent_test/Dataset/relion_tutorial/relion30_tutorial/Movies/*.tiff",
-      "gain_ref_path": "/data/user/cryosparcuser/Data/cryoAgent_test/Dataset/relion_tutorial/relion30_tutorial/Movies/gain.mrc",
+      "movies_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/*.tiff",
+      "gain_ref_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/gain.mrc",
       "pixel_size": 0.88,
       "voltage": 200.0,
       "cs_mm": 1.4,
