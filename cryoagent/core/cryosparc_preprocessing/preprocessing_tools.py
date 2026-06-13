@@ -14,7 +14,9 @@ class PreprocessingTools:
             name="import_movies",
             description="Import movie files into CryoSPARC for processing. "
                        "Required parameters: None (all loaded from microscope_config.json). "
-                       "Optional parameters: project_uid, workspace_uid, wait_for_completion, timeout, check_interval. "
+                       "Optional parameters: project_uid, workspace_uid, set_index, wait_for_completion, timeout, check_interval. "
+                       "When movies_path is a list, imports every path in one call (each paired with its gain_ref_path when provided). "
+                       "Use set_index to import only one configured set. "
                        "All microscope parameters (movies_path, gain_ref_path, pixel_size, voltage, cs_mm, dose) are automatically loaded from microscope_config.json. "
                        "Gain reference orientation (gainref_flip_x, gainref_flip_y, gainref_rotate_num) is auto-derived from the same configuration.",
             func=agent._import_movies_tool
@@ -40,7 +42,8 @@ class PreprocessingTools:
         return Tool(
             name="motion_correction",
             description="Perform motion correction on imported movies. "
-                       "Required parameters: movies_job_uid. "
+                       "Required parameters: movies_job_uid or movies_job_uids (comma-separated when multiple import jobs exist). "
+                       "When omitted, uses all import_movies job UIDs from the current session. "
                        "Optional parameters: binning, patch_size, max_shift, project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
             func=agent._motion_correction_tool
         )

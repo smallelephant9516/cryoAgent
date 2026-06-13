@@ -45,15 +45,15 @@
     }
   },
   "cryosift": {
-    "cryosift_weights_path": "/data/user/cryosparcuser/Data/Github/cryoagent/Magellon/Sandbox/2dclass_evaluator/CNNTraining/final_model/final_model_cont.pth",
+    "cryosift_weights_path": "/home/daoyi/Github/cryoagent/Magellon/Sandbox/2dclass_evaluator/CNNTraining/final_model/final_model_cont.pth",
     "cryosift_weights_path_description": "Path to the CryoSift neural network weights file. This can be overridden by stage-specific configs.",
-    "cryosift_evaluator_script_path": "/data/user/cryosparcuser/Data/Github/cryoagent/Magellon/Sandbox/2dclass_evaluator/CNNTraining/output_class_list.py",
+    "cryosift_evaluator_script_path": "/home/daoyi/Github/cryoagent/Magellon/Sandbox/2dclass_evaluator/CNNTraining/output_class_list.py",
     "cryosift_evaluator_script_path_description": "Path to the CryoSift evaluator script (output_class_list.py). This can be overridden by stage-specific configs.",
     "cryosift_env": "magellon2DAssess",
     "cryosift_env_description": "Conda environment used to run CryoSift evaluation. This can be overridden by stage-specific configs."
   },
   "agent": {
-    "provider": "openai",
+    "provider": "deepseek",
     "temperature": 0.1,
     "max_iterations": 50,
     "verbose": true,

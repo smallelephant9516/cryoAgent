@@ -3,7 +3,7 @@
 import os
 import time
 from pathlib import Path
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Union, Tuple
 from cryosparc.tools import CryoSPARC
 from ..config.config_loader import CryoSPARCSettings
 from .cryosift_tools import CryoSiftTools, CryoSiftPaths
@@ -512,11 +512,68 @@ class CryoSPARCTools:
         except Exception as e:
             raise RuntimeError(f"Failed to import particles from STAR: {e}")
     
+    def _resolve_import_movies_output_labels(self, project, movies_job_uid: str) -> List[str]:
+        """Return output labels with items for an import movies job."""
+        available_output_labels: List[str] = []
+        try:
+            import_job = project.find_job(movies_job_uid)
+            import_job.refresh()
+            job_doc = getattr(import_job, "doc", {})
+            job_status = job_doc.get("status", "unknown")
+
+            output_result_groups = job_doc.get("output_result_groups", [])
+            for group in output_result_groups:
+                label = group.get("name")
+                num_items = group.get("num_items", 0)
+                if label and num_items > 0:
+                    available_output_labels.append(label)
+
+            if not available_output_labels:
+                raise RuntimeError(
+                    f"Import movies job {movies_job_uid} (status: {job_status}) has no outputs. "
+                    f"This usually means no movies were found at the specified path or the import failed. "
+                    f"Please check the import job log and verify the movies_path is correct."
+                )
+        except RuntimeError:
+            raise
+        except Exception:
+            return ["imported_movies", "movies"]
+
+        return available_output_labels
+
+    def _normalize_movies_job_uids(
+        self,
+        movies_job_uid: Optional[Union[str, List[str]]] = None,
+        movies_job_uids: Optional[Union[str, List[str]]] = None,
+    ) -> List[str]:
+        """Normalize single or multiple import job UID arguments."""
+        raw_values: List[str] = []
+        for value in (movies_job_uids, movies_job_uid):
+            if value is None:
+                continue
+            if isinstance(value, list):
+                raw_values.extend(str(item).strip() for item in value if str(item).strip())
+            else:
+                raw_values.extend(
+                    part.strip()
+                    for part in str(value).split(",")
+                    if part.strip()
+                )
+
+        deduped: List[str] = []
+        seen = set()
+        for uid in raw_values:
+            if uid not in seen:
+                seen.add(uid)
+                deduped.append(uid)
+        return deduped
+
     def motion_correction(
         self,
         project_uid: str,
         workspace_uid: str,
-        movies_job_uid: str,
+        movies_job_uid: Optional[Union[str, List[str]]] = None,
+        movies_job_uids: Optional[Union[str, List[str]]] = None,
         binning: int = 1,
         patch_size: int = 5,
         lane: Optional[str] = None,
@@ -532,7 +589,8 @@ class CryoSPARCTools:
         Args:
             project_uid: CryoSPARC project UID
             workspace_uid: CryoSPARC workspace UID
-            movies_job_uid: UID of the import movies job
+            movies_job_uid: UID(s) of one or more import movies jobs
+            movies_job_uids: Alias for movies_job_uid when connecting multiple imports
             binning: Binning factor for motion correction
             patch_size: Patch size for motion correction
             wait_for_completion: Whether to wait for job completion
@@ -543,61 +601,71 @@ class CryoSPARCTools:
             Dictionary containing job information
         """
         try:
+            normalized_job_uids = self._normalize_movies_job_uids(
+                movies_job_uid=movies_job_uid,
+                movies_job_uids=movies_job_uids,
+            )
+            if not normalized_job_uids:
+                raise RuntimeError(
+                    "At least one import movies job UID is required for motion correction."
+                )
+
             # Find project and workspace
             project = self.cs.find_project(project_uid)
             workspace = project.find_workspace(workspace_uid)
-            
-            # Verify the import job exists and has outputs
-            available_output_labels = []
-            try:
-                import_job = project.find_job(movies_job_uid)
-                import_job.refresh()
-                job_doc = getattr(import_job, "doc", {})
-                job_status = job_doc.get("status", "unknown")
-                
-                # Check if job has outputs
-                output_result_groups = job_doc.get("output_result_groups", [])
-                for group in output_result_groups:
-                    label = group.get("name")
-                    num_items = group.get("num_items", 0)
-                    if label and num_items > 0:
-                        available_output_labels.append(label)
-                
-                if not available_output_labels:
-                    raise RuntimeError(
-                        f"Import movies job {movies_job_uid} (status: {job_status}) has no outputs. "
-                        f"This usually means no movies were found at the specified path or the import failed. "
-                        f"Please check the import job log and verify the movies_path is correct."
-                    )
-            except RuntimeError:
-                # Re-raise RuntimeError (our custom error about no outputs)
-                raise
-            except Exception as check_error:
-                # If we can't check the job, proceed anyway and let the connection attempt fail
-                # This preserves backward compatibility
-                pass
-            
-            # Prepare job parameters using correct CryoSPARC API format
+
             job_params = {
                 **kwargs
             }
-            
-            # Create job with connections - try known import job outputs for compatibility
-            # First try available output labels if we found them, otherwise try defaults
-            output_labels_to_try = available_output_labels if available_output_labels else ["imported_movies", "movies"]
-            connection_errors = []
+
+            per_job_output_labels: List[List[str]] = []
+            for import_job_uid in normalized_job_uids:
+                per_job_output_labels.append(
+                    self._resolve_import_movies_output_labels(project, import_job_uid)
+                )
+
+            connection_errors: List[Tuple[str, Exception]] = []
             job = None
-            for output_label in output_labels_to_try:
-                try:
-                    job = workspace.create_job(
-                        "patch_motion_correction_multi",
-                        params=job_params,
-                        connections={"movies": (movies_job_uid, output_label)}
-                    )
-                    break
-                except Exception as exc:  # store and try next label
-                    connection_errors.append((output_label, exc))
-                    job = None
+            selected_connections: List[Tuple[str, str]] = []
+
+            if len(normalized_job_uids) == 1:
+                output_labels_to_try = per_job_output_labels[0]
+                for output_label in output_labels_to_try:
+                    try:
+                        job = workspace.create_job(
+                            "patch_motion_correction_multi",
+                            params=job_params,
+                            connections={"movies": (normalized_job_uids[0], output_label)},
+                        )
+                        selected_connections = [(normalized_job_uids[0], output_label)]
+                        break
+                    except Exception as exc:
+                        connection_errors.append((output_label, exc))
+                        job = None
+            else:
+                candidate_labels = [
+                    labels[0] if labels else "imported_movies"
+                    for labels in per_job_output_labels
+                ]
+                label_variants = [
+                    candidate_labels,
+                    ["imported_movies"] * len(normalized_job_uids),
+                    ["movies"] * len(normalized_job_uids),
+                ]
+                for labels in label_variants:
+                    movie_connections = list(zip(normalized_job_uids, labels))
+                    try:
+                        job = workspace.create_job(
+                            "patch_motion_correction_multi",
+                            params=job_params,
+                            connections={"movies": movie_connections},
+                        )
+                        selected_connections = movie_connections
+                        break
+                    except Exception as exc:
+                        connection_errors.append((",".join(labels), exc))
+                        job = None
+
             if job is None:
                 error_messages = ", ".join(
                     f"output '{label}': {err}" for label, err in connection_errors
@@ -605,10 +673,10 @@ class CryoSPARCTools:
                 raise RuntimeError(
                     "Unable to connect motion correction to import job outputs: "
                     f"{error_messages}. "
-                    f"Import job {movies_job_uid} may not have produced valid outputs. "
-                    f"Please verify the import job completed successfully and check its log."
+                    f"Import jobs {normalized_job_uids} may not have produced valid outputs. "
+                    f"Please verify the import jobs completed successfully and check their logs."
                 )
-            
+
             # Queue the job
             used_lane = self._queue_job_with_lane_fallback(
                 job,
@@ -616,17 +684,24 @@ class CryoSPARCTools:
                 hostname=hostname,
             )
             print(f"Queued motion correction job: {job.uid}")
-            
+
             self._job_cache[job.uid] = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid
             }
+            movies_connection_value: Union[str, List[Tuple[str, str]]]
+            if len(selected_connections) == 1:
+                movies_connection_value = selected_connections[0][0]
+            else:
+                movies_connection_value = selected_connections
+
             result = {
                 "job_uid": job.uid,
                 "job_type": "patch_motion_correction_multi",
                 "status": "queued",
                 "params": job_params,
-                "connections": {"movies": movies_job_uid},
+                "connections": {"movies": movies_connection_value},
+                "movies_job_uids": normalized_job_uids,
                 "lane": used_lane,
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid

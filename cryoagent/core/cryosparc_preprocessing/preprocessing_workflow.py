@@ -95,7 +95,14 @@ class PreprocessingWorkflow:
         
         # Check if micrographs_path is available (indicates direct micrograph import)
         micrographs_path = microscope_config.get('micrographs_path')
-        movies_path = microscope_config.get('movies_path', 'N/A')
+        movie_sets = getattr(self.agent, "_get_movie_sets", lambda: [])()
+        if movie_sets:
+            movies_path = "; ".join(
+                f"{movie_set.get('name', f'set_{index + 1}')}: {movie_set.get('movies_path', 'N/A')}"
+                for index, movie_set in enumerate(movie_sets)
+            )
+        else:
+            movies_path = microscope_config.get('movies_path', 'N/A')
         
         # Get min_resolution from config, default to 5.0 if not found
         min_resolution = micrograph_selection_config.get('min_resolution', 5.0)
@@ -111,8 +118,10 @@ Execute the complete cryoEM preprocessing workflow. Choose the appropriate path 
    - Dose: {microscope_config.get('dose', 'N/A')} e-/Å²
    - Project: {self.config.workflow.project_uid}
    - Workspace: {self.config.workflow.workspace_uid}
+   - If movies_path is a list, import all paths in one import_movies call
 
 2. **Motion Correction**: Correct motion in the imported movies
+   - Connect all import job UIDs to a single motion correction job when multiple sets were imported
    - Binning: {motion_correction_config.get('binning', 1)}
    - Patch size: {motion_correction_config.get('patch_size', 5)}
 
@@ -195,6 +204,12 @@ Start by reasoning about the workflow state and then proceed step by step.
             error_message = latest_record.get("error")
             result_payload = latest_record.get("result", {})
             job_uid = result_payload.get("job_uid") if isinstance(result_payload, dict) else None
+            job_uids_to_check: List[str] = []
+            if isinstance(result_payload, dict):
+                if result_payload.get("job_uids"):
+                    job_uids_to_check = list(result_payload["job_uids"])
+                elif job_uid:
+                    job_uids_to_check = [job_uid]
 
             if error_message:
                 self.results.append(
@@ -209,7 +224,7 @@ Start by reasoning about the workflow state and then proceed step by step.
                 )
                 continue
 
-            if not job_uid:
+            if not job_uids_to_check:
                 self.results.append(
                     PreprocessingResult(
                         step=step,
@@ -221,24 +236,35 @@ Start by reasoning about the workflow state and then proceed step by step.
                 )
                 continue
 
-            wait_info = waits.get(job_uid)
-            if not wait_info:
+            missing_waits = [uid for uid in job_uids_to_check if uid not in waits]
+            if missing_waits:
                 self.results.append(
                     PreprocessingResult(
                         step=step,
                         success=False,
                         job_uid=job_uid,
                         error="Job completion was not confirmed",
-                        message="Missing wait_for_job invocation",
+                        message=f"Missing wait_for_job invocation for: {', '.join(missing_waits)}",
                         reasoning=result
                     )
                 )
                 continue
 
-            status = wait_info.get("status")
-            success = status == "completed"
-            message = f"CryoSPARC job {job_uid} completed successfully" if success else f"CryoSPARC job {job_uid} finished with status '{status}'"
-            error = None if success else f"Job status: {status}"
+            statuses = [waits[uid].get("status") for uid in job_uids_to_check]
+            success = all(status == "completed" for status in statuses)
+            if len(job_uids_to_check) == 1:
+                message = (
+                    f"CryoSPARC job {job_uids_to_check[0]} completed successfully"
+                    if success
+                    else f"CryoSPARC job {job_uids_to_check[0]} finished with status '{statuses[0]}'"
+                )
+            else:
+                message = (
+                    f"CryoSPARC jobs {', '.join(job_uids_to_check)} completed successfully"
+                    if success
+                    else f"CryoSPARC jobs finished with statuses: {', '.join(statuses)}"
+                )
+            error = None if success else f"Job statuses: {', '.join(str(s) for s in statuses)}"
 
             self.results.append(
                 PreprocessingResult(

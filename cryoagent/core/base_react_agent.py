@@ -29,7 +29,7 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage
 
 from ..tools.cryosparc_tools import CryoSPARCTools
-from ..config.config_loader import CryoAgentConfig
+from ..config.config_loader import CryoAgentConfig, resolve_movie_sets
 from .llm_factory import LLMFactory
 from ..utils.conversation_logger import ConversationLogger
 from ..utils.realtime_conversation_logger import RealtimeConversationLogger
@@ -227,6 +227,11 @@ class BaseReActAgent(ABC):
             self._microscope_config_cache = dict(effective)
 
         return effective
+
+    def _get_movie_sets(self) -> List[Dict[str, Any]]:
+        """Return resolved movie import sets from the effective microscope config."""
+        microscope_config = getattr(self, "microscope_config", None) or {}
+        return resolve_movie_sets(microscope_config)
 
     def _get_base_particle_diameter(self) -> Optional[float]:
         """

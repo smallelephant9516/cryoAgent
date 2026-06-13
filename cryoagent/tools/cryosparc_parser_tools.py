@@ -57,6 +57,7 @@ class CryoSPARCPreprocessingParser:
         """
         stage_outputs = {
             "movies_job_uid": None,
+            "movies_job_uids": [],
             "micrographs_job_uid": None,
             "motion_correction_job_uid": None,
             "ctf_job_uid": None,
@@ -71,6 +72,10 @@ class CryoSPARCPreprocessingParser:
             if result.success and result.job_uid:
                 if step_name == "import_movies":
                     stage_outputs["movies_job_uid"] = result.job_uid
+                    if result.job_uid:
+                        stage_outputs.setdefault("movies_job_uids", [])
+                        if result.job_uid not in stage_outputs["movies_job_uids"]:
+                            stage_outputs["movies_job_uids"].append(result.job_uid)
                 elif step_name == "import_micrographs":
                     stage_outputs["micrographs_job_uid"] = result.job_uid
                 elif step_name == "motion_correction":
@@ -121,14 +126,14 @@ class CryoSPARCPreprocessingParser:
                 ("ctf_estimation", stage_outputs.get("ctf_job_uid")),
                 ("micrograph_selection", final_job_uid)
             ]
-        elif movies_job_uid:
-            # Path 1: import_movies → motion_correction → ctf_estimation → micrograph_selection
-            required_jobs = [
-                ("import_movies", movies_job_uid),
+        elif movies_job_uid or stage_outputs.get("movies_job_uids"):
+            movies_job_uids = stage_outputs.get("movies_job_uids") or [movies_job_uid]
+            required_jobs = [("import_movies", uid) for uid in movies_job_uids if uid]
+            required_jobs.extend([
                 ("motion_correction", stage_outputs.get("motion_correction_job_uid")),
                 ("ctf_estimation", stage_outputs.get("ctf_job_uid")),
-                ("micrograph_selection", final_job_uid)
-            ]
+                ("micrograph_selection", final_job_uid),
+            ])
         else:
             # Neither import method was used
             return {

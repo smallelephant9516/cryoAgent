@@ -1,7 +1,7 @@
 """Configuration loader for CryoAgent."""
 
 import json
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 from pathlib import Path
 from pydantic import BaseModel, Field
 import os
@@ -9,6 +9,120 @@ from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+_SHARED_MOVIE_PARAM_KEYS = (
+    "pixel_size",
+    "voltage",
+    "cs_mm",
+    "dose",
+    "gain_rot",
+    "gain_flip",
+)
+
+
+def _coerce_path_list(value: Any) -> List[str]:
+    """Normalize a config path value to a list of non-empty strings."""
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [
+            str(item).strip()
+            for item in value
+            if item is not None and str(item).strip()
+        ]
+    if isinstance(value, str) and value.strip():
+        return [value.strip()]
+    return []
+
+
+def _pair_param(value: Any, count: int, default: Any = None) -> List[Any]:
+    """Pair a scalar or list parameter with each movie set by index."""
+    if count <= 0:
+        return []
+    if isinstance(value, list):
+        paired = list(value)
+        while len(paired) < count:
+            paired.append(default)
+        return paired[:count]
+    return [value if value is not None else default] * count
+
+
+def resolve_movie_sets(microscope_params: Optional[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Resolve movie import sets from microscope configuration.
+
+    Supports:
+    - ``movies_path`` as a string or list of strings
+    - ``gain_ref_path`` as a string or list paired by index with ``movies_path``
+    - ``gain_rot`` / ``gain_flip`` as scalars or lists paired by index
+    - Legacy ``movie_sets`` objects (still accepted)
+
+    Args:
+        microscope_params: Contents of ``microscope_parameters`` from config.
+
+    Returns:
+        List of movie-set dicts, each with at least ``movies_path``.
+    """
+    if not isinstance(microscope_params, dict):
+        return []
+
+    shared: Dict[str, Any] = {}
+    for key in _SHARED_MOVIE_PARAM_KEYS:
+        value = microscope_params.get(key)
+        if value is not None and not isinstance(value, list):
+            shared[key] = value
+
+    raw_sets = microscope_params.get("movie_sets")
+    if isinstance(raw_sets, list) and raw_sets:
+        resolved: List[Dict[str, Any]] = []
+        for index, item in enumerate(raw_sets):
+            if not isinstance(item, dict):
+                continue
+            movies_path = item.get("movies_path")
+            if not movies_path:
+                continue
+            merged = dict(shared)
+            merged.update(item)
+            merged.setdefault("name", f"set_{index + 1}")
+            resolved.append(merged)
+        if resolved:
+            return resolved
+
+    movies_paths = _coerce_path_list(microscope_params.get("movies_path"))
+    if not movies_paths:
+        return []
+
+    gain_ref_paths = _pair_param(
+        microscope_params.get("gain_ref_path"),
+        len(movies_paths),
+        default=None,
+    )
+    gain_rots = _pair_param(
+        microscope_params.get("gain_rot", 0),
+        len(movies_paths),
+        default=0,
+    )
+    gain_flips = _pair_param(
+        microscope_params.get("gain_flip", 0),
+        len(movies_paths),
+        default=0,
+    )
+
+    resolved = []
+    for index, movies_path in enumerate(movies_paths):
+        entry = {
+            "name": f"set_{index + 1}",
+            "movies_path": movies_path,
+            "gain_ref_path": gain_ref_paths[index],
+            "gain_rot": gain_rots[index],
+            "gain_flip": gain_flips[index],
+            **shared,
+        }
+        resolved.append(entry)
+
+    if len(resolved) == 1:
+        resolved[0]["name"] = "default"
+    return resolved
 
 
 def resolve_env_vars(data: Any) -> Any:

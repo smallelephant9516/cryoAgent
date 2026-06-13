@@ -53,6 +53,7 @@ class PreprocessingAgent(BaseReActAgent):
         self.microscope_config = self._resolve_microscope_defaults(stage_defaults, update_cache=True)
         # Track import method for determining group_job_uid in CTF estimation
         self.import_micrographs_job_uid: Optional[str] = None
+        self.import_movies_job_uids: List[str] = []
     
     def _load_preprocessing_config(self) -> Dict[str, Any]:
         """Load preprocessing workflow configuration from separate config file."""
@@ -168,6 +169,83 @@ class PreprocessingAgent(BaseReActAgent):
             return uid
         return uid.rstrip(".).;,:!?")
 
+    def _resolve_gain_reference_params(
+        self,
+        params: Dict[str, Any],
+        movie_set: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        """Derive CryoSPARC gain-reference orientation flags for a movie set."""
+        gain_rot_value = params.get("gain_rot", movie_set.get("gain_rot", 0))
+        gain_rot = self._parse_int_param(gain_rot_value, default=0, param_name="gain_rot") % 4
+
+        gain_flip_value = params.get("gain_flip", movie_set.get("gain_flip", 0))
+        relion_gain_flip = self._parse_int_param(gain_flip_value, default=0, param_name="gain_flip")
+
+        relion_flip_y = bool(relion_gain_flip & 0b01)
+        relion_flip_x = bool(relion_gain_flip & 0b10)
+
+        default_flip_y = not relion_flip_y
+        default_flip_x = relion_flip_x
+
+        return {
+            "gain_rot": gain_rot,
+            "relion_gain_flip": relion_gain_flip,
+            "gainref_flip_y": self._parse_boolean_param(params.get("gainref_flip_y"), default=default_flip_y),
+            "gainref_flip_x": self._parse_boolean_param(params.get("gainref_flip_x"), default=default_flip_x),
+            "gainref_rotate_num": self._parse_int_param(
+                params.get("gainref_rotate_num", gain_rot),
+                default=gain_rot,
+                param_name="gainref_rotate_num",
+            ) % 4,
+        }
+
+    def _collect_import_movies_job_uids(self) -> List[str]:
+        """Collect import job UIDs from prior tool executions in this session."""
+        job_uids: List[str] = []
+        seen = set()
+        for entry in self.tool_execution_log:
+            if entry.get("tool") != "import_movies":
+                continue
+            result = entry.get("result")
+            if not isinstance(result, dict):
+                continue
+            candidates = result.get("job_uids") or []
+            if not candidates and result.get("job_uid"):
+                candidates = [result["job_uid"]]
+            for uid in candidates:
+                if uid and uid not in seen:
+                    seen.add(uid)
+                    job_uids.append(uid)
+        return job_uids
+
+    def _parse_job_uid_list(self, params: Dict[str, Any], input_str: str) -> List[str]:
+        """Parse one or more CryoSPARC job UIDs from tool params or free text."""
+        raw_values: List[str] = []
+        for key in ("movies_job_uids", "movies_job_uid"):
+            value = params.get(key)
+            if value is None:
+                continue
+            if isinstance(value, list):
+                raw_values.extend(str(item).strip() for item in value if str(item).strip())
+            else:
+                raw_values.extend(
+                    part.strip()
+                    for part in str(value).split(",")
+                    if part.strip()
+                )
+
+        if not raw_values:
+            matches = re.findall(r"\bJ\d+\b", input_str)
+            raw_values.extend(matches)
+
+        deduped: List[str] = []
+        seen = set()
+        for uid in raw_values:
+            if uid not in seen:
+                seen.add(uid)
+                deduped.append(uid)
+        return deduped
+
     def _create_tools(self) -> List[Tool]:
         """Create preprocessing-specific tools."""
         return [
@@ -186,6 +264,15 @@ class PreprocessingAgent(BaseReActAgent):
         """Get the preprocessing-specific ReAct system prompt."""
         # Safely get microscope config values, handling case where it might not be set yet
         microscope_config = getattr(self, 'microscope_config', {})
+        movie_sets = self._get_movie_sets()
+        movie_sets_summary = (
+            "; ".join(
+                f"{movie_set.get('name', f'set_{index + 1}')}: {movie_set.get('movies_path', 'N/A')}"
+                for index, movie_set in enumerate(movie_sets)
+            )
+            if movie_sets
+            else "N/A"
+        )
         
         return f"""You are a CryoEM preprocessing assistant using the ReAct (Reasoning + Acting) framework. 
 You specialize in the initial stages of cryoEM data processing: movie import, motion correction, CTF estimation, and micrograph selection.
@@ -202,12 +289,14 @@ You specialize in the initial stages of cryoEM data processing: movie import, mo
 ### Option A: Import Movies (for raw movie files)
 1. **Import Movies**: Import raw movie files into CryoSPARC
    - Required: None (all parameters loaded from microscope_config.json)
-   - Optional: project_uid, workspace_uid
-   - Note: All microscope parameters (movies_path, gain_ref_path, pixel_size, voltage, cs_mm, dose) are automatically loaded from microscope_config.json
+   - Optional: project_uid, workspace_uid, set_index
+   - Note: All microscope parameters are automatically loaded from microscope_config.json
+   - When movies_path is a list, one import_movies call imports every path (each paired with its gain_ref_path)
    
 2. **Motion Correction**: Correct beam-induced motion in movies
-   - Required: movies_job_uid (from import_movies)
+   - Required: movies_job_uid or movies_job_uids (from import_movies; comma-separated when multiple sets were imported)
    - Optional: binning, patch_size, project_uid, workspace_uid
+   - When multiple import jobs exist, connect all of them to a single motion correction job
    
 3. **CTF Estimation**: Estimate Contrast Transfer Function parameters
    - Required: micrographs_job_uid (from motion_correction)
@@ -244,7 +333,7 @@ For each step, you MUST follow this pattern:
 ## Tool Usage Guidelines:
 - import_movies: Start the import, then wait for completion (use for raw movie files)
 - import_micrographs: Start the import, then wait for completion (use for already motion-corrected micrographs - SKIP motion correction)
-- motion_correction: Requires movies_job_uid from completed import_movies job (ONLY use if you imported movies)
+- motion_correction: Requires movies_job_uid(s) from completed import_movies job(s) (ONLY use if you imported movies)
 - ctf_estimation: Requires micrographs_job_uid from either:
   - completed motion_correction job (if you imported movies), OR
   - completed import_micrographs job (if you imported micrographs directly)
@@ -271,15 +360,16 @@ For each step, you MUST follow this pattern:
 ## Current Configuration:
 - Project UID: {self.config.workflow.project_uid}
 - Workspace UID: {self.config.workflow.workspace_uid}
-- Movies Path: {microscope_config.get('movies_path', 'N/A')}
+- Movie Sets: {movie_sets_summary}
+- Movies Path (legacy): {microscope_config.get('movies_path', 'N/A')}
 - Micrographs Path: {microscope_config.get('micrographs_path', 'N/A') if microscope_config.get('micrographs_path') else 'Not set (will use movies_path)'}
-- Gain Ref Path: {microscope_config.get('gain_ref_path', 'N/A')}
+- Gain Ref Path (legacy): {microscope_config.get('gain_ref_path', 'N/A')}
 - Pixel Size: {microscope_config.get('pixel_size', 'N/A')} Å
 - Voltage: {microscope_config.get('voltage', 'N/A')} kV
 
 ## IMPORTANT: Choosing the Right Import Method
 - If micrographs_path is set in the config: Use import_micrographs (skip motion correction)
-- If only movies_path is set: Use import_movies (requires motion correction)
+- If movies_path is set (string or list): Use import_movies (requires motion correction)
 
 Remember: Always follow the Thought → Action → Observation pattern and WAIT for each job to complete!"""
     
@@ -297,67 +387,109 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 params.get("workspace_uid", self.config.workflow.workspace_uid)
             )
 
-            # Safely get microscope config values, handling case where it might not be set yet
             microscope_config = getattr(self, 'microscope_config', {})
-            
-            gain_rot_value = params.get("gain_rot", microscope_config.get("gain_rot"))
-            gain_rot = self._parse_int_param(gain_rot_value, default=0, param_name="gain_rot") % 4
+            movie_sets = self._get_movie_sets()
+            if not movie_sets:
+                raise ValueError(
+                    "No movie sets configured. Set movies_path in microscope_config.json."
+                )
 
-            gain_flip_value = params.get("gain_flip", microscope_config.get("gain_flip"))
-            relion_gain_flip = self._parse_int_param(gain_flip_value, default=0, param_name="gain_flip")
+            explicit_movies_path = params.get("movies_path")
+            set_index = params.get("set_index")
+            if set_index is not None:
+                try:
+                    selected_set = movie_sets[int(set_index)]
+                except (TypeError, ValueError, IndexError) as exc:
+                    raise ValueError(
+                        f"Invalid set_index '{set_index}'. "
+                        f"Expected 0..{len(movie_sets) - 1}."
+                    ) from exc
+                sets_to_import = [selected_set]
+            elif explicit_movies_path:
+                sets_to_import = [{
+                    "name": params.get("set_name", "custom"),
+                    "movies_path": explicit_movies_path,
+                    "gain_ref_path": params.get("gain_ref_path", microscope_config.get("gain_ref_path")),
+                    "gain_rot": microscope_config.get("gain_rot", 0),
+                    "gain_flip": microscope_config.get("gain_flip", 0),
+                    "pixel_size": microscope_config.get("pixel_size"),
+                    "voltage": microscope_config.get("voltage"),
+                    "cs_mm": microscope_config.get("cs_mm"),
+                    "dose": microscope_config.get("dose"),
+                }]
+            else:
+                sets_to_import = movie_sets
 
-            relion_flip_y = bool(relion_gain_flip & 0b01)
-            relion_flip_x = bool(relion_gain_flip & 0b10)
+            wait_for_completion = self._parse_boolean_param(params.get("wait_for_completion"), default=False)
+            timeout = int(params.get("timeout", self.config.job_management.default_timeout))
+            check_interval = int(params.get("check_interval", self.config.job_management.status_check_interval))
 
-            # CryoSPARC uses the opposite convention for Y flips compared to RELION,
-            # but the X flip matches, so only invert Y by default.
-            default_flip_y = not relion_flip_y
-            default_flip_x = relion_flip_x
+            imported_jobs: List[Dict[str, Any]] = []
+            job_uids: List[str] = []
+            for movie_set in sets_to_import:
+                gain_params = self._resolve_gain_reference_params(params, movie_set)
+                tool_params = {
+                    "project_uid": project_uid,
+                    "workspace_uid": workspace_uid,
+                    "movies_path": movie_set.get("movies_path"),
+                    "gain_ref_path": movie_set.get("gain_ref_path"),
+                    "pixel_size": self._parse_float_param(
+                        params.get("pixel_size", movie_set.get("pixel_size", microscope_config.get("pixel_size", 0.6575))),
+                        default=0.6575, param_name="pixel_size"
+                    ),
+                    "voltage": self._parse_float_param(
+                        params.get("voltage", movie_set.get("voltage", microscope_config.get("voltage", 300.0))),
+                        default=300.0, param_name="voltage"
+                    ),
+                    "cs_mm": self._parse_float_param(
+                        params.get("cs_mm", movie_set.get("cs_mm", microscope_config.get("cs_mm", 2.7))),
+                        default=2.7, param_name="cs_mm"
+                    ),
+                    "dose": self._parse_float_param(
+                        params.get("dose", movie_set.get("dose", microscope_config.get("dose", 53.0))),
+                        default=53.0, param_name="dose"
+                    ),
+                    "gainref_flip_x": gain_params["gainref_flip_x"],
+                    "gainref_flip_y": gain_params["gainref_flip_y"],
+                    "gainref_rotate_num": gain_params["gainref_rotate_num"],
+                    "wait_for_completion": wait_for_completion,
+                    "timeout": timeout,
+                    "check_interval": check_interval,
+                }
 
-            gainref_flip_y = self._parse_boolean_param(params.get("gainref_flip_y"), default=default_flip_y)
-            gainref_flip_x = self._parse_boolean_param(params.get("gainref_flip_x"), default=default_flip_x)
-            gainref_rotate_num = self._parse_int_param(
-                params.get("gainref_rotate_num", gain_rot),
-                default=gain_rot,
-                param_name="gainref_rotate_num"
-            ) % 4
+                result = self.cryosparc_tools.import_movies(**tool_params)
+                job_uid = result["job_uid"]
+                job_uids.append(job_uid)
+                imported_jobs.append({
+                    "set_name": movie_set.get("name"),
+                    "job_uid": job_uid,
+                    "movies_path": tool_params["movies_path"],
+                    "gain_ref_path": tool_params.get("gain_ref_path"),
+                })
 
-
-            tool_params = {
+            self.import_movies_job_uids = job_uids
+            used_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
-                "movies_path": params.get("movies_path", microscope_config.get("movies_path", "/path/to/movies/*.tif")),
-                "gain_ref_path": params.get("gain_ref_path", microscope_config.get("gain_ref_path")),
-                "pixel_size": self._parse_float_param(
-                    params.get("pixel_size", microscope_config.get("pixel_size", 0.6575)),
-                    default=0.6575, param_name="pixel_size"
-                ),
-                "voltage": self._parse_float_param(
-                    params.get("voltage", microscope_config.get("voltage", 300.0)),
-                    default=300.0, param_name="voltage"
-                ),
-                "cs_mm": self._parse_float_param(
-                    params.get("cs_mm", microscope_config.get("cs_mm", 2.7)),
-                    default=2.7, param_name="cs_mm"
-                ),
-                "dose": self._parse_float_param(
-                    params.get("dose", microscope_config.get("dose", 53.0)),
-                    default=53.0, param_name="dose"
-                ),
-                "gainref_flip_x": gainref_flip_x,
-                "gainref_flip_y": gainref_flip_y,
-                "gainref_rotate_num": gainref_rotate_num,
-                "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion"), default=False),
-                "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
-                "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
+                "movie_sets": imported_jobs,
+                "wait_for_completion": wait_for_completion,
+                "timeout": timeout,
+                "check_interval": check_interval,
             }
+            combined_result = {
+                "job_uid": job_uids[0],
+                "job_uids": job_uids,
+                "job_type": "import_movies",
+                "imported_sets": imported_jobs,
+            }
+            self._record_tool_execution("import_movies", used_params, result=combined_result)
 
-            result = self.cryosparc_tools.import_movies(**tool_params)
-            used_params = dict(tool_params)
-            used_params["gain_rot"] = gain_rot
-            used_params["relion_gain_flip"] = relion_gain_flip
-            self._record_tool_execution("import_movies", used_params, result=result)
-            return f"✅ Successfully queued import movies job: {result['job_uid']}"
+            if len(job_uids) == 1:
+                return f"✅ Successfully queued import movies job: {job_uids[0]}"
+            return (
+                "✅ Successfully queued import movies jobs for "
+                f"{len(job_uids)} sets: {', '.join(job_uids)}"
+            )
             
         except Exception as e:
             context = used_params or params or {"raw_input": input_str}
@@ -424,28 +556,26 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
                 params.get("workspace_uid", self.config.workflow.workspace_uid)
             )
 
-            # Extract movies_job_uid - try parameter first, then extract from text
-            movies_job_uid = params.get("movies_job_uid")
-            if not movies_job_uid:
-                # Try to extract job UID from input text (e.g., "from job J16" or "job J16")
-                # Look for patterns like "J" followed by digits (e.g., J16, J123)
-                job_uid_pattern = r'\bJ\d+\b'
-                matches = re.findall(job_uid_pattern, input_str)
-                if matches:
-                    movies_job_uid = matches[0]  # Use first match
-                    self.logger.info(f"Extracted movies_job_uid '{movies_job_uid}' from input text")
-            
-            if not movies_job_uid:
-                return f"❌ Error starting motion correction: Missing required parameter 'movies_job_uid'. Please specify the job UID from the import_movies step (e.g., movies_job_uid=J16 or just 'J16')."
-            
-            # Safely get preprocessing config values, handling case where it might not be set yet
+            movies_job_uids = self._parse_job_uid_list(params, input_str)
+            if not movies_job_uids:
+                movies_job_uids = self._collect_import_movies_job_uids()
+            if not movies_job_uids and self.import_movies_job_uids:
+                movies_job_uids = list(self.import_movies_job_uids)
+
+            if not movies_job_uids:
+                return (
+                    "❌ Error starting motion correction: Missing required parameter "
+                    "'movies_job_uid' or 'movies_job_uids'. Please specify the job UID(s) "
+                    "from the import_movies step (e.g., movies_job_uids=J16,J17)."
+                )
+
             preprocessing_config = getattr(self, 'preprocessing_config', {}).get('workflow', {})
             motion_correction_config = preprocessing_config.get('motion_correction', {})
-            
+
             used_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
-                "movies_job_uid": movies_job_uid,
+                "movies_job_uids": movies_job_uids,
                 "binning": self._parse_int_param(params.get("binning", motion_correction_config.get("binning", 1)), default=1, param_name="binning"),
                 "patch_size": self._parse_int_param(params.get("patch_size", motion_correction_config.get("patch_size", 5)), default=5, param_name="patch_size"),
                 "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion"), default=False),
@@ -455,7 +585,12 @@ Remember: Always follow the Thought → Action → Observation pattern and WAIT 
 
             result = self.cryosparc_tools.motion_correction(**used_params)
             self._record_tool_execution("motion_correction", used_params, result=result)
-            return f"✅ Successfully queued motion correction job: {result['job_uid']}"
+            if len(movies_job_uids) == 1:
+                return f"✅ Successfully queued motion correction job: {result['job_uid']} (input: {movies_job_uids[0]})"
+            return (
+                f"✅ Successfully queued motion correction job: {result['job_uid']} "
+                f"(inputs: {', '.join(movies_job_uids)})"
+            )
             
         except Exception as e:
             context = used_params or params or {"raw_input": input_str}
