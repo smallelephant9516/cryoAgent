@@ -9,6 +9,7 @@ from pathlib import Path
 
 from .heterogeneity_agent import HeterogeneityAgent
 from ...config.config_loader import CryoAgentConfig
+from ...prompts.prompt_loader import load_prompt
 
 
 class HeterogeneityStep(Enum):
@@ -124,39 +125,20 @@ class HeterogeneityWorkflow:
         if hasattr(self.agent, "update_workflow_defaults"):
             self.agent.update_workflow_defaults(workflow_defaults)
         
-        # Prepare prompt
         initial_k_values = self.workflow_params.get("initial_k_values", [3, 5])
-        max_k = self.workflow_params.get("max_k", 10)
-        resolution_threshold = self.workflow_params.get("resolution_threshold", 12.0)
-        
-        prompt = f"""Perform heterogeneity analysis to determine the true number of classes in the sample.
-
-I have completed the first round of homogeneous refinement with job UID: {refinement_job_uid}
-The initial volume is from job: {volume_job_uid}
-Particles are available from job: {particles_job_uid}
-Micrographs are available from job: {micrographs_job_uid}
-
-Workflow:
-1. Run ab initio + heterogeneous refinement combo for K={initial_k_values[0]} and K={initial_k_values[1]}
-2. Extract density maps from each heterogeneous refinement job
-3. Compare all density maps using compare_all_densities tool to identify true clusters
-4. For each K value, determine the number of true classes by analyzing clustering results
-5. Check resolution for each cluster (use best resolution in cluster) and filter out clusters with resolution worse than {resolution_threshold} Å
-6. Compare number of true classes between K values
-7. **IMPORTANT**: If K={initial_k_values[0]} and K={initial_k_values[1]} show the SAME number of true classes, convergence is reached - STOP and proceed to refinement
-8. Only if more classes detected when increasing K, try higher K values (up to {max_k}) until convergence
-9. Once converged:
-   - Select the heterogeneous refinement job with the MOST groups (after filtering)
-   - If all jobs have the same number of groups, use the one with HIGHER K value
-   - For each valid group (after filtering) from the selected job:
-   - **Particles**: Connect particles from ALL classes in the group (if multiple classes, connect particles_class_X for each class)
-   - **Volume**: Use density from ONLY the class with BEST resolution in that group (volume_class_X where X has best resolution)
-   - Run homogeneous refinement (or non-uniform if configured) for each group
-   - Example: If group contains classes 1 and 2, and class 1 has best resolution:
-     * Connect: particles_class_1 AND particles_class_2 (multiple particle inputs)
-     * Connect: volume_class_1 (single volume input - best resolution)
-
-The goal is to find the true number of classes and refine each group separately."""
+        prompt = load_prompt(
+            "cryosparc/heterogeneity/task.md",
+            {
+                "refinement_job_uid": refinement_job_uid,
+                "volume_job_uid": volume_job_uid,
+                "particles_job_uid": particles_job_uid,
+                "micrographs_job_uid": micrographs_job_uid,
+                "initial_k_first": initial_k_values[0],
+                "initial_k_second": initial_k_values[1] if len(initial_k_values) > 1 else initial_k_values[0],
+                "resolution_threshold": self.workflow_params.get("resolution_threshold", 12.0),
+                "max_k": self.workflow_params.get("max_k", 10),
+            },
+        )
         
         try:
             # Execute analysis using the agent

@@ -6,6 +6,7 @@ from enum import Enum
 
 from .preprocessing_agent import PreprocessingAgent
 from ...config.config_loader import CryoAgentConfig
+from ...prompts.prompt_loader import load_prompt
 
 
 class PreprocessingStep(Enum):
@@ -83,18 +84,14 @@ class PreprocessingWorkflow:
     
     def _create_workflow_input(self) -> str:
         """Create the workflow input for the ReAct agent."""
-        # Get microscope config from the agent
-        microscope_config = getattr(self.agent, 'microscope_config', {})
-        
-        # Get preprocessing config from the agent to read workflow parameters
-        preprocessing_config = getattr(self.agent, 'preprocessing_config', {})
-        workflow_config = preprocessing_config.get('workflow', {})
-        motion_correction_config = workflow_config.get('motion_correction', {})
-        ctf_config = workflow_config.get('ctf_estimation', {})
-        micrograph_selection_config = workflow_config.get('micrograph_selection', {})
-        
-        # Check if micrographs_path is available (indicates direct micrograph import)
-        micrographs_path = microscope_config.get('micrographs_path')
+        microscope_config = getattr(self.agent, "microscope_config", {})
+        preprocessing_config = getattr(self.agent, "preprocessing_config", {})
+        workflow_config = preprocessing_config.get("workflow", {})
+        motion_correction_config = workflow_config.get("motion_correction", {})
+        ctf_config = workflow_config.get("ctf_estimation", {})
+        micrograph_selection_config = workflow_config.get("micrograph_selection", {})
+
+        micrographs_path = microscope_config.get("micrographs_path")
         movie_sets = getattr(self.agent, "_get_movie_sets", lambda: [])()
         if movie_sets:
             movies_path = "; ".join(
@@ -102,61 +99,27 @@ class PreprocessingWorkflow:
                 for index, movie_set in enumerate(movie_sets)
             )
         else:
-            movies_path = microscope_config.get('movies_path', 'N/A')
-        
-        # Get min_resolution from config, default to 5.0 if not found
-        min_resolution = micrograph_selection_config.get('min_resolution', 5.0)
-        
-        return f"""
-Execute the complete cryoEM preprocessing workflow. Choose the appropriate path based on your input data:
+            movies_path = microscope_config.get("movies_path", "N/A")
 
-**Option A: If you have raw movie files:**
-1. **Import Movies**: Import movie files from {movies_path}
-   - Pixel size: {microscope_config.get('pixel_size', 'N/A')} Å
-   - Voltage: {microscope_config.get('voltage', 'N/A')} kV
-   - CS: {microscope_config.get('cs_mm', 'N/A')} mm
-   - Dose: {microscope_config.get('dose', 'N/A')} e-/Å²
-   - Project: {self.config.workflow.project_uid}
-   - Workspace: {self.config.workflow.workspace_uid}
-   - If movies_path is a list, import all paths in one import_movies call
-
-2. **Motion Correction**: Correct motion in the imported movies
-   - Connect all import job UIDs to a single motion correction job when multiple sets were imported
-   - Binning: {motion_correction_config.get('binning', 1)}
-   - Patch size: {motion_correction_config.get('patch_size', 5)}
-
-3. **CTF Estimation**: Estimate CTF parameters for micrographs
-   - Min resolution: {ctf_config.get('min_res', 30.0)} Å
-   - Max resolution: {ctf_config.get('max_res', 4.0)} Å
-
-**Option B: If you have already motion-corrected micrographs:**
-1. **Import Micrographs**: Import micrograph files directly from {micrographs_path or movies_path}
-   - Pixel size: {microscope_config.get('pixel_size', 'N/A')} Å
-   - Voltage: {microscope_config.get('voltage', 'N/A')} kV
-   - CS: {microscope_config.get('cs_mm', 'N/A')} mm
-   - Dose: {microscope_config.get('dose', 'N/A')} e-/Å²
-   - Project: {self.config.workflow.project_uid}
-   - Workspace: {self.config.workflow.workspace_uid}
-   - **CRITICAL**: Skip motion correction and proceed directly to CTF estimation
-
-2. **CTF Estimation**: Estimate CTF parameters for micrographs
-   - Min resolution: {ctf_config.get('min_res', 30.0)} Å
-   - Max resolution: {ctf_config.get('max_res', 4.0)} Å
-
-**Common Final Step:**
-4. **Micrograph Selection**: Select micrographs with resolution better than {min_resolution} Å
-   - Min resolution threshold: {min_resolution} Å
-   - Filters out low-quality micrographs
-
-**Important**: 
-- Each step must complete successfully before the next begins
-- If using import_micrographs, DO NOT run motion_correction
-- Always check job status and wait for completion
-- Handle any errors gracefully
-- Provide clear status updates throughout the process
-
-Start by reasoning about the workflow state and then proceed step by step.
-"""
+        min_resolution = micrograph_selection_config.get("min_resolution", 5.0)
+        return load_prompt(
+            "cryosparc/preprocessing/task.md",
+            {
+                "movies_path": movies_path,
+                "micrographs_or_movies_path": micrographs_path or movies_path,
+                "pixel_size": microscope_config.get("pixel_size", "N/A"),
+                "voltage": microscope_config.get("voltage", "N/A"),
+                "cs_mm": microscope_config.get("cs_mm", "N/A"),
+                "dose": microscope_config.get("dose", "N/A"),
+                "project_uid": self.config.workflow.project_uid,
+                "workspace_uid": self.config.workflow.workspace_uid,
+                "motion_binning": motion_correction_config.get("binning", 1),
+                "motion_patch_size": motion_correction_config.get("patch_size", 5),
+                "ctf_min_res": ctf_config.get("min_res", 30.0),
+                "ctf_max_res": ctf_config.get("max_res", 4.0),
+                "min_resolution": min_resolution,
+            },
+        )
     
     def _parse_workflow_result(self, result: str) -> None:
         """Parse the workflow result to extract individual step results."""

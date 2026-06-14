@@ -6,6 +6,7 @@ from enum import Enum
 
 from .reconstruction_agent import ReconstructionAgent
 from ...config.config_loader import CryoAgentConfig
+from ...prompts.prompt_loader import load_prompt
 
 
 class ReconstructionStep(Enum):
@@ -171,66 +172,55 @@ class ReconstructionWorkflow:
         
         return self.results
     
-    def _create_workflow_input(self, particles_job_uid: str, run_refinement: bool) -> str:
-        """Create the workflow input for the ReAct agent using config parameters."""
-        p = self.workflow_params  # shorthand
-        
-        # Determine which reconstruction method to use
-        recon_method = p.get('reconstruction_method', 'ab_initio')
-        
-        if recon_method == 'homogeneous':
+    def _get_task_context(self, particles_job_uid: str, run_refinement: bool) -> Dict[str, Any]:
+        """Build template variables for cryosparc/reconstruction/task.md."""
+        p = self.workflow_params
+        recon_method = p.get("reconstruction_method", "ab_initio")
+
+        if recon_method == "homogeneous":
             method_name = "Homogeneous Reconstruction"
             tool_name = "homogeneous_reconstruction"
-            initial_res = p['homo_initial_resolution']
-            final_res = p['homo_final_resolution']
-            symmetry = p['homo_symmetry']
+            initial_res = p["homo_initial_resolution"]
+            final_res = p["homo_final_resolution"]
+            symmetry = p["homo_symmetry"]
             method_description = "This uses an optimized algorithm for single structure reconstruction"
-            params_str = f"""     * particles_job_uid={particles_job_uid}
-     * initial_resolution={initial_res}
-     * final_resolution={final_res}
-     * symmetry={symmetry}"""
-        else:  # ab_initio
+            num_classes_note = ""
+            params_str = (
+                f"     * particles_job_uid={particles_job_uid}\n"
+                f"     * initial_resolution={initial_res}\n"
+                f"     * final_resolution={final_res}\n"
+                f"     * symmetry={symmetry}"
+            )
+        else:
             method_name = "Ab Initio Reconstruction"
             tool_name = "ab_initio_reconstruction"
-            initial_res = p['ab_initial_resolution']
-            final_res = p['ab_final_resolution']
-            symmetry = p['ab_symmetry']
+            initial_res = p["ab_initial_resolution"]
+            final_res = p["ab_final_resolution"]
+            symmetry = p["ab_symmetry"]
             method_description = "This generates 3D structures without requiring a reference model"
-            num_classes_note = f"Generating {p['num_classes']} class" + ("es" if p['num_classes'] > 1 else "") + " to handle potential heterogeneity" if p['num_classes'] > 1 else "Generating a single homogeneous 3D model"
-            params_str = f"""     * particles_job_uid={particles_job_uid}
-     * num_classes={p['num_classes']}
-     * initial_resolution={initial_res}
-     * final_resolution={final_res}
-     * max_iterations={p['max_iterations']}
-     * symmetry={symmetry}"""
-        
-        workflow_description = f"""
-Execute the 3D reconstruction workflow starting with {method_name.lower()}:
+            num_classes_note = (
+                f"Generating {p['num_classes']} class"
+                + ("es" if p["num_classes"] > 1 else "")
+                + " to handle potential heterogeneity"
+                if p["num_classes"] > 1
+                else "Generating a single homogeneous 3D model"
+            )
+            params_str = (
+                f"     * particles_job_uid={particles_job_uid}\n"
+                f"     * num_classes={p['num_classes']}\n"
+                f"     * initial_resolution={initial_res}\n"
+                f"     * final_resolution={final_res}\n"
+                f"     * max_iterations={p['max_iterations']}\n"
+                f"     * symmetry={symmetry}"
+            )
 
-**Input**: Particles from job {particles_job_uid}
-
-**Task**: Generate initial 3D model(s) from 2D particles using {method_name.lower()}
-
-**Project**: {self.config.workflow.project_uid} | **Workspace**: {self.config.workflow.workspace_uid}
-
-**Workflow Steps** (execute in order):
-
-═══ PHASE 1: Initial Model Generation ({method_name}) ═══
-
-1. **{method_name}** - Generate initial 3D model(s)
-   - Tool: {tool_name}
-   - Parameters: 
-{params_str}
-   - {method_description}
-   - {"" if recon_method == 'homogeneous' else num_classes_note}
-   - Wait for completion and record job UID
-"""
-        
-        if run_refinement and p['refinement_type'] != 'none':
-            if p['refinement_type'] == 'homogeneous':
-                # Use symmetry from the refinement configuration
-                symmetry = p['refinement_symmetry']
-                workflow_description += f"""
+        refinement_section = ""
+        footer_section = ""
+        if run_refinement and p["refinement_type"] != "none":
+            if p["refinement_type"] == "homogeneous":
+                ref_symmetry = p["refinement_symmetry"]
+                ref_res = p["refinement_resolution"] if p["refinement_resolution"] else "auto"
+                refinement_section = f"""
 ═══ PHASE 2: Homogeneous Refinement ═══
 
 2. **Homogeneous Refinement** - Refine the single 3D structure
@@ -238,16 +228,16 @@ Execute the 3D reconstruction workflow starting with {method_name.lower()}:
    - Parameters:
      * particles_job_uid=[ORIGINAL input - same particles_job_uid used in step 1, e.g., {particles_job_uid}]
      * volume_job_uid=[from step 1 - the ab initio job UID that produced the volume]
-     * symmetry={symmetry}
-     * refinement_resolution={p['refinement_resolution'] if p['refinement_resolution'] else "auto"}
+     * symmetry={ref_symmetry}
+     * refinement_resolution={ref_res}
    - CRITICAL: particles_job_uid and volume_job_uid must be DIFFERENT
      - particles_job_uid: Use the ORIGINAL input particles (same as used in step 1)
      - volume_job_uid: Use the ab initio job UID from step 1
    - Improves resolution and quality of the structure
    - Wait for completion and record job UID
 """
-            elif p['refinement_type'] == 'heterogeneous':
-                workflow_description += f"""
+            elif p["refinement_type"] == "heterogeneous":
+                footer_section = f"""
 
 **Critical Instructions**:
 - Execute ALL steps in order - do not skip any steps
@@ -263,8 +253,27 @@ Execute the 3D reconstruction workflow starting with {method_name.lower()}:
 
 Begin by executing step 1 ({tool_name}){"and proceed to refinement after completion" if run_refinement else ""}.
 """
-        
-        return workflow_description
+
+        return {
+            "method_name_lower": method_name.lower(),
+            "method_name": method_name,
+            "particles_job_uid": particles_job_uid,
+            "project_uid": self.config.workflow.project_uid,
+            "workspace_uid": self.config.workflow.workspace_uid,
+            "tool_name": tool_name,
+            "params_str": params_str,
+            "method_description": method_description,
+            "num_classes_note": num_classes_note,
+            "refinement_section": refinement_section,
+            "footer_section": footer_section,
+        }
+
+    def _create_workflow_input(self, particles_job_uid: str, run_refinement: bool) -> str:
+        """Create the workflow input for the ReAct agent using config parameters."""
+        return load_prompt(
+            "cryosparc/reconstruction/task.md",
+            self._get_task_context(particles_job_uid, run_refinement),
+        )
     
     def _parse_workflow_result(self, result: str, run_refinement: bool) -> None:
         """Parse the workflow result to extract results for reconstruction steps."""

@@ -11,6 +11,7 @@ from ..base_react_agent import BaseReActAgent
 from .optimizer_tools import OptimizerTools
 from ...tools.cryosparc_tools import CryoSPARCTools
 from ...config.config_loader import CryoAgentConfig
+from ...prompts.prompt_loader import load_prompt
 
 
 class OptimizerAgent(BaseReActAgent):
@@ -111,18 +112,17 @@ class OptimizerAgent(BaseReActAgent):
         """Fetch a parameter from the stage workflow configuration."""
         return self.stage_workflow.get(section, {}).get(key, default)
     
-    def _get_react_system_prompt(self) -> str:
-        """Get the optimization-specific ReAct system prompt."""
-        # Check if heterogeneous refinement is enabled
+    def _get_optimization_flags(self) -> Dict[str, Any]:
+        """Read optimization config flags used by system and task prompts."""
         enable_box_size = self._get_stage_param("optimization", "enable_box_size_optimization", True)
         enable_hetero = self._get_stage_param("optimization", "enable_heterogeneous_refinement", False)
-        max_hetero_iterations = self._get_stage_param("optimization", "heterogeneous_refinement_max_iterations", 3)
         enable_multi_round = self._get_stage_param("optimization", "enable_multi_round_3d_classification", False)
+        max_hetero_iterations = self._get_stage_param("optimization", "heterogeneous_refinement_max_iterations", 3)
         multi_round_num_classes = self._get_stage_param("optimization", "multi_round_3d_classification_num_classes", 4)
         multi_round_max_rounds = self._get_stage_param("optimization", "multi_round_3d_classification_max_rounds", 5)
-        multi_round_improvement_threshold = self._get_stage_param("optimization", "multi_round_3d_classification_improvement_threshold", 0.1)
-        
-        # Determine what to optimize
+        multi_round_improvement_threshold = self._get_stage_param(
+            "optimization", "multi_round_3d_classification_improvement_threshold", 0.1
+        )
         optimization_types = []
         if enable_box_size:
             optimization_types.append("box size/diameter")
@@ -130,380 +130,88 @@ class OptimizerAgent(BaseReActAgent):
             optimization_types.append("heterogeneous refinement (K values)")
         if enable_multi_round:
             optimization_types.append("multi-round 3D classification")
-        
-        optimization_desc = " and ".join(optimization_types) if optimization_types else "parameters"
-        
-        # Build box size optimization section conditionally
-        box_size_section = ""
-        if enable_box_size:
-            box_size_section = """
-## Box Size Optimization Workflow:
+        return {
+            "enable_box_size": enable_box_size,
+            "enable_hetero": enable_hetero,
+            "enable_multi_round": enable_multi_round,
+            "max_hetero_iterations": max_hetero_iterations,
+            "multi_round_num_classes": multi_round_num_classes,
+            "multi_round_max_rounds": multi_round_max_rounds,
+            "multi_round_improvement_threshold": multi_round_improvement_threshold,
+            "optimization_desc": " and ".join(optimization_types) if optimization_types else "parameters",
+        }
 
-**Purpose**: Optimize the box size to achieve the best resolution. This should be done AFTER heterogeneous refinement optimization (if heterogeneous refinement is enabled), otherwise after the first round of 3D homogeneous refinement.
+    def _load_optimization_section(self, name: str, variables: Optional[Dict[str, Any]] = None) -> str:
+        """Load an optimization prompt section from cryosparc/optimization/sections/."""
+        return load_prompt(f"cryosparc/optimization/sections/{name}.md", variables or {})
 
-**Agentic Optimization Process**:
-1. **Initial Assessment**: Get FSC resolution and box size from the original refinement job using `get_fsc_info`
-2. **First Round Testing**: Test 10% less and 10% more box sizes using `test_box_size` tool
-3. **REASONING REQUIRED**: After EACH test, you MUST actively reason about the results:
-   - Compare box size results across all tested values so far
-   - Identify trends: Which direction (larger/smaller box sizes) improves resolution?
-   - Determine if the optimal point is clear or needs more testing
-   - Calculate the next box size to test based on trends
-4. **Decision Making**: Based on your reasoning, decide:
-   - **Continue testing**: Choose which box size to test next based on trends
-   - **Stop optimization**: If resolution plateaus, worsens, or you've found the optimal box size
-5. **Iterative Process**: Repeat steps 3-4 until:
-   - You find the optimal box size (clear best result)
-   - Resolution plateaus or worsens (diminishing returns)
-   - You reach a reasonable number of tests (5-7 different box sizes)
-   - Further testing is unlikely to improve results
-6. **Conclusion**: Summarize the best box size and resolution found, explaining why it was chosen
+    def _get_system_prompt_context(self) -> Dict[str, Any]:
+        """Build template variables for cryosparc/optimization/system.md."""
+        flags = self._get_optimization_flags()
+        enable_box_size = flags["enable_box_size"]
+        enable_hetero = flags["enable_hetero"]
+        enable_multi_round = flags["enable_multi_round"]
 
-**Stopping Conditions**:
-- You've tested 5-7 different box sizes
-- The resolution improvement plateaus or starts getting worse
-- You've found a clear optimal point
-- The new box size to test would be the same as one already tested
+        priority_section = ""
+        if enable_box_size and enable_hetero:
+            priority_section = (
+                "**IMPORTANT**: Both heterogeneous refinement and box size optimization are enabled. "
+                "Complete heterogeneous refinement (K optimization) FIRST, then use the optimized refinement job "
+                "for box size optimization.**"
+            )
+        elif not enable_box_size and enable_hetero:
+            priority_section = (
+                "**CRITICAL: Box size optimization is DISABLED. DO NOT use test_box_size tool. "
+                "Proceed directly to heterogeneous refinement using the refinement_job_uid provided.**"
+            )
+        elif enable_box_size and not enable_hetero:
+            priority_section = "**Heterogeneous refinement is DISABLED**. Proceed with box size optimization only.**"
 
-## Tool Usage for Box Size Optimization:
+        box_size_section = self._load_optimization_section("box_size") if enable_box_size else ""
 
-- **get_fsc_info**: Get FSC resolution and box size from a refinement job
-  * Required: refinement_job_uid
-  * Returns: box_size (pixels), resolution_angstroms (FSC resolution)
-  * Use this to get baseline information from the original refinement job
+        hetero_section = ""
+        if enable_hetero:
+            hetero_section = self._load_optimization_section(
+                "hetero",
+                {"max_hetero_iterations": flags["max_hetero_iterations"]},
+            )
 
-- **test_box_size**: Test a specific box size by extracting particles, running refinement, and getting FSC
-  * Required: box_size_pix (box size in pixels), refinement_job_uid (source of refined coordinates),
-    micrographs_job_uid, volume_job_uid
-  * Optional: refinement_resolution (target resolution in Angstroms)
-  * This tool: 1) Extracts particles with the box size using refined coordinates, 2) Runs refinement, 3) Returns FSC resolution
-  * Note: Particle re-extraction uses coordinates from refinement_job_uid (refined positions/orientations)
-  * **IMPORTANT**: Box sizes are automatically normalized to allowed values. If your requested box size is normalized, 
-    the result will include `box_size_was_normalized: true` and `normalization_message` explaining the change.
-    The `box_size_pix` in the result is the actual (normalized) box size that was used.
-  * **WARNING: Only use this tool if box size optimization is enabled!**
+        multi_round_section = self._load_optimization_section("multi_round_base")
+        if enable_multi_round:
+            multi_round_section += "\n" + self._load_optimization_section(
+                "multi_round_config",
+                {
+                    "multi_round_num_classes": flags["multi_round_num_classes"],
+                    "multi_round_max_rounds": flags["multi_round_max_rounds"],
+                    "multi_round_improvement_threshold": flags["multi_round_improvement_threshold"],
+                },
+            )
 
-## Optimization Strategy Guidelines:
+        combined_section = ""
+        if enable_box_size or enable_hetero or enable_multi_round:
+            combined_section = self._load_optimization_section("combined")
 
-**Initial Testing**:
-- Always start by getting FSC info from the original refinement job
-- Test 10% less (original * 0.9) and 10% more (original * 1.1) box sizes
-- **Box Size Normalization**: Box sizes are automatically normalized to allowed CryoSPARC values (e.g., 16, 20, 24, 28, 32, ..., 2000).
-  If you request a box size like 483, it may be normalized to 480 or 484 (the nearest allowed value).
-  The tool result will indicate if normalization occurred via `box_size_was_normalized` and `normalization_message`.
+        return {
+            "optimization_desc": flags["optimization_desc"],
+            "priority_section": priority_section,
+            "box_size_section": box_size_section,
+            "hetero_section": hetero_section,
+            "multi_round_section": multi_round_section,
+            "combined_section": combined_section,
+            "project_uid": self.config.workflow.project_uid,
+            "workspace_uid": self.config.workflow.workspace_uid,
+            "box_size_status": "ENABLED" if enable_box_size else "DISABLED",
+            "hetero_status": "ENABLED" if enable_hetero else "DISABLED",
+            "multi_round_status": "ENABLED" if enable_multi_round else "DISABLED",
+        }
 
-**Trend Analysis**:
-- **CRITICAL: Smaller resolution_angstroms value = BETTER quality** (e.g., 3.0 Å is BETTER than 5.0 Å)
-- When comparing results, the box size with the SMALLEST resolution_angstroms value (lower numeric value) is the BEST
-- Look for patterns: Does resolution improve with larger or smaller box sizes?
-- Consider if the relationship is linear, quadratic, or has an optimal point
-- Always identify the box size with the SMALLEST resolution_angstroms value as the best
+    def _get_react_system_prompt(self) -> str:
+        """Get the optimization-specific ReAct system prompt."""
+        return load_prompt(
+            "cryosparc/optimization/system.md",
+            self._get_system_prompt_context(),
+        )
 
-**Next Steps Decision**:
-- If middle box size is best: Test halfway between middle and the better extreme
-- If smallest box size is best: Test 10% less than the smallest tested
-- If largest box size is best: Test 10% more than the largest tested
-- Consider testing refinement_resolution parameter if box size alone doesn't show clear improvement
-
-**Example Reasoning Pattern** (use actual values from your test results, not these examples):
-```
-Thought: I have tested multiple box sizes. Let me analyze the results:
-- Original box size: [resolution] Å
-- Smaller box size (-10%): [resolution] Å  
-- Larger box size (+10%): [resolution] Å
-
-Analysis:
-- Compare which box size gives the smallest resolution value
-- Identify the trend: is resolution improving with larger or smaller box sizes?
-- Assess if the improvement is significant or marginal
-
-Decision: Based on the trend, decide:
-- If larger box sizes improve resolution: test even larger box size
-- If smaller box sizes improve resolution: test even smaller box size
-- If middle is best: test between middle and better extreme
-- Monitor if improvement is diminishing or resolution starts worsening
-
-Action: test_box_size with appropriate box_size_pix value based on your analysis
-```
-
-## Example Workflow for Box Size Optimization:
-
-1. Get refinement_job_uid, micrographs_job_uid, volume_job_uid from previous stages
-2. Use `get_fsc_info` to get baseline resolution from refinement_job_uid
-3. Calculate and test 10% less box size using `test_box_size`
-4. Calculate and test 10% more box size using `test_box_size`
-5. Analyze the three results (original, -10%, +10%)
-6. Reason about trends and decide next box size to test
-7. Continue testing and analyzing iteratively
-8. Conclude with the best box size and resolution found
-"""
-        
-        return f"""You are a CryoEM optimization assistant using the ReAct (Reasoning + Acting) framework. 
-You specialize in optimizing {optimization_desc} for 3D reconstruction by testing different parameters and comparing FSC resolutions.
-
-## ReAct Framework Rules:
-1. **REASONING**: Always think through the problem step by step before taking action
-2. **ACTING**: Execute specific tools based on your reasoning
-3. **OBSERVING**: Analyze the results and update your understanding
-
-## Optimization Workflow Priority:
-{f'**IMPORTANT**: Both heterogeneous refinement and box size optimization are enabled. Complete heterogeneous refinement (K optimization) FIRST, then use the optimized refinement job for box size optimization.**' if enable_box_size and enable_hetero else ''}
-{f'**CRITICAL: Box size optimization is DISABLED. DO NOT use test_box_size tool. Proceed directly to heterogeneous refinement using the refinement_job_uid provided.**' if not enable_box_size and enable_hetero else ''}
-{f'**Heterogeneous refinement is DISABLED**. Proceed with box size optimization only.**' if enable_box_size and not enable_hetero else ''}
-{box_size_section}
-## General Tool Usage:
-
-- **get_fsc_info**: Get FSC resolution and box size from a refinement job
-  * Required: refinement_job_uid
-  * Returns: box_size (pixels), resolution_angstroms (FSC resolution)
-  * Use this to get baseline information from any refinement job
-
-- **get_job_status**: Check status of a specific job (use job UID only, e.g., "JXXX")
-- **wait_for_job**: Wait for job completion (use job UID only, e.g., "JXXX")
-- **get_job_log**: Read and analyze job logs
-- **reason_about_workflow**: Analyze current optimization state and think about next steps
-
-## Job UID Format:
-- Job UIDs are strings like "JXXX", "JYYY", etc.
-- When calling get_job_status, wait_for_job, or get_fsc_info, you can pass ONLY the job UID (e.g., "JXXX")
-- For other tools, use JSON format with parameter names
-
-## Current Configuration:
-- Project UID: {self.config.workflow.project_uid}
-- Workspace UID: {self.config.workflow.workspace_uid}
-- Box size optimization: {'ENABLED' if enable_box_size else 'DISABLED'}
-- Heterogeneous refinement: {'ENABLED' if enable_hetero else 'DISABLED'}
-- Multi-round 3D classification: {'ENABLED' if enable_multi_round else 'DISABLED'}
-
-## Heterogeneous Refinement Optimization Workflow:
-{'' if not enable_hetero else f'''
-
-**Purpose**: Optimize the number of classes (K) in heterogeneous refinement to achieve the best resolution. This should be done BEFORE box size optimization (if box size optimization is enabled).
-
-**Agentic Optimization Process**:
-1. **Baseline**: Get FSC resolution from the final refinement job (K=1, which is homogeneous refinement)
-2. **First Round Testing**: Test K=2 and K=3 using `test_heterogeneous_refinement` tool
-3. **REASONING REQUIRED**: After EACH test, you MUST actively reason about the results:
-   - Analyze the `class_comparison` data and `class_selection_reason` from each test
-   - Compare resolution results across all K values tested so far
-   - Identify trends: Which direction (more/fewer K) improves resolution?
-   - Determine if the optimal point is clear or needs more testing
-4. **Decision Making**: Based on your reasoning, decide:
-   - **Continue testing**: Choose which K value to test next based on trends
-   - **Stop optimization**: If resolution plateaus, worsens, or you've found the optimal K
-5. **Iterative Process**: Repeat steps 3-4 until:
-   - You find the optimal K value (clear best result)
-   - Resolution plateaus or worsens (diminishing returns)
-   - You reach max_iterations ({max_hetero_iterations})
-   - Further testing is unlikely to improve results
-6. **Conclusion**: Summarize the best K value and resolution found, explaining why it was chosen
-
-**Stopping Conditions**:
-- You've tested {max_hetero_iterations} different K values
-- The resolution improvement plateaus or starts getting worse
-- You've found a clear optimal point
-- The new K value to test would be the same as one already tested
-
-**Tool Usage for Heterogeneous Refinement**:
-
-- **test_heterogeneous_refinement**: Test heterogeneous refinement with K classes
-  * **Input format: JSON string** (e.g., `{{"k": 3, "refinement_job_uid": "JXXX"}}`)
-  * Required parameters: k (number of classes, e.g., 3 or 5), refinement_job_uid (source of particles and volume, e.g., "JXXX")
-  * This tool: 1) Repeats the volume from refinement_job_uid K times, 2) Runs heterogeneous refinement,
-    3) Gets resolution for each class, 4) Selects best class (smallest resolution value, or HIGHEST fsc_loosemask_last if tied - higher FSC is better), 
-    5) Runs homogeneous refinement on selected class, 6) Returns final FSC resolution
-  * Returns: hetero_job_uid, best_class_id, best_class_resolution, class_selection_reason, class_comparison (all classes data), refine_job_uid, final_resolution_angstroms, and all_classes
-  * **Important**: The tool automatically selects the best class using an algorithm, but you should REASON about the class_comparison and class_selection_reason to verify the selection makes sense and understand why it was chosen.
-  * **Example**: Use JSON format: `{{"k": 3, "refinement_job_uid": "JXXX"}}` or `{{"k": 5, "refinement_job_uid": "JXXX"}}`
-
-- **get_hetero_class_resolutions**: Get resolution for each class in a heterogeneous refinement job
-  * Required: job_uid (heterogeneous refinement job UID)
-  * Returns: classes (list with class_id, resolution_angstroms, fsc_loosemask_last), num_classes
-  * Use this to analyze individual class resolutions if needed
-
-- **get_fsc_info**: Get FSC resolution from any refinement job (works for both homogeneous and heterogeneous)
-  * Required: refinement_job_uid
-  * Returns: box_size, resolution_angstroms
-
-**Heterogeneous Refinement Strategy Guidelines**:
-
-**Initial Testing**:
-- Always start by getting FSC info from the original refinement job (K=1 baseline)
-- Test K=2 and K=3 in the first round
-- Compare K=1, K=2, and K=3 to see the trend
-
-**REASONING REQUIREMENT - After Each Test**:
-**CRITICAL**: After calling `test_heterogeneous_refinement`, you MUST actively reason about:
-1. **Class Selection Analysis**: Review the `class_comparison` data and `class_selection_reason` to understand which class was selected and why
-   - Are all classes in the heterogeneous refinement similar in quality?
-   - Was there a clear winner, or were classes close in resolution?
-   - Does the selected class seem reasonable given all available data?
-
-2. **K Value Comparison**: Compare the final resolution from this K value with previous K values tested
-   - Which K value has given the best resolution so far?
-   - Is there a clear trend (e.g., increasing K improves resolution, or vice versa or choose the value in between)?
-
-3. **Decision Making**: Based on your analysis, decide:
-   - **Which K to test next** (if any): If there's a clear trend, test further in that direction. If optimal seems to be between tested values, test intermediate values.
-   - **Whether to STOP**: Consider stopping if:
-     * Resolution is getting worse with more K values test
-     * Resolution has plateaued (no improvement across multiple K values)
-     * You've found a clear optimal K value
-     * You've reached or approached max_iterations ({max_hetero_iterations})
-     * Testing more K values would likely not improve results
-
-**Trend Analysis Guidelines**:
-- **CRITICAL: Smaller resolution_angstroms value = BETTER quality** (e.g., 3.0 Å is BETTER than 5.0 Å)
-- When comparing results, the K value with the SMALLEST resolution_angstroms value (lower numeric value) is the BEST
-- Look for patterns: Does resolution improve with larger or smaller K values?
-- Consider if the relationship has an optimal point (sweet spot)
-
-**Next Steps Decision Examples**:
-- If K=1 is best: Test K=2 to see if slight heterogeneity helps. If K=2 is worse, consider stopping.
-- If K=3 is best: Test K=4 to see if more classes help. Also consider testing K=2 to see if trend goes both ways.
-- If K=5 is best: Test K=7 or K=8 to see if trend continues. Monitor if resolution improvement is diminishing.
-- If middle K is best: Test values around it (e.g., if K=3 is best, test K=2 and K=4) to confirm it's truly optimal.
-- If resolution is getting worse: Stop and use the best K found so far.
-- If resolution plateaus: Stop if improvement is minimal (< 0.1 Å difference) and select the best K.
-
-**Example Reasoning Pattern** (use actual values from your test results, not these examples):
-```
-Thought: I have tested multiple K values. Let me analyze the results:
-- K=1 (original): [resolution] Å
-- K=3: [resolution] Å (check class_comparison and class_selection_reason)
-- K=5: [resolution] Å (check class_comparison and class_selection_reason)
-
-Analysis:
-- Compare resolutions across all tested K values - which has the smallest resolution value?
-- Identify the trend: does increasing K improve or worsen resolution?
-- Review class_comparison data: are classes similar or is there a clear winner?
-- Check class_selection_reason: understand why each class was selected
-
-Decision: Based on the trend and analysis:
-- If larger K improves resolution: test higher K (e.g., K=7)
-- If smaller K is better: test K=2 or stop
-- If middle K is best: test around it (e.g., K=2, K=4)
-- Monitor if improvement is diminishing
-
-Action: test_heterogeneous_refinement with appropriate k value based on your analysis
-
-[After getting result]
-Thought: Compare new result with previous results. Has resolution improved, worsened, or plateaued?
-
-Decision: Decide whether to:
-- Continue testing if trend suggests improvement
-- STOP if resolution worsens, plateaus, or optimal point is clear
-```
-
-**CRITICAL: When calling test_heterogeneous_refinement, you MUST use JSON format with Action Input!**
-- Correct: Action Input: `{{"k": 3, "refinement_job_uid": "JXXX"}}`
-- Wrong: test_heterogeneous_refinement(3, "JXXX") - this will fail!
-- The tool requires a single JSON string input, not multiple arguments
-'''}
-
-## Multi-Round 3D Classification Optimization Workflow:
-
-**Purpose**: Iteratively refine 3D structures using multi-round 3D classification to achieve the best resolution. This should be done FIRST, before heterogeneous refinement optimization (if enabled) and box size optimization (if enabled), using the initial homogeneous refinement result.
-
-**Agentic Optimization Process**:
-1. **Input**: Take volume and particles_job_uid from previous best homogeneous refinement
-2. **3D Classification**: Run 3D classification (heterogeneous refinement) with 4 classes (default)
-3. **Class Selection**: Select the best class based on resolution metric (lowest resolution is best)
-4. **3D Refinement**: Run 3D refinement (homogeneous refinement) on the selected class using volume and particles from that class
-5. **Resolution Check**: Check if resolution improved compared to previous round
-6. **Decision Making**:
-   - **If improved**: Continue the process using the refined result as input for the next round
-   - **If plateau or worse**: Stop the process and return the best refinement job
-7. **Iterative Process**: Repeat steps until:
-   - Resolution plateaus or worsens
-   - Maximum number of rounds is reached
-   - Further rounds are unlikely to improve results
-
-**Tool Usage for Multi-Round 3D Classification**:
-
-- **test_multi_round_3d_classification**: Run multi-round 3D classification optimization
-  * **Input format: JSON string** (e.g., `{{"refinement_job_uid": "JXXX", "num_classes": 4, "max_rounds": 5}}`)
-  * Required parameters: refinement_job_uid (source of particles and volume from previous best homogeneous refinement, e.g., "JXXX")
-  * Optional parameters: num_classes (number of classes for 3D classification, default: 4), max_rounds (maximum number of rounds, default: 5), improvement_threshold (minimum improvement in resolution in Å to continue, default: 0.1)
-  * This tool automatically:
-    1. Gets initial resolution from refinement_job_uid
-    2. For each round: Runs 3D classification → Selects best class → Runs refinement → Checks improvement
-    3. Stops when resolution plateaus/worsens or max_rounds reached
-    4. Returns best_refinement_job_uid, best_resolution_angstroms, rounds_completed, and all_rounds_data
-  * Returns: best_refinement_job_uid, best_resolution_angstroms, initial_resolution_angstroms, total_improvement, rounds_completed, all_rounds_data (detailed data for each round)
-  * **Example**: Use JSON format: `{{"refinement_job_uid": "JXXX", "num_classes": 4, "max_rounds": 5}}`
-
-**Multi-Round 3D Classification Strategy Guidelines**:
-
-**When to Use**:
-- FIRST, before heterogeneous refinement optimization (if enabled)
-- FIRST, before box size optimization (if enabled)
-- After the first round of 3D homogeneous refinement (use the initial refinement_job_uid)
-- When you want to iteratively refine structures through multiple rounds of classification
-
-**Parameters**:
-- **num_classes**: Number of classes for 3D classification (default: 4). More classes may help identify better structures but take longer.
-- **max_rounds**: Maximum number of rounds to run (default: 5). Each round includes classification and refinement.
-- **improvement_threshold**: Minimum improvement in resolution (Å) to continue (default: 0.1). If improvement is less than this, the process may stop.
-
-**Stopping Conditions**:
-- Resolution plateaus or worsens (no improvement or worse resolution)
-- Maximum number of rounds reached
-- Improvement is below threshold for multiple consecutive rounds
-
-**Understanding Results**:
-- **best_refinement_job_uid**: The job UID of the best refinement result (use this for next stages)
-- **best_resolution_angstroms**: The best resolution achieved (lower is better)
-- **total_improvement**: Total improvement from initial to best resolution (positive means improvement)
-- **rounds_completed**: Number of rounds that were completed
-- **all_rounds_data**: Detailed information for each round including class selections and resolutions
-
-**CRITICAL: When calling test_multi_round_3d_classification, you MUST use JSON format with Action Input!**
-- Correct: Action Input: `{{"refinement_job_uid": "JXXX", "num_classes": 4, "max_rounds": 5}}`
-- Wrong: test_multi_round_3d_classification("JXXX", 4, 5) - this will fail!
-- The tool requires a single JSON string input, not multiple arguments
-{'' if not enable_multi_round else f'''
-
-**Multi-Round 3D Classification Configuration**:
-- Number of classes per round: {multi_round_num_classes}
-- Maximum rounds: {multi_round_max_rounds}
-- Improvement threshold: {multi_round_improvement_threshold} Å
-- **IMPORTANT**: Multi-round 3D classification is ENABLED. This should be done FIRST, before heterogeneous refinement (if enabled) and box size optimization (if enabled).
-'''}
-
-## Combined Workflow:
-{'' if not (enable_box_size or enable_hetero or enable_multi_round) else '''
-**CRITICAL: Check for Completed Work**:
-- If you see a "COMPLETED WORK SUMMARY" section in the workflow input, READ IT CAREFULLY
-- DO NOT re-run tasks that are marked as "COMPLETED" in the summary
-- Use the best refinement job UIDs from completed tasks for the next step
-- If multi-round 3D classification is completed, skip it and use the best_refinement_job_uid from the summary
-- If heterogeneous refinement optimization is completed, skip it and use the best_refinement_job_uid from the summary
-- If box size optimization has tests completed, continue from where it stopped (don't restart from the beginning)
-
-**Optimization Priority Order**:
-1. **First**: Complete multi-round 3D classification (if enabled) - iteratively refine structures through multiple rounds
-   - **SKIP if already completed** - check the completed work summary
-2. **Second**: Use the best refinement job from step 1 (or initial refinement if step 1 disabled) for heterogeneous refinement optimization (if enabled) - optimize K values, get best K and refinement job
-   - **SKIP if already completed** - check the completed work summary
-3. **Third**: Use the best refinement job from step 2 (or step 1, or initial refinement) for box size optimization (if enabled)
-   - **Continue from where it stopped** if tests have already been run
-4. **Finally**: Report all optimizations' results
-
-**Example Combined Flow** (if all enabled):
-1. Run multi-round 3D classification → Get best multi-round refinement result (e.g., JXXX)
-2. Use JXXX as refinement_job_uid for heterogeneous refinement → Get best K and refinement job (e.g., JYYY)
-3. Use JYYY as refinement_job_uid for box size optimization → Get best box size refinement result (e.g., JZZZ)
-4. Report: best_multi_round_resolution, best_hetero_k, best_hetero_resolution, best_box_size, best_box_resolution
-
-**If only multi-round 3D classification is enabled**:
-- Use the refinement_job_uid provided directly for multi-round 3D classification
-- Report: best_multi_round_refinement_job_uid, best_multi_round_resolution, rounds_completed
-'''}
-
-Remember: Always follow the Thought → Action → Observation pattern!
-Think carefully about trends before deciding what to test next. Both optimizations can take significant time as each test requires running refinement jobs."""
-    
     def update_workflow_defaults(self, defaults: Dict[str, Any]) -> None:
         """Store workflow-level default parameters for later tool invocations."""
         if defaults:

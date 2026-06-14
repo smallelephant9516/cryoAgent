@@ -49,7 +49,7 @@
         "cryosift_threshold_description": "CryoSift confidence threshold (1-5). Classes scoring BELOW this value are selected",
         "cryosift_env": "magellon2DAssess",
         "cryosift_env_description": "Conda environment used to run CryoSift evaluation",
-        "cryosift_weights_path": "/data/user/cryosparcuser/Data/Github/cryoagent/Magellon/Sandbox/2dclass_evaluator/CNNTraining/final_model/final_model_cont.pth",
+        "cryosift_weights_path": "/home/daoyi/Github/cryoagent/Magellon/Sandbox/2dclass_evaluator/CNNTraining/final_model/final_model_cont.pth",
         "cryosift_weights_path_description": "Path to the CryoSift neural network weights file",
         "cryosift_evaluator_script_path": "/home/daoyi/Github/cryoagent/Magellon/Sandbox/2dclass_evaluator/CNNTraining/output_class_list.py",
         "cryosift_evaluator_script_path_description": "Path to the CryoSift evaluator script (output_class_list.py)",

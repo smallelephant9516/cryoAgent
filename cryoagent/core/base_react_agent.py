@@ -35,6 +35,7 @@ from ..utils.conversation_logger import ConversationLogger
 from ..utils.realtime_conversation_logger import RealtimeConversationLogger
 from ..utils.general_llm_logger import GeneralLLMLogger
 from ..utils.log_resume import LogResumeParser
+from ..prompts.prompt_loader import load_prompt
 
 
 class BaseReActAgent(ABC):
@@ -689,19 +690,10 @@ Please continue with the workflow execution."""
         Returns:
             Formatted input with ReAct instructions
         """
-        return f"""
-Execute the following workflow using the ReAct framework:
-
-{workflow_input}
-
-Remember to:
-1. Follow the Thought → Action → Observation pattern
-2. Check dependencies before each step
-3. Wait for jobs to complete before proceeding
-4. Provide clear status updates
-
-Start by thinking about what needs to be done, then execute the appropriate tools directly.
-"""
+        return load_prompt(
+            "shared/react-wrapper.md",
+            {"workflow_input": workflow_input},
+        )
     
     def run_single_step(self, step_description: str, conversation_id: Optional[str] = None) -> str:
         """

@@ -8,6 +8,7 @@ from enum import Enum
 
 from .optimizer_2d_agent import Optimizer2DAgent
 from ...config.config_loader import CryoAgentConfig
+from ...prompts.prompt_loader import load_prompt
 
 
 class Optimization2DStep(Enum):
@@ -114,54 +115,24 @@ class Optimizer2DWorkflow:
         if hasattr(self.agent, "update_workflow_defaults"):
             self.agent.update_workflow_defaults(workflow_defaults)
         
-        # Prepare prompt based on enabled functions
+        # Select minimal task prompt (system manual lives in system.md)
         if enable_f1 and enable_f2:
-            prompt = f"""Optimize particle selection through iterative 2D classification and rescue excluded particles.
-
-I have particles from picking with job UID: {particles_job_uid}
-
-Workflow:
-1. Step A: Run initial 2D classification and select good classes using CryoSift
-2. Step B (Function 2 - Rescue): Get excluded particles, run 2D classification on them, select good classes
-3. Step C (Function 1 - Iterative): Call class_2d ONCE to start iterative refinement until ≥{threshold_pct}% good particles (max {max_rounds} rounds)
-
-CRITICAL INSTRUCTIONS FOR STEP C:
-- After Step B, you will have two select_2d jobs (from Step A and Step B)
-- For Step C, call class_2d ONCE with any one of the job UIDs (e.g., J157)
-- The class_2d tool will AUTOMATICALLY detect and connect BOTH jobs in this SINGLE call
-- DO NOT call class_2d multiple times - ONE call handles both jobs automatically
-- DO NOT merge the jobs - the tool connects them directly without merging
-
-Please execute the complete workflow and return the final particles_job_uid."""
+            task_path = "cryosparc/optimization_2d/task_both.md"
         elif enable_f1:
-            prompt = f"""Optimize particle selection through iterative 2D classification.
-
-I have particles from picking with job UID: {particles_job_uid}
-
-Workflow:
-1. Step A: Run initial 2D classification and select good classes using CryoSift
-2. Step C (Function 1 - Iterative): Iteratively refine until ≥{threshold_pct}% good particles (max {max_rounds} rounds)
-
-Note: Function 2 (Rescue) is DISABLED. Skip Step B and go directly to iterative refinement.
-
-Please execute the workflow and return the final particles_job_uid."""
+            task_path = "cryosparc/optimization_2d/task_f1_only.md"
         elif enable_f2:
-            prompt = f"""Rescue good particles from excluded set.
-
-I have particles from picking with job UID: {particles_job_uid}
-
-Workflow:
-1. Step A: Run initial 2D classification and select good classes using CryoSift
-2. Step B (Function 2 - Rescue): Get excluded particles, run 2D classification on them, select good classes, and merge with good particles from Step A
-
-Note: Function 1 (Iterative) is DISABLED. After Step B, return the merged particles.
-
-Please execute the workflow and return the final particles_job_uid."""
+            task_path = "cryosparc/optimization_2d/task_f2_only.md"
         else:
-            prompt = f"""I have particles from picking with job UID: {particles_job_uid}
+            task_path = "cryosparc/optimization_2d/task_none.md"
 
-Note: Both Function 1 (Iterative) and Function 2 (Rescue) are disabled.
-Please report the current particle count from this job."""
+        prompt = load_prompt(
+            task_path,
+            {
+                "particles_job_uid": particles_job_uid,
+                "threshold_pct": threshold_pct,
+                "max_rounds": max_rounds,
+            },
+        )
         
         try:
             # Execute optimization using the agent

@@ -7,6 +7,7 @@ from enum import Enum
 
 from .optimizer_agent import OptimizerAgent
 from ...config.config_loader import CryoAgentConfig
+from ...prompts.prompt_loader import load_prompt
 
 
 class OptimizationStep(Enum):
@@ -137,8 +138,6 @@ class OptimizerWorkflow:
             self.agent.update_workflow_defaults(workflow_defaults)
         
         # Prepare prompt based on enabled optimizations
-        # Build optimization order description
-        # Order: 1. Multi-round 3D classification, 2. Heterogeneous refinement (K), 3. Box size
         optimization_steps = []
         if enable_multi_round:
             optimization_steps.append("1. FIRST: Run multi-round 3D classification")
@@ -146,88 +145,37 @@ class OptimizerWorkflow:
             optimization_steps.append("2. SECOND: Optimize heterogeneous refinement (K values)")
         if enable_box_size:
             optimization_steps.append("3. THIRD: Optimize box size/diameter")
-        
         optimization_order = "\n".join(optimization_steps) if optimization_steps else ""
-        
+
+        task_context = {
+            "refinement_job_uid": refinement_job_uid,
+            "volume_job_uid": volume_job_uid,
+            "particles_job_uid": particles_job_uid,
+            "micrographs_job_uid": micrographs_job_uid,
+            "optimization_order": optimization_order,
+            "multi_round_num_classes": multi_round_num_classes,
+            "multi_round_max_rounds": multi_round_max_rounds,
+            "multi_round_improvement_threshold": multi_round_improvement_threshold,
+        }
+
         if enable_box_size and enable_hetero and enable_multi_round:
-            prompt = f"""Optimize multi-round 3D classification, heterogeneous refinement (K values), and box size for 3D reconstruction.
-
-I have completed the first round of homogeneous refinement with job UID: {refinement_job_uid}
-The initial volume is from job: {volume_job_uid}
-Particles can be re-extracted from picking job: {particles_job_uid}
-Micrographs are available from job: {micrographs_job_uid}
-
-Optimization order:
-{optimization_order}
-
-Use the best refinement job from each step as input for the next step."""
+            task_path = "cryosparc/optimization/task_all_three.md"
         elif enable_box_size and enable_hetero:
-            prompt = f"""Optimize both heterogeneous refinement (K values) and box size for 3D reconstruction.
-
-I have completed the first round of homogeneous refinement with job UID: {refinement_job_uid}
-The initial volume is from job: {volume_job_uid}
-Particles can be re-extracted from picking job: {particles_job_uid}
-Micrographs are available from job: {micrographs_job_uid}
-
-Please FIRST optimize the K value for heterogeneous refinement, then use the optimized refinement job for box size optimization."""
+            task_path = "cryosparc/optimization/task_box_hetero.md"
         elif enable_box_size and enable_multi_round:
-            prompt = f"""Optimize multi-round 3D classification and box size for 3D reconstruction.
-
-I have completed the first round of homogeneous refinement with job UID: {refinement_job_uid}
-The initial volume is from job: {volume_job_uid}
-Particles can be re-extracted from picking job: {particles_job_uid}
-Micrographs are available from job: {micrographs_job_uid}
-
-Optimization order:
-{optimization_order}
-
-Use the best refinement job from multi-round 3D classification as input for box size optimization."""
+            task_path = "cryosparc/optimization/task_box_multi_round.md"
         elif enable_hetero and enable_multi_round:
-            prompt = f"""Optimize multi-round 3D classification and heterogeneous refinement for 3D reconstruction.
-
-I have completed homogeneous refinement with job UID: {refinement_job_uid}
-
-IMPORTANT: Box size optimization is DISABLED. DO NOT use test_box_size tool.
-
-Optimization order:
-{optimization_order}
-
-Use the best refinement job from multi-round 3D classification as input for heterogeneous refinement optimization."""
+            task_path = "cryosparc/optimization/task_hetero_multi_round.md"
         elif enable_box_size:
-            prompt = f"""Optimize the box size for 3D reconstruction.
-
-I have completed the first round of homogeneous refinement with job UID: {refinement_job_uid}
-The initial volume is from job: {volume_job_uid}
-Particles can be re-extracted from picking job: {particles_job_uid}
-Micrographs are available from job: {micrographs_job_uid}
-
-Please optimize the box size using the test_box_size tool."""
+            task_path = "cryosparc/optimization/task_box_only.md"
         elif enable_hetero:
-            prompt = f"""Optimize heterogeneous refinement for 3D reconstruction.
-
-I have completed homogeneous refinement with job UID: {refinement_job_uid}
-
-IMPORTANT: Box size optimization is DISABLED. DO NOT use test_box_size tool.
-Proceed directly to heterogeneous refinement optimization using the refinement_job_uid provided ({refinement_job_uid}).
-Use the test_heterogeneous_refinement tool to test different K values."""
+            task_path = "cryosparc/optimization/task_hetero_only.md"
         elif enable_multi_round:
-            prompt = f"""Run multi-round 3D classification for 3D reconstruction.
-
-I have completed homogeneous refinement with job UID: {refinement_job_uid}
-
-IMPORTANT: Box size optimization and heterogeneous refinement are DISABLED. DO NOT use test_box_size or test_heterogeneous_refinement tools.
-Proceed directly to multi-round 3D classification using the refinement_job_uid provided ({refinement_job_uid}).
-Use the test_multi_round_3d_classification tool with:
-- num_classes: {multi_round_num_classes}
-- max_rounds: {multi_round_max_rounds}
-- improvement_threshold: {multi_round_improvement_threshold}
-
-After completing multi-round 3D classification, you will proceed to heterogeneous refinement (K optimization) and then box size optimization."""
+            task_path = "cryosparc/optimization/task_multi_round_only.md"
         else:
-            prompt = f"""I have a refinement job with UID: {refinement_job_uid}
+            task_path = "cryosparc/optimization/task_none.md"
 
-Note: Box size optimization, heterogeneous refinement, and multi-round 3D classification are all disabled.
-Please report the current resolution from this refinement job."""
+        prompt = load_prompt(task_path, task_context)
         
         try:
             # Execute optimization using the agent
