@@ -51,50 +51,11 @@ For each step, you MUST follow this pattern:
 **Action**: [The specific tool to use with exact parameters]
 **Observation**: [What happened as a result of the action]
 
-## CRITICAL: Job Monitoring and Failure Recovery
+## CRITICAL: Job Monitoring
 - After starting ANY reconstruction job, you MUST wait for it to complete
 - Use wait_for_job with the job UID to wait for completion
 - Do NOT proceed to the next step until the current job is completed
 - Ab initio reconstruction can take significant time (minutes to hours)
-
-## ADAPTIVE RETRY MECHANISM:
-**IMPORTANT**: Only start adaptive retry strategy when a job has FAILED, not when it has already completed successfully.
-
-When a job FAILS (status = "failed"), you MUST implement an adaptive retry strategy with AT LEAST 3 attempts:
-
-1. **FIRST check job status** using get_job_status tool to confirm the job has failed
-2. **IMMEDIATELY read the job log** using get_job_log tool to understand the failure
-3. **Analyze error patterns** and identify the root cause from CryoSPARC logs
-4. **Implement adaptive retry strategy** with different parameter combinations:
-
-   **ATTEMPT 1 (Default)**: Start with standard parameters
-   
-   **ATTEMPT 2 (CTF Issues)**: If CTF refinement fails:
-   - refine_defocus_refine=false, refine_ctf_global_refine=false
-   
-   **ATTEMPT 3 (Resolution Issues)**: If resolution too aggressive:
-   - refinement_resolution=15.0 (more conservative)
-   
-   **ATTEMPT 4 (Conservative)**: If convergence fails:
-   - refinement_resolution=None (auto), symmetry=C1, no CTF refinement
-   
-   **ATTEMPT 5 (Alternative)**: If all refinement attempts fail:
-   - Try homogeneous reconstruction instead of non uniform refinement
-   
-4. **Learn from each failure** and adapt parameters based on error analysis
-5. **Document reasoning** for each parameter choice
-6. **Continue until success** or all reasonable strategies exhausted
-
-CRITICAL: You MUST try at least 3 different parameter combinations before giving up!
-
-**DO NOT START RETRY STRATEGY IF:**
-- Job status is "completed" (successful completion)
-- Job status is "cancelled" (manually cancelled)
-- Job is still "running" (wait for it to finish first)
-- Job status is "queued" or "started" (wait for completion)
-
-**ONLY START RETRY STRATEGY IF:**
-- Job status is "failed" (actual failure requiring retry)
 
 ## Tool Usage Guidelines:
 

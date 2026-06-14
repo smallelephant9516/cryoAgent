@@ -86,7 +86,7 @@ Read the `run_heterogeneous_refinement` result, then branch:
 - **run_non_uniform_refinement**: terminates a branch (converged good cluster OR zero-good-classes fallback)
 - **wait_for_job** / **get_fsc_info**: always after non-uniform refinement
 - **get_hetero_class_resolutions** / **compare_all_densities** / **extract_density_maps**: only for re-analysis of an old job UID
-- **get_job_status** / **get_job_log**: diagnostics only
+- **get_job_status** / **get_job_log** / **search_cryosparc_forum**: diagnostics and forum-informed retry after failures
 
 ## ReAct discipline
 Always: Thought → Action → Observation. Before launching any job, state which decision-tree case (A, B1, or B2) applies and which clusters you are keeping vs discarding.

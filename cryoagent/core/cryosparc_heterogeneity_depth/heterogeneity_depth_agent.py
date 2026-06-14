@@ -8,6 +8,7 @@ from typing import Dict, Any, List, Optional
 from langchain.tools import Tool
 from langchain_core.language_models import BaseLanguageModel
 
+from ..cryosparc_common_tools import CryoSPARCCommonTools
 from ..base_react_agent import BaseReActAgent
 from .heterogeneity_depth_tools import HeterogeneityDepthTools
 from ...tools.cryosparc_tools import CryoSPARCTools
@@ -65,10 +66,11 @@ class HeterogeneityDepthAgent(BaseReActAgent):
             HeterogeneityDepthTools.create_get_job_status_tool(self),
             HeterogeneityDepthTools.create_wait_for_job_tool(self),
             HeterogeneityDepthTools.create_get_job_log_tool(self),
+            CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
         ]
-        
+
         tools.append(HeterogeneityDepthTools.create_compare_all_densities_tool(self))
-        
+
         return tools
     
     def _get_resolution_filter_threshold(self) -> float:
@@ -160,7 +162,7 @@ class HeterogeneityDepthAgent(BaseReActAgent):
 
     def _get_react_system_prompt(self) -> str:
         """Get the heterogeneity depth analysis-specific ReAct system prompt."""
-        return load_prompt(
+        return self._compose_stage_system_prompt(
             "cryosparc/heterogeneity_depth/system.md",
             self._get_system_prompt_context(),
         )

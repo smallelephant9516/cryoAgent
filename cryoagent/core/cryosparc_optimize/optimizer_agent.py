@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional
 from langchain.tools import Tool
 from langchain_core.language_models import BaseLanguageModel
 
+from ..cryosparc_common_tools import CryoSPARCCommonTools
 from ..base_react_agent import BaseReActAgent
 from .optimizer_tools import OptimizerTools
 from ...tools.cryosparc_tools import CryoSPARCTools
@@ -51,6 +52,7 @@ class OptimizerAgent(BaseReActAgent):
             OptimizerTools.create_get_job_status_tool(self),
             OptimizerTools.create_wait_for_job_tool(self),
             OptimizerTools.create_get_job_log_tool(self),
+            CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
             OptimizerTools.create_reason_about_workflow_tool(self),
             OptimizerTools.create_get_hetero_class_resolutions_tool(self),
             OptimizerTools.create_test_heterogeneous_refinement_tool(self),
@@ -207,7 +209,7 @@ class OptimizerAgent(BaseReActAgent):
 
     def _get_react_system_prompt(self) -> str:
         """Get the optimization-specific ReAct system prompt."""
-        return load_prompt(
+        return self._compose_stage_system_prompt(
             "cryosparc/optimization/system.md",
             self._get_system_prompt_context(),
         )

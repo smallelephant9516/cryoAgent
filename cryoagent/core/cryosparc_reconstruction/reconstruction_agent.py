@@ -6,6 +6,7 @@ from typing import Dict, Any, List, Optional
 from langchain.tools import Tool
 from langchain_core.language_models import BaseLanguageModel
 
+from ..cryosparc_common_tools import CryoSPARCCommonTools
 from ..base_react_agent import BaseReActAgent
 from .reconstruction_tools import ReconstructionTools
 from ...tools.cryosparc_tools import CryoSPARCTools
@@ -59,6 +60,7 @@ class ReconstructionAgent(BaseReActAgent):
             ReconstructionTools.create_get_job_status_tool(self),
             ReconstructionTools.create_wait_for_job_tool(self),
             ReconstructionTools.create_get_job_log_tool(self),
+            CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
             ReconstructionTools.create_reason_about_workflow_tool(self)
         ]
     
@@ -88,7 +90,7 @@ class ReconstructionAgent(BaseReActAgent):
 
     def _get_react_system_prompt(self) -> str:
         """Get the 3D reconstruction-specific ReAct system prompt."""
-        return load_prompt(
+        return self._compose_stage_system_prompt(
             "cryosparc/reconstruction/system.md",
             self._get_system_prompt_context(),
         )

@@ -46,11 +46,12 @@ For each step, you MUST follow this pattern:
 **Action**: [The specific tool to use with exact parameters]
 **Observation**: [What happened as a result of the action]
 
-## CRITICAL: Job Monitoring and Failure Recovery
+## CRITICAL: Job Monitoring
 - After starting ANY job, you MUST wait for it to complete
 - Use wait_for_job with the job UID to wait for completion
 - Do NOT proceed to the next step until the current job is completed
 - Polish refinement jobs can take significant time
+- If a job fails, follow the forum-informed adaptive retry procedure (see Failure Recovery section)
 
 ## Tool Usage Guidelines:
 

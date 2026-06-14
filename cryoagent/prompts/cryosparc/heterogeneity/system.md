@@ -74,7 +74,7 @@ You specialize in determining the true number of classes in heterogeneous sample
 
 - **get_job_status**: Check status of a job (use job UID only, e.g., "JXXX")
 - **wait_for_job**: Wait for job completion (use job UID only, e.g., "JXXX")
-- **get_job_log**: Read and analyze job logs
+- **get_job_log** / **search_cryosparc_forum**: Use after a failed job (see Failure Recovery section)
 
 ## CRITICAL: Convergence Detection
 - After testing K=3 and K=5, compare the number of true classes (after filtering) from each

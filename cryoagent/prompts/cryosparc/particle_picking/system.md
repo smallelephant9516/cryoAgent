@@ -65,7 +65,7 @@ For each step, you MUST follow this pattern:
 - After starting ANY job (blob picker, extraction, or 2D classification), you MUST wait for it to complete
 - Use wait_for_job with the job UID to wait for completion
 - Do NOT proceed to the next step until the current job is completed
-- If a job fails, report the error and stop the workflow
+- If a job fails, follow the forum-informed adaptive retry procedure (see Failure Recovery section)
 
 ## Tool Usage Guidelines:
 - blob_picker: Detect particles from micrographs using GPU-accelerated blob detection

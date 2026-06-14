@@ -29,6 +29,12 @@ from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.messages import SystemMessage
 
 from ..tools.cryosparc_tools import CryoSPARCTools
+from ..tools.cryosparc_forum_tools import (
+    extract_search_queries_from_log,
+    format_forum_search_response,
+    search_cryosparc_forum,
+    search_cryosparc_forum_multi,
+)
 from ..config.config_loader import CryoAgentConfig, resolve_movie_sets
 from .llm_factory import LLMFactory
 from ..utils.conversation_logger import ConversationLogger
@@ -129,6 +135,27 @@ class BaseReActAgent(ABC):
             System prompt string
         """
         pass
+
+    def _compose_stage_system_prompt(
+        self,
+        relative_path: str,
+        variables: Optional[Dict[str, Any]] = None,
+        *,
+        include_failure_recovery: bool = True,
+    ) -> str:
+        """
+        Load a stage system prompt and append shared forum-based failure recovery rules.
+
+        Args:
+            relative_path: Path under cryoagent/prompts/ (e.g. cryosparc/preprocessing/system.md).
+            variables: Template variables for the stage prompt.
+            include_failure_recovery: When True, append shared/failure-recovery-forum.md.
+        """
+        stage_prompt = load_prompt(relative_path, variables or {})
+        if not include_failure_recovery:
+            return stage_prompt
+        recovery_prompt = load_prompt("shared/failure-recovery-forum.md")
+        return f"{stage_prompt.rstrip()}\n\n{recovery_prompt.strip()}\n"
 
     def _get_microscope_parameter(self, key: str, default: Any = None) -> Any:
         """
@@ -962,6 +989,77 @@ Please continue with the workflow execution."""
             context = params or {"raw_input": input_str}
             self._record_tool_execution("get_job_log", context, error=str(e))
             return f"❌ Error reading job log: {str(e)}"
+
+    def _search_cryosparc_forum_tool(self, input_str: str) -> str:
+        """Search CryoSPARC Discuss for troubleshooting advice related to a job failure."""
+        params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            query = params.get("query") or params.get("search_query")
+            job_uid = params.get("job_uid")
+            max_results = int(params.get("max_results", 5))
+
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+
+            queries: List[str] = []
+            if query:
+                queries.append(str(query))
+
+            if job_uid:
+                log_result = self.cryosparc_tools.get_job_log(
+                    job_uid,
+                    project_uid=project_uid,
+                    workspace_uid=workspace_uid,
+                )
+                if log_result.get("success"):
+                    log_queries = extract_search_queries_from_log(
+                        log_result.get("log_content", ""),
+                        log_result.get("error_analysis"),
+                    )
+                    for candidate in log_queries:
+                        if candidate not in queries:
+                            queries.append(candidate)
+                elif not queries:
+                    return (
+                        f"❌ Could not read job log for {job_uid}: "
+                        f"{log_result.get('error', 'unknown error')}. "
+                        "Provide a explicit query parameter to search the forum."
+                    )
+
+            if not queries:
+                return (
+                    "❌ Error: provide query (error keywords) and/or job_uid "
+                    f"(failed job whose log should be searched). Input was: '{input_str}'"
+                )
+
+            if len(queries) == 1:
+                search_payload = search_cryosparc_forum(queries[0], max_results=max_results)
+            else:
+                search_payload = search_cryosparc_forum_multi(
+                    queries,
+                    max_results_per_query=3,
+                    max_total_results=max_results,
+                )
+
+            self._record_tool_execution(
+                "search_cryosparc_forum",
+                {
+                    "query": query,
+                    "job_uid": job_uid,
+                    "queries": queries,
+                    "project_uid": project_uid,
+                    "workspace_uid": workspace_uid,
+                    "max_results": max_results,
+                },
+                result=search_payload,
+            )
+            return format_forum_search_response(search_payload)
+
+        except Exception as e:
+            context = params or {"raw_input": input_str}
+            self._record_tool_execution("search_cryosparc_forum", context, error=str(e))
+            return f"❌ Error searching CryoSPARC forum: {str(e)}"
     
     def _start_realtime_conversation_log(self, workflow_input: str, conversation_id: Optional[str] = None):
         """Start real-time logging of a conversation."""

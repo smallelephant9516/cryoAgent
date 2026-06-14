@@ -7,6 +7,7 @@ from typing import Dict, Any, List, Optional
 from langchain.tools import Tool
 from langchain_core.language_models import BaseLanguageModel
 
+from ..cryosparc_common_tools import CryoSPARCCommonTools
 from ..base_react_agent import BaseReActAgent
 from .polish_tools import PolishTools
 from ...tools.cryosparc_tools import CryoSPARCTools
@@ -108,6 +109,8 @@ class PolishAgent(BaseReActAgent):
             PolishTools.create_reference_motion_correction_tool(self),
             PolishTools.create_get_job_status_tool(self),
             PolishTools.create_wait_for_job_tool(self),
+            CryoSPARCCommonTools.create_get_job_log_tool(self),
+            CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
             PolishTools.create_verify_inputs_tool(self)
         ]
     
@@ -120,7 +123,7 @@ class PolishAgent(BaseReActAgent):
 
     def _get_react_system_prompt(self) -> str:
         """Get the polish-specific ReAct system prompt."""
-        return load_prompt(
+        return self._compose_stage_system_prompt(
             "cryosparc/polish/system.md",
             self._get_system_prompt_context(),
         )
