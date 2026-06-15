@@ -67,6 +67,7 @@ class HeterogeneityDepthAgent(BaseReActAgent):
             HeterogeneityDepthTools.create_wait_for_job_tool(self),
             HeterogeneityDepthTools.create_get_job_log_tool(self),
             CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
+            CryoSPARCCommonTools.create_describe_job_params_tool(self),
         ]
 
         tools.append(HeterogeneityDepthTools.create_compare_all_densities_tool(self))
@@ -856,7 +857,14 @@ class HeterogeneityDepthAgent(BaseReActAgent):
             refine_params["particles_group_name"] = particles_group_name
             if volume_group_name:
                 refine_params["volume_group_name"] = volume_group_name
-            
+
+            passthrough = self._extract_passthrough_params(
+                params,
+                consumed_keys=["particles_job_uid", "volume_job_uid", "particles_group_name", "volume_group_name", "refine_defocus_refine", "refine_ctf_global_refine"],
+            )
+            if passthrough:
+                refine_params["params"] = passthrough
+
             # Run homogeneous refinement
             refine_result = self.cryosparc_tools.homogeneous_refinement(**refine_params)
             

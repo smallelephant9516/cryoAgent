@@ -53,6 +53,7 @@ class OptimizerAgent(BaseReActAgent):
             OptimizerTools.create_wait_for_job_tool(self),
             OptimizerTools.create_get_job_log_tool(self),
             CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
+            CryoSPARCCommonTools.create_describe_job_params_tool(self),
             OptimizerTools.create_reason_about_workflow_tool(self),
             OptimizerTools.create_get_hetero_class_resolutions_tool(self),
             OptimizerTools.create_test_heterogeneous_refinement_tool(self),

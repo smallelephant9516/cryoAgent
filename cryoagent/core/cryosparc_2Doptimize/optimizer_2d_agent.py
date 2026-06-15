@@ -69,6 +69,7 @@ class Optimizer2DAgent(BaseReActAgent):
             Optimizer2DTools.create_wait_for_job_tool(self),
             CryoSPARCCommonTools.create_get_job_log_tool(self),
             CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
+            CryoSPARCCommonTools.create_describe_job_params_tool(self),
         ]
     
     def _load_stage_config(self) -> Dict[str, Any]:
@@ -581,7 +582,14 @@ class Optimizer2DAgent(BaseReActAgent):
                     # This allows parallel tool calls to detect pending job creation
                     pending_result = {"status": "creating", "job_uid": None}
                     self._record_tool_execution("class_2d", used_params, result=pending_result)
-                    
+
+                    passthrough = self._extract_passthrough_params(
+                        params,
+                        consumed_keys=["particles_job_uid", "job_uid", "particles_group_name", "num_classes", "force_max", "batchsize_per_class"],
+                    )
+                    if passthrough:
+                        used_params["params"] = passthrough
+
                     result = self.cryosparc_tools.class_2d(**used_params)
                     
                     # Get job UID and current status for logging

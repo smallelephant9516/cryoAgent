@@ -61,6 +61,7 @@ class ReconstructionAgent(BaseReActAgent):
             ReconstructionTools.create_wait_for_job_tool(self),
             ReconstructionTools.create_get_job_log_tool(self),
             CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
+            CryoSPARCCommonTools.create_describe_job_params_tool(self),
             ReconstructionTools.create_reason_about_workflow_tool(self)
         ]
     
@@ -142,7 +143,12 @@ class ReconstructionAgent(BaseReActAgent):
             wait_for_completion = params.get("wait_for_completion", "false").lower() == "true"
             timeout = int(params.get("timeout", self.config.job_management.default_timeout))
             check_interval = int(params.get("check_interval", self.config.job_management.status_check_interval))
-            
+
+            passthrough = self._extract_passthrough_params(
+                params,
+                consumed_keys=["particles_job_uid", "job_uid", "num_classes", "initial_resolution", "final_resolution", "max_iterations", "symmetry", "particle_diameter_angstroms"],
+            )
+
             # Execute ab initio reconstruction
             result = self.cryosparc_tools.ab_initio_reconstruction(
                 project_uid=project_uid,
@@ -155,7 +161,8 @@ class ReconstructionAgent(BaseReActAgent):
                 symmetry=symmetry,
                 wait_for_completion=wait_for_completion,
                 timeout=timeout,
-                check_interval=check_interval
+                check_interval=check_interval,
+                params=passthrough
             )
             
             # Log the tool execution
@@ -257,7 +264,12 @@ class ReconstructionAgent(BaseReActAgent):
             wait_for_completion = params.get("wait_for_completion", "false").lower() == "true"
             timeout = int(params.get("timeout", self.config.job_management.default_timeout))
             check_interval = int(params.get("check_interval", self.config.job_management.status_check_interval))
-            
+
+            passthrough = self._extract_passthrough_params(
+                params,
+                consumed_keys=["particles_job_uid", "volume_job_uid", "job_uid", "refinement_resolution", "symmetry", "refine_do_init_scale_est", "refine_highpass_res", "refine_num_final_iterations", "refine_res_init", "refine_symmetry_do_align", "refine_defocus_refine", "refine_ctf_global_refine"],
+            )
+
             # Execute homogeneous refinement
             result = self.cryosparc_tools.homogeneous_refinement(
                 project_uid=project_uid,
@@ -277,7 +289,8 @@ class ReconstructionAgent(BaseReActAgent):
                 refine_ctf_global_refine=refine_ctf_global_refine,
                 wait_for_completion=wait_for_completion,
                 timeout=timeout,
-                check_interval=check_interval
+                check_interval=check_interval,
+                params=passthrough
             )
             
             # Log the tool execution

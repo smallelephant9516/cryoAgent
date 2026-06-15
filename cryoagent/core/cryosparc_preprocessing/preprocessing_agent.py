@@ -260,6 +260,7 @@ class PreprocessingAgent(BaseReActAgent):
             PreprocessingTools.create_wait_for_job_tool(self),
             PreprocessingTools.create_get_job_log_tool(self),
             CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
+            CryoSPARCCommonTools.create_describe_job_params_tool(self),
             PreprocessingTools.create_reason_about_workflow_tool(self)
         ]
     
@@ -505,6 +506,13 @@ class PreprocessingAgent(BaseReActAgent):
                 "check_interval": self._parse_int_param(params.get("check_interval", self.config.job_management.status_check_interval), default=self.config.job_management.status_check_interval, param_name="check_interval")
             }
 
+            passthrough = self._extract_passthrough_params(
+                params,
+                consumed_keys=["movies_job_uid", "movies_job_uids", "binning", "patch_size"],
+            )
+            if passthrough:
+                used_params["params"] = passthrough
+
             result = self.cryosparc_tools.motion_correction(**used_params)
             self._record_tool_execution("motion_correction", used_params, result=result)
             if len(movies_job_uids) == 1:
@@ -586,6 +594,13 @@ class PreprocessingAgent(BaseReActAgent):
                 "timeout": self._parse_int_param(params.get("timeout", self.config.job_management.default_timeout), default=self.config.job_management.default_timeout, param_name="timeout"),
                 "check_interval": self._parse_int_param(params.get("check_interval", self.config.job_management.status_check_interval), default=self.config.job_management.status_check_interval, param_name="check_interval")
             }
+
+            passthrough = self._extract_passthrough_params(
+                params,
+                consumed_keys=["micrographs_job_uid", "group_job_uid", "min_res", "max_res"],
+            )
+            if passthrough:
+                used_params["params"] = passthrough
 
             result = self.cryosparc_tools.ctf_estimation(**used_params)
             self._record_tool_execution("ctf_estimation", used_params, result=result)

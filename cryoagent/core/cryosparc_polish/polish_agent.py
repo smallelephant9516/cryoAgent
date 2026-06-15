@@ -111,6 +111,7 @@ class PolishAgent(BaseReActAgent):
             PolishTools.create_wait_for_job_tool(self),
             CryoSPARCCommonTools.create_get_job_log_tool(self),
             CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
+            CryoSPARCCommonTools.create_describe_job_params_tool(self),
             PolishTools.create_verify_inputs_tool(self)
         ]
     
@@ -176,7 +177,12 @@ class PolishAgent(BaseReActAgent):
             wait_for_completion = params.get("wait_for_completion", "false").lower() == "true"
             timeout = int(params.get("timeout", self.config.job_management.default_timeout))
             check_interval = int(params.get("check_interval", self.config.job_management.status_check_interval))
-            
+
+            passthrough = self._extract_passthrough_params(
+                params,
+                consumed_keys=["particles_job_uid", "volume_job_uid", "refinement_resolution", "symmetry", "refine_do_init_scale_est", "refine_highpass_res", "refine_num_final_iterations", "refine_res_init", "refine_symmetry_do_align", "refine_defocus_refine", "refine_ctf_global_refine", "particles_group_name"],
+            )
+
             # Execute homogeneous refinement with CTF parameters
             result = self.cryosparc_tools.homogeneous_refinement(
                 project_uid=project_uid,
@@ -195,7 +201,8 @@ class PolishAgent(BaseReActAgent):
                 particles_group_name=particles_group_name,
                 wait_for_completion=wait_for_completion,
                 timeout=timeout,
-                check_interval=check_interval
+                check_interval=check_interval,
+                params=passthrough
             )
             
             self._record_tool_execution("homogeneous_refinement", params, result=result)

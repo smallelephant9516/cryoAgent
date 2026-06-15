@@ -77,6 +77,32 @@ class CryoSPARCTools:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _merge_passthrough_params(
+        job_params: Dict[str, Any],
+        params: Optional[Dict[str, Any]] = None,
+        kwargs: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Merge caller-supplied raw CryoSPARC parameters into job_params.
+
+        Precedence (lowest to highest): existing job_params (friendly-name
+        defaults set by the wrapper) < kwargs (legacy passthrough) < params
+        (explicit raw-key dict the LLM controls). This lets the agent override
+        any CryoSPARC parameter by its real key (discoverable via
+        describe_job_params) while preserving the friendly-name conveniences.
+        """
+        merged = dict(job_params)
+        if kwargs:
+            merged.update({k: v for k, v in kwargs.items() if v is not None})
+        if params:
+            if not isinstance(params, dict):
+                raise ValueError(
+                    f"'params' must be a dict of CryoSPARC parameter keys, got {type(params).__name__}"
+                )
+            merged.update(params)
+        return merged
+
     def _infer_particles_output_slot(self, project, job_uid: str) -> str:
         """Infer the appropriate particles output slot for a CryoSPARC job."""
         default_slots = [
@@ -574,8 +600,9 @@ class CryoSPARCTools:
         workspace_uid: str,
         movies_job_uid: Optional[Union[str, List[str]]] = None,
         movies_job_uids: Optional[Union[str, List[str]]] = None,
-        binning: int = 1,
-        patch_size: int = 5,
+        binning: Optional[int] = None,
+        patch_size: Optional[int] = None,
+        params: Optional[Dict[str, Any]] = None,
         lane: Optional[str] = None,
         hostname: Optional[str] = None,
         wait_for_completion: bool = False,
@@ -585,18 +612,24 @@ class CryoSPARCTools:
     ) -> Dict[str, Any]:
         """
         Perform motion correction on imported movies.
-        
+
         Args:
             project_uid: CryoSPARC project UID
             workspace_uid: CryoSPARC workspace UID
             movies_job_uid: UID(s) of one or more import movies jobs
             movies_job_uids: Alias for movies_job_uid when connecting multiple imports
-            binning: Binning factor for motion correction
-            patch_size: Patch size for motion correction
+            binning: Deprecated/no-op for patch_motion_correction_multi (kept for
+                backward compatibility; this job type has no binning parameter).
+                Use the `params` dict with real keys (e.g. output_fcrop_factor) instead.
+            patch_size: Deprecated/no-op for patch_motion_correction_multi (kept for
+                backward compatibility; use `params` with override_K_X/Y/Z instead).
+            params: Raw CryoSPARC parameter dict forwarded verbatim to create_job
+                (e.g. {"res_max_align": 5, "bfactor": 500}). Discover valid keys
+                with describe_job_params("motion_correction"). Takes precedence.
             wait_for_completion: Whether to wait for job completion
             timeout: Maximum time to wait for completion in seconds
-            **kwargs: Additional parameters
-            
+            **kwargs: Additional raw CryoSPARC parameters (legacy passthrough)
+
         Returns:
             Dictionary containing job information
         """
@@ -614,9 +647,22 @@ class CryoSPARCTools:
             project = self.cs.find_project(project_uid)
             workspace = project.find_workspace(workspace_uid)
 
-            job_params = {
-                **kwargs
-            }
+            # patch_motion_correction_multi has no binning/patch_size parameters;
+            # warn if a caller still passes them so the intent isn't silently lost.
+            if binning is not None:
+                print(
+                    "⚠️ motion_correction: 'binning' is not a parameter of "
+                    "patch_motion_correction_multi and will be ignored. Use the "
+                    "params dict (see describe_job_params) for real keys."
+                )
+            if patch_size is not None:
+                print(
+                    "⚠️ motion_correction: 'patch_size' is not a parameter of "
+                    "patch_motion_correction_multi and will be ignored. Use the "
+                    "params dict (see describe_job_params) for real keys."
+                )
+
+            job_params = self._merge_passthrough_params({}, params=params, kwargs=kwargs)
 
             per_job_output_labels: List[List[str]] = []
             for import_job_uid in normalized_job_uids:
@@ -742,8 +788,9 @@ class CryoSPARCTools:
         workspace_uid: str,
         micrographs_job_uid: str,
         group_job_uid: Optional[str] = None,
-        min_res: float = 30.0,
-        max_res: float = 4.0,
+        min_res: Optional[float] = None,
+        max_res: Optional[float] = None,
+        params: Optional[Dict[str, Any]] = None,
         lane: Optional[str] = None,
         hostname: Optional[str] = None,
         wait_for_completion: bool = False,
@@ -753,17 +800,24 @@ class CryoSPARCTools:
     ) -> Dict[str, Any]:
         """
         Estimate CTF parameters for micrographs.
-        
+
         Args:
             project_uid: CryoSPARC project UID
             workspace_uid: CryoSPARC workspace UID
             micrographs_job_uid: UID of the motion correction job
-            min_res: Minimum resolution for CTF estimation
-            max_res: Maximum resolution for CTF estimation
+            min_res: Minimum resolution for CTF fit search in Angstroms. Mapped to
+                the real CryoSPARC key `res_min_align` (default 25). Only applied
+                when provided.
+            max_res: Maximum resolution for CTF fit search in Angstroms. Mapped to
+                the real CryoSPARC key `res_max_align` (default 4). Only applied
+                when provided.
+            params: Raw CryoSPARC parameter dict forwarded verbatim to create_job
+                (e.g. {"df_search_max": 50000, "amp_contrast": 0.1}). Discover
+                valid keys with describe_job_params("ctf_estimation"). Takes precedence.
             wait_for_completion: Whether to wait for job completion
             timeout: Maximum time to wait for completion in seconds
-            **kwargs: Additional parameters
-            
+            **kwargs: Additional raw CryoSPARC parameters (legacy passthrough)
+
         Returns:
             Dictionary containing job information
         """
@@ -776,11 +830,15 @@ class CryoSPARCTools:
             # Find project and workspace
             project = self.cs.find_project(project_uid)
             workspace = project.find_workspace(workspace_uid)
-            
-            # Prepare job parameters using correct CryoSPARC API format
-            job_params = {
-                **kwargs
-            }
+
+            # Map friendly resolution names to the real CryoSPARC keys.
+            job_params: Dict[str, Any] = {}
+            if min_res is not None:
+                job_params["res_min_align"] = min_res
+            if max_res is not None:
+                job_params["res_max_align"] = max_res
+
+            job_params = self._merge_passthrough_params(job_params, params=params, kwargs=kwargs)
 
             if group_job_uid is None:
                 group_job_uid = "micrographs"
@@ -1115,7 +1173,120 @@ class CryoSPARCTools:
             return workspaces
         except Exception as e:
             raise RuntimeError(f"Failed to list workspaces for project {project_uid}: {e}")
-    
+
+    # ------------------------------------------------------------------
+    # Parameter introspection
+    # ------------------------------------------------------------------
+
+    # Map the friendly job-type names the agents use to the real CryoSPARC
+    # job-type identifiers so introspection works with either spelling.
+    _JOB_TYPE_ALIASES: Dict[str, str] = {
+        "import_movies": "import_movies",
+        "import_micrographs": "import_micrographs",
+        "import_particles": "import_particles",
+        "motion_correction": "patch_motion_correction_multi",
+        "patch_motion": "patch_motion_correction_multi",
+        "ctf_estimation": "patch_ctf_estimation_multi",
+        "patch_ctf": "patch_ctf_estimation_multi",
+        "micrograph_selection": "curate_exposures_v2",
+        "curate_exposures": "curate_exposures_v2",
+        "blob_picker": "blob_picker_gpu",
+        "template_picker": "template_picker_gpu",
+        "extract_particles": "extract_micrographs_multi",
+        "extract": "extract_micrographs_multi",
+        "class_2d": "class_2D",
+        "class2d": "class_2D",
+        "select_2d_classes": "select_2D",
+        "select_2d": "select_2D",
+        "ab_initio_reconstruction": "homo_abinit",
+        "ab_initio": "homo_abinit",
+        "abinit": "homo_abinit",
+        "homogeneous_refinement": "homo_refine_new",
+        "homo_refine": "homo_refine_new",
+        "nonuniform_refinement": "nonuniform_refine_new",
+        "nonuniform_refine": "nonuniform_refine_new",
+        "heterogeneous_refinement": "hetero_refine",
+        "hetero_refine": "hetero_refine",
+        "reference_motion_correction": "reference_motion_correction",
+    }
+
+    def _resolve_job_type(self, job_type: str) -> str:
+        """Resolve a friendly or raw job-type name to the real CryoSPARC identifier."""
+        if not job_type:
+            return job_type
+        key = str(job_type).strip()
+        return self._JOB_TYPE_ALIASES.get(key, self._JOB_TYPE_ALIASES.get(key.lower(), key))
+
+    def describe_job_params(
+        self,
+        job_type: str,
+        include_hidden: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Return the full parameter specification for a CryoSPARC job type.
+
+        Reads the connected instance's job specs (no job is created), so the
+        LLM can discover the exact raw parameter keys, types and defaults that
+        a given job type accepts before submitting it via the generic ``params``
+        passthrough on the corresponding tool.
+
+        Args:
+            job_type: A friendly name (e.g. "motion_correction", "class_2d") or
+                a raw CryoSPARC job-type id (e.g. "patch_motion_correction_multi").
+            include_hidden: When True, include parameters CryoSPARC marks hidden.
+
+        Returns:
+            Dictionary with the resolved job_type and a "params" mapping of
+            {param_key: {title, type, default}}.
+        """
+        resolved = self._resolve_job_type(job_type)
+        try:
+            specs = self.cs.get_job_specs()
+        except Exception as e:
+            raise RuntimeError(f"Failed to fetch job specs from CryoSPARC: {e}")
+
+        spec = None
+        for section in specs:
+            for job_spec in section.get("contains", []) or []:
+                if job_spec.get("name") == resolved:
+                    spec = job_spec
+                    break
+            if spec is not None:
+                break
+
+        if spec is None:
+            # Provide the available types to aid the caller in correcting the name.
+            available = sorted(
+                job_spec.get("name")
+                for section in specs
+                for job_spec in (section.get("contains", []) or [])
+                if job_spec.get("name")
+            )
+            raise ValueError(
+                f"Unknown job type '{job_type}' (resolved to '{resolved}'). "
+                f"Available job types include: {', '.join(available[:60])}"
+                + (" ..." if len(available) > 60 else "")
+            )
+
+        params_base = spec.get("params_base", {}) or {}
+        params: Dict[str, Any] = {}
+        for key, details in params_base.items():
+            if details.get("hidden") and not include_hidden:
+                continue
+            params[key] = {
+                "title": details.get("title"),
+                "type": details.get("type"),
+                "default": details.get("value"),
+            }
+
+        return {
+            "job_type": resolved,
+            "requested_job_type": job_type,
+            "title": spec.get("title"),
+            "param_count": len(params),
+            "params": params,
+        }
+
     def blob_picker(
         self,
         project_uid: str,
@@ -1123,6 +1294,7 @@ class CryoSPARCTools:
         micrographs_job_uid: str,
         particle_diameter: float,
         diameter_max: Optional[float] = None,
+        params: Optional[Dict[str, Any]] = None,
         lane: Optional[str] = None,
         hostname: Optional[str] = None,
         wait_for_completion: bool = False,
@@ -1160,11 +1332,11 @@ class CryoSPARCTools:
             
             # Prepare job parameters for blob picker GPU
             # CryoSPARC expects: "diameter" (min) and "diameter_max" (max)
-            job_params = {
-                "diameter": particle_diameter,
-                "diameter_max": diameter_max,
-                **kwargs
-            }
+            job_params = self._merge_passthrough_params(
+                {"diameter": particle_diameter, "diameter_max": diameter_max},
+                params=params,
+                kwargs=kwargs,
+            )
             
             # Create blob picker job with connections
             # Try different output labels from the curate_exposures_v2 job
@@ -1250,6 +1422,7 @@ class CryoSPARCTools:
         particles_job_uid: str,
         micrographs_job_uid: str,
         box_size_pix: int,
+        params: Optional[Dict[str, Any]] = None,
         lane: Optional[str] = None,
         hostname: Optional[str] = None,
         wait_for_completion: bool = False,
@@ -1282,10 +1455,11 @@ class CryoSPARCTools:
             workspace = project.find_workspace(workspace_uid)
             
             # Prepare job parameters for particle extraction
-            job_params = {
-                "box_size_pix": box_size_pix,
-                **kwargs
-            }
+            job_params = self._merge_passthrough_params(
+                {"box_size_pix": box_size_pix},
+                params=params,
+                kwargs=kwargs,
+            )
             
             # First, check which output labels are available without creating jobs
             # This prevents creating multiple jobs for failed connection attempts
@@ -1446,6 +1620,7 @@ class CryoSPARCTools:
         check_interval: int = 30,
         force_max: Optional[bool] = None,
         batchsize_per_class: Optional[int] = None,
+        params: Optional[Dict[str, Any]] = None,
         **kwargs
     ) -> Dict[str, Any]:
         """
@@ -1489,9 +1664,9 @@ class CryoSPARCTools:
             # Add batchsize_per_class parameter if provided
             if batchsize_per_class is not None:
                 job_params["class2D_num_full_iter_batchsize_per_class"] = batchsize_per_class
-            
-            # Add any additional kwargs
-            job_params.update(kwargs)
+
+            # Merge raw CryoSPARC parameter passthrough (LLM-controlled, takes precedence)
+            job_params = self._merge_passthrough_params(job_params, params=params, kwargs=kwargs)
             
             # Support multiple particle inputs (for connecting both J159 and J157 when both functions are enabled)
             if particles_job_uids and len(particles_job_uids) > 1:
@@ -2472,6 +2647,7 @@ class CryoSPARCTools:
         final_resolution: float = 10.0,
         max_iterations: int = 50,
         symmetry: str = "C1",
+        params: Optional[Dict[str, Any]] = None,
         lane: Optional[str] = None,
         hostname: Optional[str] = None,
         wait_for_completion: bool = False,
@@ -2535,9 +2711,14 @@ class CryoSPARCTools:
                 # But ensure it's at least 100
                 final_iters = max(100, max_iterations - 200)
                 job_params["abinit_num_final_iters"] = final_iters
-            
+
             # Set symmetry (only if not C1, otherwise CryoSPARC uses default)
-            
+            if symmetry and str(symmetry).upper() != "C1":
+                job_params["abinit_symmetry"] = symmetry
+
+            # Merge raw CryoSPARC parameter passthrough (LLM-controlled, takes precedence)
+            job_params = self._merge_passthrough_params(job_params, params=params, kwargs=kwargs)
+
             particles_output_slot = self._infer_particles_output_slot(project, particles_job_uid)
             
             job = workspace.create_job(
@@ -2606,6 +2787,7 @@ class CryoSPARCTools:
         refine_symmetry_do_align: bool = True,
         refine_defocus_refine: bool = True,
         refine_ctf_global_refine: bool = True,
+        params: Optional[Dict[str, Any]] = None,
         # Job control parameters
         lane: Optional[str] = None,
         hostname: Optional[str] = None,
@@ -2803,7 +2985,17 @@ class CryoSPARCTools:
             # Add initial resolution if specified
             if refine_res_init is not None:
                 job_params["refine_res_init"] = refine_res_init
-            
+
+            # Merge raw CryoSPARC parameter passthrough (LLM-controlled, takes precedence).
+            # Exclude connection-slot hints which are not job parameters.
+            passthrough_kwargs = {
+                k: v for k, v in kwargs.items()
+                if k not in ("particles_group_name", "volume_group_name")
+            }
+            job_params = self._merge_passthrough_params(
+                job_params, params=params, kwargs=passthrough_kwargs
+            )
+
             # Create the job - matches user's example exactly
             job = workspace.create_job(
                 "homo_refine_new",  # Homogeneous refinement job type

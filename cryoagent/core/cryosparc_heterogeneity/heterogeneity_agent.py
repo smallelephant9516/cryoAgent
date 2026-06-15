@@ -58,6 +58,7 @@ class HeterogeneityAgent(BaseReActAgent):
             HeterogeneityTools.create_wait_for_job_tool(self),
             HeterogeneityTools.create_get_job_log_tool(self),
             CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
+            CryoSPARCCommonTools.create_describe_job_params_tool(self),
         ]
         
         # Add compare_all_densities tool
@@ -218,11 +219,16 @@ class HeterogeneityAgent(BaseReActAgent):
                 "symmetry": symmetry
             }
             self._record_tool_execution("ab_initio_reconstruction", ab_initio_params)
+            passthrough = self._extract_passthrough_params(
+                params,
+                consumed_keys=["k", "num_classes", "particles_job_uid"],
+            )
             ab_initio_result = self.cryosparc_tools.ab_initio_reconstruction(
                 **ab_initio_params,
                 wait_for_completion=True,
                 timeout=self.config.job_management.default_timeout,
-                check_interval=self.config.job_management.status_check_interval
+                check_interval=self.config.job_management.status_check_interval,
+                params=passthrough
             )
             self._record_tool_execution("ab_initio_reconstruction", ab_initio_params, result=ab_initio_result)
             

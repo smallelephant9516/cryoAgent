@@ -64,6 +64,7 @@ class PickingAgent(BaseReActAgent):
             PickingTools.create_wait_for_job_tool(self),
             PickingTools.create_get_job_log_tool(self),
             CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
+            CryoSPARCCommonTools.create_describe_job_params_tool(self),
             PickingTools.create_reason_about_workflow_tool(self)
         ]
     
@@ -154,9 +155,15 @@ class PickingAgent(BaseReActAgent):
                 if stage_diameter_max is not None:
                     used_params["diameter_max"] = float(stage_diameter_max)
 
+            passthrough = self._extract_passthrough_params(
+                params,
+                consumed_keys=["micrographs_job_uid", "particle_diameter", "diameter_max"],
+            )
+            if passthrough:
+                used_params["params"] = passthrough
+
             result = self.cryosparc_tools.blob_picker(**used_params)
             self._record_tool_execution("blob_picker", used_params, result=result)
-            
             diameter_range = f"{used_params['particle_diameter']}-{used_params.get('diameter_max', used_params['particle_diameter'] * 2.0)}"
             return f"✅ Successfully queued blob picker GPU job: {result['job_uid']} (diameter range: {diameter_range} Å)"
             
@@ -213,6 +220,13 @@ class PickingAgent(BaseReActAgent):
                 "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
                 "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
             }
+
+            passthrough = self._extract_passthrough_params(
+                params,
+                consumed_keys=["particles_job_uid", "micrographs_job_uid", "box_size_pix"],
+            )
+            if passthrough:
+                used_params["params"] = passthrough
 
             result = self.cryosparc_tools.extract_particles(**used_params)
             self._record_tool_execution("extract_particles", used_params, result=result)
@@ -317,6 +331,13 @@ class PickingAgent(BaseReActAgent):
                 }
                 if batchsize_per_class is not None:
                     used_params["batchsize_per_class"] = int(batchsize_per_class)
+
+                passthrough = self._extract_passthrough_params(
+                    params,
+                    consumed_keys=["particles_job_uid", "job_uid", "num_classes", "batchsize_per_class", "batch_size_per_class"],
+                )
+                if passthrough:
+                    used_params["params"] = passthrough
 
                 result = self.cryosparc_tools.class_2d(**used_params)
                 self._record_tool_execution("class_2d", used_params, result=result)

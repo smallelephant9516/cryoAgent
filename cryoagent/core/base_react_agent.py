@@ -406,6 +406,103 @@ class BaseReActAgent(ABC):
 
         return params
     
+    # Reserved keys that are handled explicitly by tool wrappers and must NOT
+    # be forwarded as raw CryoSPARC job parameters via the passthrough dict.
+    _RESERVED_TOOL_KEYS = frozenset({
+        "project_uid", "workspace_uid", "job_uid", "input", "raw_input",
+        "wait_for_completion", "timeout", "check_interval", "max_results",
+        "query", "search_query", "params",
+    })
+
+    def _extract_passthrough_params(
+        self,
+        params: Dict[str, Any],
+        *,
+        consumed_keys: Optional[Sequence[str]] = None,
+        allow_loose: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Build the raw-CryoSPARC ``params`` dict to forward to the API layer.
+
+        The unambiguous, default form is an explicit nested ``params`` object in
+        the tool input (e.g. {"params": {"abinit_init_res": 30}}). Optionally,
+        with ``allow_loose=True``, any leftover top-level keys the wrapper did
+        not explicitly consume are also treated as raw CryoSPARC parameters;
+        this is opt-in because wrappers may reuse the parsed-input dict for
+        internal bookkeeping, which would otherwise leak non-parameter keys.
+
+        Args:
+            params: The parsed tool input.
+            consumed_keys: Named arguments the wrapper already handles itself
+                (only relevant when allow_loose=True).
+            allow_loose: When True, also harvest unconsumed top-level keys.
+
+        Returns:
+            A dict of raw CryoSPARC parameter keys (empty if none supplied).
+        """
+        passthrough: Dict[str, Any] = {}
+
+        # 1) Explicit nested params object (preferred, unambiguous form).
+        explicit = params.get("params")
+        if isinstance(explicit, str):
+            explicit_str = explicit.strip()
+            if explicit_str:
+                try:
+                    explicit = json.loads(explicit_str)
+                except json.JSONDecodeError:
+                    explicit = None
+        if isinstance(explicit, dict):
+            passthrough.update(explicit)
+
+        # 2) Optional convenience: leftover top-level keys not otherwise consumed.
+        if allow_loose:
+            consumed = set(consumed_keys or ())
+            for key, value in params.items():
+                if key in self._RESERVED_TOOL_KEYS or key in consumed:
+                    continue
+                if key not in passthrough:
+                    passthrough[key] = value
+
+        return passthrough
+
+    def _describe_job_params_tool(self, input_str: str) -> str:
+        """Common tool wrapper exposing CryoSPARC job parameter specs to the LLM."""
+        params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            job_type = params.get("job_type") or params.get("input")
+            if not job_type:
+                return (
+                    "❌ Error: job_type parameter is required. Provide a job type "
+                    "such as 'motion_correction', 'class_2d', or a raw CryoSPARC id "
+                    "like 'patch_motion_correction_multi'."
+                )
+            include_hidden = str(params.get("include_hidden", "false")).lower() == "true"
+            spec = self.cryosparc_tools.describe_job_params(job_type, include_hidden=include_hidden)
+            self._record_tool_execution("describe_job_params", {"job_type": job_type}, result=spec)
+
+            lines = [
+                f"📋 Parameters for job type '{spec['job_type']}' "
+                f"({spec['param_count']} settable):"
+            ]
+            for key, detail in spec["params"].items():
+                lines.append(
+                    f"  - {key} [{detail.get('type')}] default={detail.get('default')!r}"
+                    f"  — {detail.get('title')}"
+                )
+            lines.append(
+                "\nPass any of these via the tool's 'params' dict, e.g. "
+                'params={"' + (next(iter(spec["params"]), "key")) + '": <value>}.'
+            )
+            return "\n".join(lines)
+        except ValueError as e:
+            self._record_tool_execution("describe_job_params", params, error=str(e))
+            return f"❌ {e}"
+        except Exception as e:
+            context = params or {"raw_input": input_str}
+            self._record_tool_execution("describe_job_params", context, error=str(e))
+            return f"❌ Error describing job params: {str(e)}"
+
     def _record_tool_execution(
         self,
         tool_name: str,

@@ -29,3 +29,18 @@ class CryoSPARCCommonTools:
                        "Optional: max_results (default 5), project_uid, workspace_uid.",
             func=agent._search_cryosparc_forum_tool,
         )
+
+    @staticmethod
+    def create_describe_job_params_tool(agent) -> Tool:
+        """Create tool exposing the full CryoSPARC parameter spec for a job type."""
+        return Tool(
+            name="describe_job_params",
+            description="Look up the full parameter specification (keys, types, defaults) for a "
+                       "CryoSPARC job type, so you can set ANY parameter via a job tool's 'params' dict. "
+                       "Required: job_type (a friendly name like 'motion_correction', 'ctf_estimation', "
+                       "'class_2d', 'ab_initio_reconstruction', or a raw CryoSPARC id like "
+                       "'patch_motion_correction_multi'). Optional: include_hidden. "
+                       "Call this before submitting a job when you need a parameter that is not one of the "
+                       "tool's friendly named arguments.",
+            func=agent._describe_job_params_tool,
+        )
