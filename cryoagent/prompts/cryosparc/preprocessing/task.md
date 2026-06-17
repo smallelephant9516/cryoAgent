@@ -12,8 +12,9 @@ Execute the complete cryoEM preprocessing workflow. Choose the appropriate path 
 
 2. **Motion Correction**: Correct motion in the imported movies
    - Connect all import job UIDs to a single motion correction job when multiple sets were imported
-   - Binning: {{motion_binning}}
-   - Patch size: {{motion_patch_size}}
+   - The defaults are appropriate for most datasets. If you need to tune a parameter,
+     call describe_job_params("motion_correction") to see the real CryoSPARC keys
+     (e.g. res_max_align, bfactor) and pass them via the params dict.
 
 3. **CTF Estimation**: Estimate CTF parameters for micrographs
    - Min resolution: {{ctf_min_res}} Å

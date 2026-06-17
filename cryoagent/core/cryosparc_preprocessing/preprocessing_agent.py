@@ -11,7 +11,6 @@ from pathlib import Path
 
 from ..cryosparc_common_tools import CryoSPARCCommonTools
 from ..base_react_agent import BaseReActAgent
-from .preprocessing_tools import PreprocessingTools
 from ...tools.cryosparc_tools import CryoSPARCTools
 from ...tools.cryosparc_parser_tools import CryoSPARCPreprocessingParser, WorkflowContext
 from ...config.config_loader import CryoAgentConfig
@@ -250,19 +249,8 @@ class PreprocessingAgent(BaseReActAgent):
 
     def _create_tools(self) -> List[Tool]:
         """Create preprocessing-specific tools."""
-        return [
-            PreprocessingTools.create_import_movies_tool(self),
-            PreprocessingTools.create_import_micrographs_tool(self),
-            PreprocessingTools.create_motion_correction_tool(self),
-            PreprocessingTools.create_ctf_estimation_tool(self),
-            PreprocessingTools.create_micrograph_selection_tool(self),
-            PreprocessingTools.create_get_job_status_tool(self),
-            PreprocessingTools.create_wait_for_job_tool(self),
-            PreprocessingTools.create_get_job_log_tool(self),
-            CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
-            CryoSPARCCommonTools.create_describe_job_params_tool(self),
-            PreprocessingTools.create_reason_about_workflow_tool(self)
-        ]
+        from ..cryosparc_tool_registry import build_tools, AGENT_TOOL_SETS
+        return build_tools(self, AGENT_TOOL_SETS["preprocessing"])
     
     def _get_system_prompt_context(self) -> Dict[str, Any]:
         microscope_config = getattr(self, "microscope_config", {})
@@ -492,20 +480,17 @@ class PreprocessingAgent(BaseReActAgent):
                     "from the import_movies step (e.g., movies_job_uids=J16,J17)."
                 )
 
-            preprocessing_config = getattr(self, 'preprocessing_config', {}).get('workflow', {})
-            motion_correction_config = preprocessing_config.get('motion_correction', {})
-
             used_params = {
                 "project_uid": project_uid,
                 "workspace_uid": workspace_uid,
                 "movies_job_uids": movies_job_uids,
-                "binning": self._parse_int_param(params.get("binning", motion_correction_config.get("binning", 1)), default=1, param_name="binning"),
-                "patch_size": self._parse_int_param(params.get("patch_size", motion_correction_config.get("patch_size", 5)), default=5, param_name="patch_size"),
                 "wait_for_completion": self._parse_boolean_param(params.get("wait_for_completion"), default=False),
                 "timeout": self._parse_int_param(params.get("timeout", self.config.job_management.default_timeout), default=self.config.job_management.default_timeout, param_name="timeout"),
                 "check_interval": self._parse_int_param(params.get("check_interval", self.config.job_management.status_check_interval), default=self.config.job_management.status_check_interval, param_name="check_interval")
             }
 
+            # NOTE: patch_motion_correction_multi has no 'binning'/'patch_size' params.
+            # Real CryoSPARC keys (e.g. res_max_align) come through the params dict.
             passthrough = self._extract_passthrough_params(
                 params,
                 consumed_keys=["movies_job_uid", "movies_job_uids", "binning", "patch_size"],

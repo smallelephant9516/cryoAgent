@@ -78,6 +78,31 @@ class CryoSPARCTools:
     # ------------------------------------------------------------------
 
     @staticmethod
+    def _coerce_float(value: Any) -> Optional[float]:
+        """
+        Coerce a possibly-LLM-supplied value to a float, or return None.
+
+        Returns None for None, empty strings, and non-numeric tokens such as
+        "auto"/"default"/"none" so the caller simply omits the parameter and lets
+        CryoSPARC use its own default, instead of forwarding an invalid value.
+        """
+        if value is None:
+            return None
+        if isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            token = value.strip().lower()
+            if token in ("", "auto", "default", "none", "null", "na", "n/a"):
+                return None
+            try:
+                return float(token)
+            except ValueError:
+                return None
+        return None
+
+    @staticmethod
     def _merge_passthrough_params(
         job_params: Dict[str, Any],
         params: Optional[Dict[str, Any]] = None,
@@ -147,6 +172,40 @@ class CryoSPARCTools:
                 continue
 
         return "particles"
+
+    def _resolve_particles_slot(self, project, job_uid: str) -> str:
+        """
+        Resolve the correct particles output slot to connect FROM a given job.
+
+        Inspects the job's real output_result_groups rather than guessing from the
+        UID. Preference order when several particle groups exist:
+          particles_selected > particles > particles_all_classes > first particle group.
+        This avoids "No match for particles in job J###" when connecting from a
+        select_2D job (which exposes particles_selected / particles_excluded, with
+        no plain 'particles' group).
+        """
+        try:
+            job = project.find_job(job_uid)
+            job.refresh()
+            doc = getattr(job, "doc", {}) or {}
+            outputs = doc.get("output_result_groups", []) or []
+            particle_groups = [
+                g.get("name") for g in outputs
+                if (g.get("type") == "particle") and g.get("name")
+            ]
+            if not particle_groups:
+                # No particle outputs detected; fall back to the conventional name.
+                return "particles"
+            for preferred in ("particles_selected", "particles", "particles_all_classes"):
+                if preferred in particle_groups:
+                    return preferred
+            # Otherwise use the first particle group that is not an "excluded" set.
+            for name in particle_groups:
+                if "exclud" not in name.lower():
+                    return name
+            return particle_groups[0]
+        except Exception:
+            return "particles"
 
     def _queue_job_with_lane_fallback(
         self,
@@ -1221,46 +1280,55 @@ class CryoSPARCTools:
         self,
         job_type: str,
         include_hidden: bool = False,
+        project_uid: Optional[str] = None,
+        workspace_uid: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Return the full parameter specification for a CryoSPARC job type.
 
         Reads the connected instance's job specs (no job is created), so the
-        LLM can discover the exact raw parameter keys, types and defaults that
+        caller can discover the exact raw parameter keys, types and defaults that
         a given job type accepts before submitting it via the generic ``params``
         passthrough on the corresponding tool.
+
+        Uses the documented cryosparc-tools introspection data: the list of job
+        sections, each containing JobSpec entries with a ``params_base`` mapping.
+        On clients that expose ``CryoSPARC.get_job_specs`` (>= 4.5) that method is
+        used; on older clients (e.g. 4.3.x) the same data is fetched directly from
+        the command server via ``cli.get_config_var("job_types_available")``,
+        which is exactly what get_job_specs wraps.
 
         Args:
             job_type: A friendly name (e.g. "motion_correction", "class_2d") or
                 a raw CryoSPARC job-type id (e.g. "patch_motion_correction_multi").
             include_hidden: When True, include parameters CryoSPARC marks hidden.
+            project_uid, workspace_uid: Accepted for API compatibility; not needed
+                (no job is created).
 
         Returns:
             Dictionary with the resolved job_type and a "params" mapping of
             {param_key: {title, type, default}}.
         """
         resolved = self._resolve_job_type(job_type)
-        try:
-            specs = self.cs.get_job_specs()
-        except Exception as e:
-            raise RuntimeError(f"Failed to fetch job specs from CryoSPARC: {e}")
+        specs = self._fetch_job_specs()
 
-        spec = None
+        params_base = None
+        spec_title = None
         for section in specs:
-            for job_spec in section.get("contains", []) or []:
+            for job_spec in (section.get("contains", []) or []):
                 if job_spec.get("name") == resolved:
-                    spec = job_spec
+                    params_base = job_spec.get("params_base", {}) or {}
+                    spec_title = job_spec.get("title")
                     break
-            if spec is not None:
+            if params_base is not None:
                 break
 
-        if spec is None:
-            # Provide the available types to aid the caller in correcting the name.
+        if params_base is None:
             available = sorted(
-                job_spec.get("name")
+                js.get("name")
                 for section in specs
-                for job_spec in (section.get("contains", []) or [])
-                if job_spec.get("name")
+                for js in (section.get("contains", []) or [])
+                if js.get("name")
             )
             raise ValueError(
                 f"Unknown job type '{job_type}' (resolved to '{resolved}'). "
@@ -1268,7 +1336,6 @@ class CryoSPARCTools:
                 + (" ..." if len(available) > 60 else "")
             )
 
-        params_base = spec.get("params_base", {}) or {}
         params: Dict[str, Any] = {}
         for key, details in params_base.items():
             if details.get("hidden") and not include_hidden:
@@ -1282,10 +1349,47 @@ class CryoSPARCTools:
         return {
             "job_type": resolved,
             "requested_job_type": job_type,
-            "title": spec.get("title"),
+            "title": spec_title,
             "param_count": len(params),
             "params": params,
         }
+
+    def _fetch_job_specs(self) -> List[Dict[str, Any]]:
+        """
+        Fetch the instance's job specs (sections -> contains -> JobSpec with
+        params_base) using the documented cryosparc-tools API.
+
+        Prefers ``CryoSPARC.get_job_specs()`` when available; otherwise calls the
+        same underlying command-server variable ``job_types_available`` directly
+        via the CLI proxy (available on older clients such as 4.3.x).
+        """
+        # Preferred documented method (cryosparc-tools >= ~4.5).
+        get_job_specs = getattr(self.cs, "get_job_specs", None)
+        if callable(get_job_specs):
+            try:
+                specs = get_job_specs()
+                if specs:
+                    return list(specs)
+            except Exception as e:
+                print(f"⚠️  get_job_specs() failed ({e}); using cli.get_config_var fallback.")
+
+        # Fallback: fetch the raw config variable that get_job_specs wraps. Works
+        # on older clients that lack get_job_specs but still expose the CLI proxy.
+        cli = getattr(self.cs, "cli", None)
+        get_config_var = getattr(cli, "get_config_var", None) if cli is not None else None
+        if callable(get_config_var):
+            specs = get_config_var("job_types_available")
+            if specs:
+                return list(specs)
+            raise RuntimeError(
+                "CryoSPARC returned no 'job_types_available' specs; cannot introspect "
+                "job parameters on this instance."
+            )
+
+        raise RuntimeError(
+            "This CryoSPARC client exposes neither get_job_specs nor "
+            "cli.get_config_var; cannot introspect job parameters."
+        )
 
     def blob_picker(
         self,
@@ -2152,6 +2256,7 @@ class CryoSPARCTools:
         min_distance: Optional[float] = None,
         use_ctf: Optional[bool] = None,
         blob_picker_job_uid: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
         lane: Optional[str] = None,
         hostname: Optional[str] = None,
         wait_for_completion: bool = False,
@@ -2212,20 +2317,17 @@ class CryoSPARCTools:
             if use_ctf is not None:
                 job_params["use_ctf"] = bool(use_ctf)
 
-            # Allow only supported additional parameters from kwargs
-            allowed_optional_params = {
-                "sigma_multiplier",
-                "thresh_low",
-                "thresh_high",
-                "max_prune_dist",
-                "rotation_step",
-                "num_plot",
-                "ice_multiplier"
+            # Merge raw CryoSPARC parameter passthrough (LLM-controlled, takes
+            # precedence). Previously a hardcoded whitelist silently dropped any
+            # other param; now any valid template_picker_gpu key can be set.
+            # blob_picker_job_uid is a helper arg, not a job param — exclude it.
+            passthrough_kwargs = {
+                k: v for k, v in kwargs.items() if k != "blob_picker_job_uid"
             }
-            for key, value in kwargs.items():
-                if key in allowed_optional_params and value is not None:
-                    job_params[key] = value
-            
+            job_params = self._merge_passthrough_params(
+                job_params, params=params, kwargs=passthrough_kwargs
+            )
+
             # Create template picker job with connections to both micrographs and templates
             # Try different combinations of output labels
             connection_errors = []
@@ -2966,25 +3068,31 @@ class CryoSPARCTools:
             job_params["refine_defocus_refine"] = refine_defocus_refine_value
             job_params["refine_ctf_global_refine"] = refine_ctf_global_refine_value
             
-            # Add refinement resolution if specified
-            if refinement_resolution is not None:
-                job_params["refine_res"] = refinement_resolution
-            
+            # Add refinement resolution if specified. The friendly
+            # 'refinement_resolution' maps to the real key 'refine_res_init'
+            # (there is no 'refine_res' parameter). Non-numeric values like "auto"
+            # are ignored so CryoSPARC uses its own default.
+            _refine_res = self._coerce_float(refinement_resolution)
+            if _refine_res is not None:
+                job_params["refine_res_init"] = _refine_res
+
             # Add symmetry if specified and not C1
             if symmetry and symmetry != "C1":
                 job_params["refine_symmetry"] = symmetry
-            
+
             # Add high-pass filter resolution if specified
-            if refine_highpass_res is not None:
-                job_params["refine_highpass_res"] = refine_highpass_res
-            
+            _highpass = self._coerce_float(refine_highpass_res)
+            if _highpass is not None:
+                job_params["refine_highpass_res"] = _highpass
+
             # Add number of final iterations if specified
             if refine_num_final_iterations is not None:
                 job_params["refine_num_final_iterations"] = refine_num_final_iterations
-            
-            # Add initial resolution if specified
-            if refine_res_init is not None:
-                job_params["refine_res_init"] = refine_res_init
+
+            # Add initial resolution if explicitly provided via refine_res_init.
+            _res_init = self._coerce_float(refine_res_init)
+            if _res_init is not None:
+                job_params["refine_res_init"] = _res_init
 
             # Merge raw CryoSPARC parameter passthrough (LLM-controlled, takes precedence).
             # Exclude connection-slot hints which are not job parameters.
@@ -3061,6 +3169,8 @@ class CryoSPARCTools:
         refine_symmetry_do_align: bool = True,
         refine_defocus_refine: bool = True,
         refine_ctf_global_refine: bool = True,
+        particles_group_names: Optional[List[str]] = None,
+        params: Optional[Dict[str, Any]] = None,
         # Job control parameters
         lane: Optional[str] = None,
         hostname: Optional[str] = None,
@@ -3237,31 +3347,62 @@ class CryoSPARCTools:
             job_params["refine_defocus_refine"] = refine_defocus_refine_value
             job_params["refine_ctf_global_refine"] = refine_ctf_global_refine_value
             
-            # Add refinement resolution if specified
-            if refinement_resolution is not None:
-                job_params["refine_res"] = refinement_resolution
-            
+            # Add refinement resolution if specified. The friendly
+            # 'refinement_resolution' maps to the real key 'refine_res_init'
+            # (there is no 'refine_res' parameter). Non-numeric values like "auto"
+            # are ignored so CryoSPARC uses its own default.
+            _refine_res = self._coerce_float(refinement_resolution)
+            if _refine_res is not None:
+                job_params["refine_res_init"] = _refine_res
+
             # Add symmetry if specified and not C1
             if symmetry and symmetry != "C1":
                 job_params["refine_symmetry"] = symmetry
-            
+
             # Add high-pass filter resolution if specified
-            if refine_highpass_res is not None:
-                job_params["refine_highpass_res"] = refine_highpass_res
-            
+            _highpass = self._coerce_float(refine_highpass_res)
+            if _highpass is not None:
+                job_params["refine_highpass_res"] = _highpass
+
             # Add number of final iterations if specified
             if refine_num_final_iterations is not None:
                 job_params["refine_num_final_iterations"] = refine_num_final_iterations
-            
-            # Add initial resolution if specified
-            if refine_res_init is not None:
-                job_params["refine_res_init"] = refine_res_init
-            
+
+            # Add initial resolution if explicitly provided via refine_res_init.
+            _res_init = self._coerce_float(refine_res_init)
+            if _res_init is not None:
+                job_params["refine_res_init"] = _res_init
+
+            # Merge raw CryoSPARC parameter passthrough (LLM-controlled, takes
+            # precedence). Excludes connection-slot hints which are not job params.
+            passthrough_kwargs = {
+                k: v for k, v in kwargs.items()
+                if k not in ("particles_group_name", "volume_group_name")
+            }
+            job_params = self._merge_passthrough_params(
+                job_params, params=params, kwargs=passthrough_kwargs
+            )
+
             # Create the job - non-uniform refinement job type
+            # Support connecting multiple particle groups (e.g. several particles_class_X
+            # outputs of one heterogeneous-refinement job) to the single "particles" input.
+            if particles_group_names and len(particles_group_names) > 1:
+                particles_connection = [
+                    (particles_job_uid, group_name) for group_name in particles_group_names
+                ]
+                print(
+                    f"ℹ️  Non-uniform refinement: connecting {len(particles_connection)} particle "
+                    f"groups from {particles_job_uid}: {list(particles_group_names)}"
+                )
+            else:
+                if particles_group_names and len(particles_group_names) == 1:
+                    particles_slot = particles_group_names[0]
+                particles_connection = (particles_job_uid, particles_slot)
+
             job = workspace.create_job(
                 "nonuniform_refine_new",  # Non-uniform refinement job type
                 connections={
-                    "particles": (particles_job_uid, particles_slot),
+                    "particles": particles_connection,
                     "volume": (volume_job_uid, volume_slot)
                 },
                 params=job_params
@@ -3475,9 +3616,13 @@ class CryoSPARCTools:
         project_uid: str,
         workspace_uid: str,
         particles_job_uid: str,
-        volume_job_uids: List[str],
+        volume_job_uids: Optional[List[str]] = None,
         num_classes: Optional[int] = None,
         symmetry: str = "C1",
+        volume_from_job_uid: Optional[str] = None,
+        volume_group_names: Optional[List[str]] = None,
+        particles_group_name: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
         lane: Optional[str] = None,
         hostname: Optional[str] = None,
         wait_for_completion: bool = False,
@@ -3487,78 +3632,147 @@ class CryoSPARCTools:
     ) -> Dict[str, Any]:
         """
         Run heterogeneous refinement to refine multiple 3D structures simultaneously.
-        
+
+        Two ways to supply the initial volumes:
+        1. volume_job_uids: a list of separate volume job UIDs (each connected via its
+           own volume output slot). The same job UID may be repeated K times to use one
+           volume as K identical seeds.
+        2. volume_from_job_uid (+ optional volume_group_names or num_classes): connect K
+           distinct volume outputs of a SINGLE job, e.g. the volume_class_0..volume_class_{K-1}
+           outputs of an ab initio / heterogeneous-refinement job. When volume_group_names
+           is omitted, it defaults to [f"volume_class_{i}" for i in range(num_classes)].
+        This second form replaces the manual workspace.create_job("hetero_refine") pattern
+        previously used inside composite tools.
+
         Args:
             project_uid: CryoSPARC project UID
             workspace_uid: CryoSPARC workspace UID
             particles_job_uid: UID of the particles job
-            volume_job_uids: List of volume job UIDs (from ab initio)
-            num_classes: Number of classes (default: length of volume_job_uids)
+            volume_job_uids: List of volume job UIDs (from ab initio); mutually exclusive
+                with volume_from_job_uid
+            num_classes: Number of classes (default: inferred from the volume connections)
             symmetry: Symmetry group (e.g., C1, D7) - applied to all classes (default: C1)
+            volume_from_job_uid: A single job whose K volume_class outputs seed the classes
+            volume_group_names: Explicit volume output slots on volume_from_job_uid
+            particles_group_name: Explicit particles output slot (else inferred)
+            params: Raw CryoSPARC parameter passthrough merged into job params
             lane: Compute lane to use
             hostname: Specific hostname to run on
             wait_for_completion: Whether to wait for job completion
             timeout: Maximum time to wait for completion in seconds
             check_interval: Time between status checks in seconds
             **kwargs: Additional parameters
-            
+
         Returns:
             Dictionary containing job information
         """
         try:
             project = self.cs.find_project(project_uid)
             workspace = project.find_workspace(workspace_uid)
-            
-            # Determine number of classes (will be inferred from volume connections)
-            if num_classes is None:
-                num_classes = len(volume_job_uids)
-            
-            # Create heterogeneous refinement job
-            # Note: For hetero_refine job type, the number of classes is automatically determined
-            # from the number of volume connections
-            # The symmetry parameter is "multirefine_symmetry" for hetero_refine
+
             job_params: Dict[str, Any] = {}
-            
+
             # Add symmetry if specified and not C1
             if symmetry and symmetry != "C1":
                 job_params["multirefine_symmetry"] = symmetry
-            
-            # Build connections for all volumes
-            # For hetero_refine, the input group is named "volume" (singular) and accepts multiple connections
-            # The number of classes is determined by the number of volume connections to this single "volume" group
-            # For K classes, we need to connect the SAME volume K times (repeat the same volume connection)
-            particles_slot = "particles_selected" if "select" in particles_job_uid.lower() else "particles"
-            
-            # Determine the correct volume output slot from the first volume job
-            # (all volumes should use the same slot since they're the same job repeated)
-            volume_slot = "volume"  # Default
-            try:
-                first_volume_job = project.find_job(volume_job_uids[0])
-                first_volume_job.refresh()
-                volume_doc = getattr(first_volume_job, "doc", {})
-                volume_outputs = volume_doc.get("output_result_groups", [])
-                for group in volume_outputs:
-                    if group.get("type") == "volume":
-                        volume_slot = group.get("name", "volume")
-                        break
-            except Exception as e:
-                volume_slot = "volume"
-                print(f"⚠️  Could not detect volume slot, using default 'volume': {e}")
-            
+
+            job_params = self._merge_passthrough_params(job_params, params=params, kwargs=kwargs)
+
+            # Resolve the particles connection slot by inspecting the job's ACTUAL
+            # output groups (do NOT guess from the job-UID string). A select_2D job
+            # exposes 'particles_selected'/'particles_excluded' (no plain 'particles'),
+            # so connecting to 'particles' raises "No match for particles in job ...".
+            if particles_group_name:
+                particles_slot = particles_group_name
+            else:
+                particles_slot = self._resolve_particles_slot(project, particles_job_uid)
+
+            # Build volume connections. Two modes:
+            #  (A) volume_from_job_uid: connect K volume outputs of ONE job. The job may
+            #      expose K distinct class volumes (e.g. an ab-initio job's
+            #      volume_class_0..K-1) OR a single consensus volume (e.g. a homogeneous/
+            #      non-uniform refinement's lone "volume" output). In the latter case the
+            #      SAME volume is connected K times as identical seeds.
+            #  (B) volume_job_uids: connect each listed job via its own volume slot.
+            if volume_from_job_uid:
+                if volume_group_names:
+                    # Caller specified exact slots — trust them.
+                    resolved_groups = list(volume_group_names)
+                else:
+                    if num_classes is None:
+                        raise ValueError(
+                            "heterogeneous_refinement: provide volume_group_names or num_classes "
+                            "when using volume_from_job_uid."
+                        )
+                    k = int(num_classes)
+                    # Inspect the source job's actual volume output slots.
+                    available_volume_slots: List[str] = []
+                    try:
+                        src_job = project.find_job(volume_from_job_uid)
+                        src_job.refresh()
+                        src_doc = getattr(src_job, "doc", {})
+                        for group in src_doc.get("output_result_groups", []):
+                            if (group.get("type") == "volume") and group.get("name"):
+                                available_volume_slots.append(group["name"])
+                    except Exception as e:
+                        print(f"⚠️  Could not inspect volume outputs of {volume_from_job_uid}: {e}")
+
+                    class_slots = [s for s in available_volume_slots if s.startswith("volume_class_")]
+                    if len(class_slots) >= k:
+                        # Ab-initio / multi-class source: use its first K distinct class volumes.
+                        resolved_groups = class_slots[:k]
+                    elif len(available_volume_slots) == 1:
+                        # Single consensus volume (refinement job): repeat it K times.
+                        resolved_groups = [available_volume_slots[0]] * k
+                    elif available_volume_slots:
+                        # Some class volumes but fewer than K: pad by repeating the first.
+                        resolved_groups = (class_slots or available_volume_slots)[:]
+                        while len(resolved_groups) < k:
+                            resolved_groups.append(resolved_groups[0])
+                    else:
+                        # Couldn't detect; fall back to the conventional single "volume" repeated.
+                        resolved_groups = ["volume"] * k
+                volume_connections = [(volume_from_job_uid, slot) for slot in resolved_groups]
+                if num_classes is None:
+                    num_classes = len(volume_connections)
+                print(
+                    f"ℹ️  Heterogeneous refinement: connecting {len(volume_connections)} volume "
+                    f"outputs from single job {volume_from_job_uid}: {resolved_groups}"
+                )
+            else:
+                if not volume_job_uids:
+                    raise ValueError(
+                        "heterogeneous_refinement: provide either volume_job_uids or "
+                        "volume_from_job_uid."
+                    )
+                if num_classes is None:
+                    num_classes = len(volume_job_uids)
+
+                # Determine the correct volume output slot from the first volume job
+                # (all volumes should use the same slot since they're the same job repeated)
+                volume_slot = "volume"  # Default
+                try:
+                    first_volume_job = project.find_job(volume_job_uids[0])
+                    first_volume_job.refresh()
+                    volume_doc = getattr(first_volume_job, "doc", {})
+                    volume_outputs = volume_doc.get("output_result_groups", [])
+                    for group in volume_outputs:
+                        if group.get("type") == "volume":
+                            volume_slot = group.get("name", "volume")
+                            break
+                except Exception as e:
+                    volume_slot = "volume"
+                    print(f"⚠️  Could not detect volume slot, using default 'volume': {e}")
+
+                volume_connections = [(vol_job_uid, volume_slot) for vol_job_uid in volume_job_uids]
+                print(f"ℹ️  Heterogeneous refinement: connecting {len(volume_connections)} volumes (K={len(volume_connections)}) to 'volume' input group")
+                print(f"ℹ️  All volumes from: {volume_job_uids[0]} (same volume repeated {len(volume_connections)} times)")
+
             connections = {
-                "particles": (particles_job_uid, particles_slot)
+                "particles": (particles_job_uid, particles_slot),
+                "volume": volume_connections,
             }
-            
-            # Add all volume connections to the single "volume" input group
-            # For K classes, repeat the same (volume_job_uid, volume_slot) tuple K times
-            # CryoSPARC will infer num_classes from the number of connections to "volume"
-            # The Python API expects a list of tuples when an input group accepts multiple connections
-            volume_connections = [(volume_job_uid, volume_slot) for volume_job_uid in volume_job_uids]
-            connections["volume"] = volume_connections
-            
-            print(f"ℹ️  Heterogeneous refinement: connecting {len(volume_connections)} volumes (K={len(volume_connections)}) to 'volume' input group")
-            print(f"ℹ️  All volumes from: {volume_job_uids[0]} (same volume repeated {len(volume_connections)} times)")
-            
+
             # Create the job
             # The number of classes (K) is automatically determined from the number of volume connections
             job = workspace.create_job(
@@ -3566,7 +3780,7 @@ class CryoSPARCTools:
                 connections=connections,
                 params=job_params
             )
-            
+
             # Queue the job with lane auto-detection
             used_lane = self._queue_job_with_lane_fallback(
                 job,
@@ -3574,19 +3788,19 @@ class CryoSPARCTools:
                 hostname=hostname,
             )
             print(f"Queued heterogeneous refinement job: {job.uid}")
-            
+
             job_uid = job.uid
-            
+
             result = {
                 "success": True,
                 "job_uid": job_uid,
                 "job_type": "heterogeneous_refinement",
                 "message": f"Heterogeneous refinement job {job_uid} queued successfully",
                 "num_classes": num_classes,
-                "num_volumes": len(volume_job_uids),
+                "num_volumes": len(volume_connections),
                 "lane": used_lane
             }
-            
+
             if wait_for_completion:
                 status_result = self.wait_for_job_completion(
                     project_uid=project_uid,
@@ -3595,9 +3809,9 @@ class CryoSPARCTools:
                     check_interval=check_interval
                 )
                 result.update(status_result)
-            
+
             return result
-            
+
         except Exception as e:
             return {
                 "success": False,
@@ -3988,26 +4202,18 @@ class CryoSPARCTools:
                     # If API call fails, fall back to hardcoded paths
                     pass
             
-            # Fallback: Try hardcoded paths if API method didn't work
-            if not log_file_path:
-                log_file_paths = []
-                
-                # Try different possible log file locations
-                if project_uid and workspace_uid:
-                    # Try the full path structure
-                    log_file_paths.append(f"/home/daoyi/cryosparc/cryosparc_projects/{project_uid}/{workspace_uid}/{job_uid}/job.log")
-                
-                # Try the example path structure from the user
-                log_file_paths.append(f"/home/daoyi/cryosparc/cryosparc_projects/CS-test/{job_uid}/job.log")
-                
-                # Try to find the log file in any of the possible locations
-                for path in log_file_paths:
-                    try:
-                        if os.path.exists(path):
-                            log_file_path = path
-                            break
-                    except Exception:
-                        continue
+            # Fallback: derive the job directory from the project's own directory
+            # via the CryoSPARC API (no hardcoded host paths). The project knows its
+            # real on-disk location, so job.log lives at <project_dir>/<job_uid>/job.log.
+            if not log_file_path and project_uid:
+                try:
+                    project = self.cs.find_project(project_uid)
+                    project_dir = str(project.dir())
+                    candidate = os.path.join(project_dir, job_uid, "job.log")
+                    if os.path.exists(candidate):
+                        log_file_path = candidate
+                except Exception:
+                    pass
             
             if not log_file_path or not os.path.exists(log_file_path):
                 return {
@@ -4049,111 +4255,55 @@ class CryoSPARCTools:
     
     def _analyze_job_log(self, log_content: str) -> Dict[str, Any]:
         """
-        Analyze job log content for common error patterns and provide insights.
-        
+        Extract the actual error and warning lines from a job log.
+
+        This does NOT classify errors into pre-defined categories or offer canned
+        suggestions — it only reports what is genuinely present in the log, so the
+        caller reasons about the real failure text (and decides what to do, e.g.
+        consult the forum) rather than a guessed category.
+
         Args:
             log_content: Raw log content from the job
-            
+
         Returns:
-            Dictionary with error analysis and suggestions
+            Dictionary with: has_errors (bool), critical_errors (list of error
+            lines from the log), warnings (list of warning lines), summary (str).
         """
-        analysis = {
+        analysis: Dict[str, Any] = {
             "has_errors": False,
-            "error_types": [],
-            "suggestions": [],
             "critical_errors": [],
             "warnings": [],
-            "summary": ""
+            "summary": "",
         }
-        
-        # Common error patterns to look for
-        error_patterns = {
-            "memory_error": [
-                "out of memory", "memory error", "insufficient memory",
-                "memory allocation failed", "oom", "killed"
-            ],
-            "parameter_error": [
-                "invalid parameter", "parameter error", "bad parameter",
-                "invalid value", "parameter out of range"
-            ],
-            "file_error": [
-                "file not found", "no such file", "permission denied",
-                "access denied", "file error", "path not found"
-            ],
-            "convergence_error": [
-                "failed to converge", "convergence failed", "did not converge",
-                "convergence error", "optimization failed"
-            ],
-            "symmetry_error": [
-                "symmetry error", "invalid symmetry", "symmetry failed",
-                "symmetry mismatch"
-            ],
-            "gpu_error": [
-                "gpu error", "cuda error", "gpu memory", "gpu failed",
-                "cuda out of memory", "gpu timeout"
-            ],
-            "timeout_error": [
-                "timeout", "timed out", "time limit exceeded",
-                "execution timeout"
-            ]
-        }
-        
-        # Check for error patterns
-        log_lower = log_content.lower()
-        for error_type, patterns in error_patterns.items():
-            for pattern in patterns:
-                if pattern in log_lower:
-                    analysis["has_errors"] = True
-                    if error_type not in analysis["error_types"]:
-                        analysis["error_types"].append(error_type)
-        
-        # Generate suggestions based on error types
-        if "memory_error" in analysis["error_types"]:
-            analysis["suggestions"].append("Consider reducing batch size or using fewer particles")
-            analysis["suggestions"].append("Try reducing the resolution or using a smaller patch size")
-        
-        if "parameter_error" in analysis["error_types"]:
-            analysis["suggestions"].append("Check parameter values and ranges")
-            analysis["suggestions"].append("Verify input data format and compatibility")
-        
-        if "file_error" in analysis["error_types"]:
-            analysis["suggestions"].append("Verify file paths and permissions")
-            analysis["suggestions"].append("Check if input files exist and are accessible")
-        
-        if "convergence_error" in analysis["error_types"]:
-            analysis["suggestions"].append("Try increasing max_iterations or adjusting convergence criteria")
-            analysis["suggestions"].append("Consider using different initial parameters or symmetry")
-        
-        if "symmetry_error" in analysis["error_types"]:
-            analysis["suggestions"].append("Try using C1 symmetry (no symmetry) as a starting point")
-            analysis["suggestions"].append("Verify the symmetry parameter matches your expected structure")
-        
-        if "gpu_error" in analysis["error_types"]:
-            analysis["suggestions"].append("Try running on CPU instead of GPU")
-            analysis["suggestions"].append("Reduce GPU memory usage by decreasing batch size")
-        
-        if "timeout_error" in analysis["error_types"]:
-            analysis["suggestions"].append("Increase timeout limits or reduce job complexity")
-            analysis["suggestions"].append("Consider breaking the job into smaller parts")
-        
-        # Extract critical errors (lines containing ERROR)
+
         lines = log_content.split('\n')
+
+        # Extract actual error lines from the log.
         for line in lines:
-            if 'error' in line.lower() and ('error:' in line.lower() or 'failed' in line.lower()):
+            lowered = line.lower()
+            if 'error' in lowered and ('error:' in lowered or 'failed' in lowered):
                 analysis["critical_errors"].append(line.strip())
-        
-        # Extract warnings
+
+        # Extract actual warning lines from the log.
         for line in lines:
-            if 'warning' in line.lower() or 'warn:' in line.lower():
+            lowered = line.lower()
+            if 'warning' in lowered or 'warn:' in lowered:
                 analysis["warnings"].append(line.strip())
-        
-        # Generate summary
-        if analysis["has_errors"]:
-            error_count = len(analysis["error_types"])
-            analysis["summary"] = f"Job failed with {error_count} error type(s): {', '.join(analysis['error_types'])}"
+
+        analysis["has_errors"] = bool(analysis["critical_errors"])
+
+        # Summary reflects only what was actually found in the log.
+        if analysis["critical_errors"]:
+            first = analysis["critical_errors"][0]
+            analysis["summary"] = (
+                f"Job log contains {len(analysis['critical_errors'])} error line(s); "
+                f"first: {first}"
+            )
         else:
-            analysis["summary"] = "No obvious errors detected in log"
-        
+            analysis["summary"] = "No error lines detected in log"
+
+        return analysis
+
         return analysis
     
     def import_volumes(

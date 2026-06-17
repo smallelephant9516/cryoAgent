@@ -622,7 +622,12 @@ class SummaryAgent:
             # Skip complex nested structures
             if isinstance(metric_value, (list, dict)):
                 continue
-            
+
+            # Skip metrics with no value (e.g. a resolution that could not be read);
+            # several branches below format numerically and would crash on None.
+            if metric_value is None:
+                continue
+
             # Format based on metric type
             if metric_name == 'final_good_particles_count':
                 human_metrics.append(f"**{metric_value:,}** good particles selected")

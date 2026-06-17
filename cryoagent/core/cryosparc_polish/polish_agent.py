@@ -9,7 +9,6 @@ from langchain_core.language_models import BaseLanguageModel
 
 from ..cryosparc_common_tools import CryoSPARCCommonTools
 from ..base_react_agent import BaseReActAgent
-from .polish_tools import PolishTools
 from ...tools.cryosparc_tools import CryoSPARCTools
 from ...config.config_loader import CryoAgentConfig
 from ...prompts.prompt_loader import load_prompt
@@ -104,16 +103,8 @@ class PolishAgent(BaseReActAgent):
     
     def _create_tools(self) -> List[Tool]:
         """Create polish-specific tools."""
-        return [
-            PolishTools.create_homogeneous_refinement_tool(self),
-            PolishTools.create_reference_motion_correction_tool(self),
-            PolishTools.create_get_job_status_tool(self),
-            PolishTools.create_wait_for_job_tool(self),
-            CryoSPARCCommonTools.create_get_job_log_tool(self),
-            CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
-            CryoSPARCCommonTools.create_describe_job_params_tool(self),
-            PolishTools.create_verify_inputs_tool(self)
-        ]
+        from ..cryosparc_tool_registry import build_tools, AGENT_TOOL_SETS
+        return build_tools(self, AGENT_TOOL_SETS["polish"])
     
     def _get_system_prompt_context(self) -> Dict[str, Any]:
         """Build template variables for cryosparc/polish/system.md."""
@@ -154,8 +145,8 @@ class PolishAgent(BaseReActAgent):
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
             
             # Extract CTF refinement parameters
-            refine_defocus_refine = params.get("refine_defocus_refine", "true").lower() == "true"
-            refine_ctf_global_refine = params.get("refine_ctf_global_refine", "true").lower() == "true"
+            refine_defocus_refine = self._parse_bool_param(params.get("refine_defocus_refine"), True)
+            refine_ctf_global_refine = self._parse_bool_param(params.get("refine_ctf_global_refine"), True)
             
             # Extract other parameters
             refinement_resolution = params.get("refinement_resolution")
@@ -165,16 +156,16 @@ class PolishAgent(BaseReActAgent):
                 symmetry = self._get_refinement_symmetry()
             if not symmetry:
                 symmetry = "C1"
-            refine_do_init_scale_est = params.get("refine_do_init_scale_est", "true").lower() == "true"
+            refine_do_init_scale_est = self._parse_bool_param(params.get("refine_do_init_scale_est"), True)
             refine_highpass_res = params.get("refine_highpass_res", None)
             refine_num_final_iterations = params.get("refine_num_final_iterations", None)
             refine_res_init = params.get("refine_res_init", None)
-            refine_symmetry_do_align = params.get("refine_symmetry_do_align", "true").lower() == "true"
+            refine_symmetry_do_align = self._parse_bool_param(params.get("refine_symmetry_do_align"), True)
             
             # Handle particles_group_name if specified (for motion correction output)
             particles_group_name = params.get("particles_group_name")
             
-            wait_for_completion = params.get("wait_for_completion", "false").lower() == "true"
+            wait_for_completion = self._parse_bool_param(params.get("wait_for_completion"), False)
             timeout = int(params.get("timeout", self.config.job_management.default_timeout))
             check_interval = int(params.get("check_interval", self.config.job_management.status_check_interval))
 
@@ -238,7 +229,7 @@ class PolishAgent(BaseReActAgent):
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
             
-            wait_for_completion = params.get("wait_for_completion", "false").lower() == "true"
+            wait_for_completion = self._parse_bool_param(params.get("wait_for_completion"), False)
             timeout = int(params.get("timeout", self.config.job_management.default_timeout))
             check_interval = int(params.get("check_interval", self.config.job_management.status_check_interval))
             

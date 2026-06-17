@@ -142,15 +142,17 @@ class HeterogeneityDepthWorkflow:
                 tool_result = tool_exec.get("result")
                 tool_params = tool_exec.get("params", {})
                 
-                if tool_name == "run_heterogeneous_refinement" and tool_result:
+                if tool_name in ("heterogeneous_refinement", "run_heterogeneous_refinement") and tool_result:
+                    # Atomic "heterogeneous_refinement" returns job_uid; the legacy composite
+                    # "run_heterogeneous_refinement" returned hetero_job_uid (+ density_comparison).
                     try:
                         if isinstance(tool_result, str):
                             result_data = json.loads(tool_result)
                         else:
                             result_data = tool_result
-                        
+
                         if result_data.get("success"):
-                            hetero_job_uid = result_data.get("hetero_job_uid")
+                            hetero_job_uid = result_data.get("hetero_job_uid") or result_data.get("job_uid")
                             if hetero_job_uid:
                                 hetero_jobs.append(hetero_job_uid)
                                 # Track parent job if available
@@ -159,7 +161,8 @@ class HeterogeneityDepthWorkflow:
                                     "type": "heterogeneous_refinement",
                                     "job_uid": hetero_job_uid,
                                     "parent_job_uid": parent_job,
-                                    "k": tool_params.get("k", 4)
+                                    "k": tool_params.get("k") or tool_params.get("num_classes")
+                                       or result_data.get("num_classes", 4)
                                 })
                                 density_comparison = result_data.get("density_comparison")
                                 if density_comparison:

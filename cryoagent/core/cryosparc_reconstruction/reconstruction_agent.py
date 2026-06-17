@@ -8,7 +8,6 @@ from langchain_core.language_models import BaseLanguageModel
 
 from ..cryosparc_common_tools import CryoSPARCCommonTools
 from ..base_react_agent import BaseReActAgent
-from .reconstruction_tools import ReconstructionTools
 from ...tools.cryosparc_tools import CryoSPARCTools
 from ...config.config_loader import CryoAgentConfig
 from ...prompts.prompt_loader import load_prompt
@@ -53,17 +52,8 @@ class ReconstructionAgent(BaseReActAgent):
     
     def _create_tools(self) -> List[Tool]:
         """Create 3D reconstruction-specific tools."""
-        return [
-            ReconstructionTools.create_ab_initio_tool(self),
-            ReconstructionTools.create_homogeneous_refinement_tool(self),
-            ReconstructionTools.create_heterogeneous_refinement_tool(self),
-            ReconstructionTools.create_get_job_status_tool(self),
-            ReconstructionTools.create_wait_for_job_tool(self),
-            ReconstructionTools.create_get_job_log_tool(self),
-            CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
-            CryoSPARCCommonTools.create_describe_job_params_tool(self),
-            ReconstructionTools.create_reason_about_workflow_tool(self)
-        ]
+        from ..cryosparc_tool_registry import build_tools, AGENT_TOOL_SETS
+        return build_tools(self, AGENT_TOOL_SETS["reconstruction"])
     
     def _load_stage_config(self) -> Dict[str, Any]:
         """Load reconstruction stage configuration."""
@@ -140,7 +130,7 @@ class ReconstructionAgent(BaseReActAgent):
                     self.workflow_defaults["ab_initio_particle_diameter"] = float(scaled_diameter)
             
             # Job control parameters
-            wait_for_completion = params.get("wait_for_completion", "false").lower() == "true"
+            wait_for_completion = self._parse_bool_param(params.get("wait_for_completion"), False)
             timeout = int(params.get("timeout", self.config.job_management.default_timeout))
             check_interval = int(params.get("check_interval", self.config.job_management.status_check_interval))
 
@@ -240,11 +230,11 @@ class ReconstructionAgent(BaseReActAgent):
                 params["refinement_resolution"] = refinement_resolution
             
             # Advanced refinement parameters
-            refine_do_init_scale_est = params.get("refine_do_init_scale_est", "true").lower() == "true"
+            refine_do_init_scale_est = self._parse_bool_param(params.get("refine_do_init_scale_est"), True)
             refine_highpass_res = params.get("refine_highpass_res", None)
             refine_num_final_iterations = params.get("refine_num_final_iterations", None)
             refine_res_init = params.get("refine_res_init", None)
-            refine_symmetry_do_align = params.get("refine_symmetry_do_align", "true").lower() == "true"
+            refine_symmetry_do_align = self._parse_bool_param(params.get("refine_symmetry_do_align"), True)
             
             # CTF refinement parameters - extract from params if provided, otherwise default to False
             # (to match the agent's intent when it says CTF refinement is disabled)
@@ -261,7 +251,7 @@ class ReconstructionAgent(BaseReActAgent):
                 refine_ctf_global_refine = False  # Default to False when not specified
             
             # Job control parameters
-            wait_for_completion = params.get("wait_for_completion", "false").lower() == "true"
+            wait_for_completion = self._parse_bool_param(params.get("wait_for_completion"), False)
             timeout = int(params.get("timeout", self.config.job_management.default_timeout))
             check_interval = int(params.get("check_interval", self.config.job_management.status_check_interval))
 
@@ -330,10 +320,20 @@ class ReconstructionAgent(BaseReActAgent):
             num_classes = params.get("num_classes", len(volume_job_uids))
             
             # Job control parameters
-            wait_for_completion = params.get("wait_for_completion", "false").lower() == "true"
+            wait_for_completion = self._parse_bool_param(params.get("wait_for_completion"), False)
             timeout = int(params.get("timeout", self.config.job_management.default_timeout))
             check_interval = int(params.get("check_interval", self.config.job_management.status_check_interval))
-            
+
+            # Raw CryoSPARC parameter passthrough (LLM-supplied overrides).
+            passthrough = self._extract_passthrough_params(
+                params,
+                consumed_keys=[
+                    "particles_job_uid", "volume_job_uids", "num_classes",
+                    "volume_from_job_uid", "volume_group_names", "particles_group_name",
+                    "symmetry",
+                ],
+            )
+
             # Execute heterogeneous refinement
             result = self.cryosparc_tools.heterogeneous_refinement(
                 project_uid=project_uid,
@@ -341,6 +341,7 @@ class ReconstructionAgent(BaseReActAgent):
                 particles_job_uid=particles_job_uid,
                 volume_job_uids=volume_job_uids,
                 num_classes=num_classes,
+                params=passthrough,
                 wait_for_completion=wait_for_completion,
                 timeout=timeout,
                 check_interval=check_interval

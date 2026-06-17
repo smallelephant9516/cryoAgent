@@ -194,14 +194,17 @@ class CryoAgentMasterWorkflow:
         
         print()
     
-    def run_complete_workflow(self, dry_run: bool = False, conversation_id: Optional[str] = None) -> bool:
+    def run_complete_workflow(self, dry_run: bool = False, conversation_id: Optional[str] = None, mode: str = "guided", goal: Optional[str] = None) -> bool:
         """
-        Run the complete 3-stage cryoEM workflow.
-        
+        Run the complete cryoEM workflow.
+
         Args:
             dry_run: If True, show what would be done without executing
             conversation_id: Optional conversation ID for tracking
-            
+            mode: "guided" (configured stage order, LLM re-plans on failure) or
+                "dynamic" (LLM planner picks each next stage from prior JSON outputs)
+            goal: Optional high-level goal statement for the planner
+
         Returns:
             True if workflow completed successfully, False otherwise
         """
@@ -216,13 +219,31 @@ class CryoAgentMasterWorkflow:
             # Start LLM conversation logging
             llm_log_file = self.llm_logger.start_workflow_log(conversation_id)
             print(f"💬 LLM conversation log: {llm_log_file}")
-            
-            print("🎯 Starting Complete 3-Stage CryoEM Workflow")
+
+            # Dynamic mode: the LLM planner chooses each next stage from prior
+            # stages' JSON outputs; skip the fixed pre-flight stage-skip check.
+            if mode == "dynamic":
+                print("🤖 Starting DYNAMIC CryoEM Workflow (LLM-planned stage order)")
+                print("=" * 70)
+                self.start_time = time.time()
+                result = self.orchestrator.execute_complete_workflow(
+                    conversation_id, mode="dynamic", goal=goal
+                )
+                success = result.get('successful_stages', 0) > 0 and 'error' not in result
+                if success:
+                    print("🎉 Dynamic workflow finished.")
+                    self.llm_logger.end_workflow_log(True, "Dynamic workflow finished")
+                else:
+                    print("❌ Dynamic workflow did not complete any stage successfully.")
+                    self.llm_logger.end_workflow_log(False, "Dynamic workflow failed")
+                if 'final_report_path' in result:
+                    print(f"\n📊 Workflow Report: {result['final_report_path']}")
+                return success
+
+            print("🎯 Starting Complete CryoEM Workflow (guided mode)")
             print("=" * 70)
-            print("This will execute all three stages:")
-            print("1. Pre-processing (Import → Motion Correction → CTF → Selection)")
-            print("2. Particle Picking (Detection → Extraction → Quality Assessment)")
-            print("3. 3D Reconstruction (Initial Model → Refinement → Validation)")
+            print("This will execute the enabled stages in configured order,")
+            print("re-planning with the LLM only when a stage fails.")
             print()
             
             # Check which stages have already been completed
@@ -265,9 +286,9 @@ class CryoAgentMasterWorkflow:
                 return True
             
             self.start_time = time.time()
-            
+
             # Execute complete workflow
-            result = self.orchestrator.execute_complete_workflow(conversation_id)
+            result = self.orchestrator.execute_complete_workflow(conversation_id, mode="guided", goal=goal)
             
             # Check if workflow completed successfully
             success = result['successful_stages'] == result['total_stages']
@@ -561,7 +582,23 @@ Examples:
         default="outputs",
         help="Directory where output files will be saved (default: outputs)"
     )
-    
+
+    parser.add_argument(
+        "--mode",
+        choices=["guided", "dynamic"],
+        default="guided",
+        help="Workflow control mode for the complete workflow: 'guided' runs the "
+             "configured stage order and lets the LLM re-plan only on failure; "
+             "'dynamic' lets the LLM planner choose each next stage from prior "
+             "stages' JSON outputs (default: guided)."
+    )
+
+    parser.add_argument(
+        "--goal",
+        default=None,
+        help="Optional high-level goal statement passed to the workflow planner."
+    )
+
     args = parser.parse_args()
     
     # Setup logging
@@ -584,7 +621,7 @@ Examples:
         elif args.workflow == "complete":
             # Use provided conversation ID or generate a unique one to ensure fresh start
             conversation_id = args.conversation_id or f"complete_workflow_{int(time.time())}"
-            success = master_workflow.run_complete_workflow(args.dry_run, conversation_id)
+            success = master_workflow.run_complete_workflow(args.dry_run, conversation_id, mode=args.mode, goal=args.goal)
             
         elif args.workflow == "preprocessing":
             # Use provided conversation ID or generate a unique one to ensure fresh start

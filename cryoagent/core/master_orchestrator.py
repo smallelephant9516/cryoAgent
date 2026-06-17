@@ -2710,19 +2710,52 @@ class MasterOrchestrator:
 
         return stage_outputs
     
-    def execute_complete_workflow(self, conversation_id: Optional[str] = None) -> Dict[str, Any]:
+    def _get_planner(self, goal: Optional[str] = None):
+        """Build a WorkflowPlanner reusing a stage agent's configured LLM/config."""
+        from .workflow_planner import WorkflowPlanner
+        # Any initialized stage agent carries a full CryoAgentConfig.
+        config = None
+        for agent in self.stage_agents.values():
+            if getattr(agent, "config", None) is not None:
+                config = agent.config
+                break
+        if config is None:
+            return None
+        available = list(self.stage_agents.keys())
+        return WorkflowPlanner(config, available_stages=available, goal=goal)
+
+    def _max_stage_attempts(self) -> int:
+        """Per-stage retry cap (retry-cap-then-stop guardrail)."""
+        try:
+            return int(self.master_config.get("error_handling", {}).get("max_consecutive_failures", 3))
+        except Exception:
+            return 3
+
+    def execute_complete_workflow(
+        self,
+        conversation_id: Optional[str] = None,
+        mode: str = "guided",
+        goal: Optional[str] = None,
+    ) -> Dict[str, Any]:
         """
         Execute the complete cryoEM workflow.
-        
+
         Args:
             conversation_id: Optional conversation ID for tracking
-            
+            mode: "guided" (configured stage order; LLM re-plans only on failure) or
+                "dynamic" (LLM planner chooses each next stage from prior stages' JSON
+                outputs). Defaults to "guided" to preserve historical behavior.
+            goal: Optional high-level goal statement passed to the planner.
+
         Returns:
             Dictionary with workflow results and summary
         """
+        if mode == "dynamic":
+            return self.execute_dynamic_workflow(conversation_id=conversation_id, goal=goal)
+
         self.start_time = time.time()
         self.stage_results = []
-        
+
         # Initialize workflow context
         self.workflow_context = WorkflowContext(
             project_uid="P1",  # Default, will be updated from config
@@ -2940,11 +2973,60 @@ class MasterOrchestrator:
                 print(f"   Execution time: {stage_result.execution_time:.2f} seconds")
             else:
                 print(f"❌ Stage {stage_name} failed: {stage_result.error}")
-                # For now, continue with other stages even if one fails
-                # In production, you might want to stop here
-                if stage == WorkflowStage.PREPROCESSING:
-                    print("⚠️ Pre-processing failed - stopping workflow")
-                    break
+
+                # Guided-mode cross-stage recovery: ask the LLM planner whether to
+                # retry this stage, skip it (never for critical stages, and only
+                # explicitly), or abort — within the retry cap (retry-cap-then-stop).
+                is_critical = (stage == WorkflowStage.PREPROCESSING)
+                max_attempts = self._max_stage_attempts()
+                planner = self._get_planner(goal)
+                recovered = False
+                if planner is not None:
+                    attempt = 1
+                    while attempt < max_attempts:
+                        decision = planner.replan_after_failure(
+                            failed_stage=stage_name,
+                            error=str(stage_result.error),
+                            attempt=attempt,
+                            max_attempts=max_attempts,
+                            is_critical=is_critical,
+                        )
+                        print(f"🧭 Recovery decision (attempt {attempt}/{max_attempts}): "
+                              f"{decision.action} — {decision.reason}")
+                        self.logger.info(f"Guided recovery for {stage_name}: {decision}")
+                        if decision.action == "retry":
+                            attempt += 1
+                            print(f"🔁 Retrying stage {stage_name} (attempt {attempt}/{max_attempts})...")
+                            stage_result = stage_agent.execute_stage(self.workflow_context, conversation_id)
+                            self.stage_results.append(stage_result)
+                            self.summary_agent.add_stage_summary(stage_result, stage_agent)
+                            if stage_result.success:
+                                self.workflow_context.stage_outputs[stage] = stage_result.stage_outputs
+                                print(f"✅ Stage {stage_name} succeeded on retry {attempt}")
+                                recovered = True
+                                break
+                            else:
+                                print(f"❌ Retry {attempt} of {stage_name} failed: {stage_result.error}")
+                                continue
+                        elif decision.action == "skip":
+                            # Explicit, logged skip (planner guarantees non-critical).
+                            print(f"⏭️  Skipping stage {stage_name} (explicitly chosen): {decision.reason}")
+                            self.logger.warning(f"Stage {stage_name} SKIPPED by planner: {decision.reason}")
+                            recovered = True  # continue to next stage without this one
+                            break
+                        else:  # abort
+                            print(f"🛑 Aborting workflow: {decision.reason}")
+                            break
+
+                if not recovered:
+                    if is_critical:
+                        print("⚠️ Critical stage failed - stopping workflow")
+                        break
+                    else:
+                        # Non-critical, unrecovered: stop per retry-cap-then-stop guardrail.
+                        print(f"🛑 Stage {stage_name} failed after {max_attempts} attempts - stopping workflow")
+                        break
+
         
         # Collect conversation log files from all stages
         conversation_log_files = self._collect_conversation_logs()
@@ -2971,7 +3053,134 @@ class MasterOrchestrator:
         self._display_workflow_results(summary)
         
         return summary
-    
+
+    def execute_dynamic_workflow(
+        self,
+        conversation_id: Optional[str] = None,
+        goal: Optional[str] = None,
+        max_steps: int = 20,
+    ) -> Dict[str, Any]:
+        """
+        Execute the workflow with the LLM planner choosing each next stage.
+
+        Stages remain isolated: the planner decides the next stage from the JSON
+        outputs of completed stages only. Guardrails: a stage is not silently
+        skipped (the planner's reasoning is logged), failures are retried up to the
+        per-stage cap then stop, and the loop is bounded by max_steps.
+        """
+        self.start_time = time.time()
+        self.stage_results = []
+
+        self.workflow_context = WorkflowContext(
+            project_uid="P1",
+            workspace_uid="W1",
+            stage_outputs={},
+            metadata={
+                "workflow_type": "dynamic_cryoem",
+                "start_time": self.start_time,
+                "conversation_id": conversation_id,
+                "output_dir": self.outputs_dir,
+                "mode": "dynamic",
+            },
+        )
+        workflow_config = (self.master_config or {}).get("workflow", {})
+        if workflow_config:
+            self.workflow_context.project_uid = workflow_config.get("project_uid", self.workflow_context.project_uid)
+            self.workflow_context.workspace_uid = workflow_config.get("workspace_uid", self.workflow_context.workspace_uid)
+        self.summary_agent.set_workflow_context(self.workflow_context)
+
+        planner = self._get_planner(goal)
+        if planner is None:
+            print("⚠️ No planner available (no initialized stage agents); cannot run dynamic mode.")
+            return {"successful_stages": 0, "total_stages": 0, "error": "no planner"}
+
+        print("🤖 Starting DYNAMIC CryoEM Workflow (LLM-planned)")
+        print("=" * 60)
+
+        max_attempts = self._max_stage_attempts()
+        completed: List[Dict[str, Any]] = []           # for the planner (JSON only)
+        completed_stage_names: List[str] = []
+        runnable = list(self.stage_agents.keys())
+        steps = 0
+
+        while steps < max_steps:
+            steps += 1
+            remaining = [s for s in runnable if s not in completed_stage_names]
+            decision = planner.choose_next_stage(completed, remaining)
+            print(f"\n🧭 Planner step {steps}: {decision.action} "
+                  f"{decision.stage or ''} — {decision.reason}")
+            self.logger.info(f"Dynamic planner step {steps}: {decision}")
+
+            if decision.action == "finish" or not decision.stage:
+                print("🏁 Planner decided to finish the workflow.")
+                break
+
+            stage_name = decision.stage
+            stage_agent = self.stage_agents.get(stage_name)
+            if stage_agent is None:
+                print(f"⚠️ Planner chose unavailable stage '{stage_name}'; skipping.")
+                continue
+
+            try:
+                stage_enum = WorkflowStage(stage_name)
+            except ValueError:
+                stage_enum = None
+
+            # Point stage logger at the orchestrator outputs dir (resume support).
+            if hasattr(stage_agent, 'modular_agent') and stage_agent.modular_agent:
+                if hasattr(stage_agent.modular_agent, 'realtime_logger'):
+                    stage_agent.modular_agent.realtime_logger.outputs_dir = Path(self.outputs_dir)
+                stage_agent.modular_agent.outputs_dir = self.outputs_dir
+
+            print(f"🎯 Running stage: {stage_name}")
+            attempt = 1
+            stage_result = stage_agent.execute_stage(self.workflow_context, conversation_id)
+            self.stage_results.append(stage_result)
+            self.summary_agent.add_stage_summary(stage_result, stage_agent)
+
+            # Retry-cap-then-stop for this stage.
+            while (not stage_result.success) and attempt < max_attempts:
+                attempt += 1
+                print(f"🔁 Stage {stage_name} failed; retry {attempt}/{max_attempts}...")
+                stage_result = stage_agent.execute_stage(self.workflow_context, conversation_id)
+                self.stage_results.append(stage_result)
+                self.summary_agent.add_stage_summary(stage_result, stage_agent)
+
+            if stage_enum is not None:
+                self.workflow_context.stage_outputs[stage_enum] = stage_result.stage_outputs or {}
+
+            completed.append({
+                "stage": stage_name,
+                "success": bool(stage_result.success),
+                "stage_outputs": stage_result.stage_outputs or {},
+            })
+            completed_stage_names.append(stage_name)
+
+            if stage_result.success:
+                print(f"✅ Stage {stage_name} completed")
+            else:
+                print(f"❌ Stage {stage_name} failed after {max_attempts} attempts.")
+                # Let the planner see the failure and decide whether to continue,
+                # retry a different way, or finish on the next iteration.
+
+        if steps >= max_steps:
+            print(f"⚠️ Reached max planner steps ({max_steps}); stopping.")
+
+        # Reporting (mirror execute_complete_workflow tail).
+        conversation_log_files = self._collect_conversation_logs()
+        workflow_end_time = time.time()
+        self.summary_agent.set_workflow_end_time(workflow_end_time)
+        final_report_path = self.summary_agent.generate_final_report(conversation_id)
+        print(f"\n📊 Final workflow report generated: {final_report_path}")
+        total_time = workflow_end_time - self.start_time
+        summary = self._generate_workflow_summary(total_time)
+        summary['conversation_log_files'] = conversation_log_files
+        summary['final_report_path'] = final_report_path
+        summary['mode'] = 'dynamic'
+        summary['planner_steps'] = steps
+        self._display_workflow_results(summary)
+        return summary
+
     def execute_stage_workflow(self, stages: List[WorkflowStage], conversation_id: Optional[str] = None) -> Dict[str, Any]:
         """
         Execute a subset of workflow stages.

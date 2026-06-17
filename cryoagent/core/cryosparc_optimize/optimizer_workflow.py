@@ -181,167 +181,53 @@ class OptimizerWorkflow:
             # Execute optimization using the agent
             result = self.agent.run_react_workflow(prompt, conversation_id=conversation_id)
             
-            # Parse the result - look for test_box_size, test_heterogeneous_refinement, test_multi_round_3d_classification, and get_fsc_info tool executions
+            # Parse the result. With the decomposed (atomic) optimization tools, the
+            # LLM drives the box-size / hetero-K / multi-round recipes itself and
+            # measures every candidate with get_fsc_info. So the source of truth for
+            # "which refinement was best" is the set of get_fsc_info calls: each ties a
+            # refinement_job_uid to its resolution_angstroms. The best = lowest resolution.
             tool_execution_log = self.agent.get_tool_execution_log()
-            
-            # Collect all test results from test_box_size, test_heterogeneous_refinement, and test_multi_round_3d_classification tool executions
+
             tested_combinations = []
             best_result = None
             best_resolution = float('inf')  # Lower is better
-            multi_round_result = None
-            
+            multi_round_result = None  # retained for backward-compatible result shape
+
             for tool_exec in tool_execution_log:
                 tool_name = tool_exec.get("tool")
                 tool_result = tool_exec.get("result")
-                
-                if tool_name == "test_multi_round_3d_classification" and tool_result:
-                    # Handle multi-round 3D classification results
+
+                if tool_name == "get_fsc_info" and tool_result:
                     try:
                         if isinstance(tool_result, str):
                             result_data = json.loads(tool_result)
                         else:
                             result_data = tool_result
-                        
-                        if result_data.get("success"):
-                            multi_round_result = {
-                                "best_refinement_job_uid": result_data.get("best_refinement_job_uid"),
-                                "best_resolution_angstroms": result_data.get("best_resolution_angstroms"),
-                                "initial_resolution_angstroms": result_data.get("initial_resolution_angstroms"),
-                                "total_improvement": result_data.get("total_improvement"),
-                                "rounds_completed": result_data.get("rounds_completed"),
-                                "all_rounds_data": result_data.get("all_rounds_data", []),
-                                "type": "multi_round_3d_classification"
-                            }
-                            
-                            resolution = multi_round_result.get("best_resolution_angstroms")
-                            if resolution is not None:
-                                tested_combinations.append({
-                                    "type": "multi_round_3d_classification",
-                                    "resolution": resolution,
-                                    "job_uid": multi_round_result.get("best_refinement_job_uid"),
-                                    "rounds_completed": multi_round_result.get("rounds_completed"),
-                                    "initial_resolution": multi_round_result.get("initial_resolution_angstroms"),
-                                    "improvement": multi_round_result.get("total_improvement")
-                                })
-                                
-                                # Track best result (lowest resolution)
-                                if resolution < best_resolution:
-                                    best_resolution = resolution
-                                    best_result = {
-                                        "resolution": resolution,
-                                        "job_uid": multi_round_result.get("best_refinement_job_uid"),
-                                        "type": "multi_round_3d_classification",
-                                        "rounds_completed": multi_round_result.get("rounds_completed"),
-                                        "initial_resolution": multi_round_result.get("initial_resolution_angstroms"),
-                                        "improvement": multi_round_result.get("total_improvement")
-                                    }
-                    except (json.JSONDecodeError, TypeError, ValueError) as e:
-                        # Skip invalid results
-                        continue
-                
-                elif tool_name == "test_heterogeneous_refinement" and tool_result:
-                    # Handle heterogeneous refinement optimization results
-                    try:
-                        if isinstance(tool_result, str):
-                            result_data = json.loads(tool_result)
-                        else:
-                            result_data = tool_result
-                        
-                        if result_data.get("success"):
-                            k = result_data.get("k")
-                            resolution = result_data.get("final_resolution_angstroms")
-                            refine_job_uid = result_data.get("refine_job_uid")
-                            
-                            if k is not None and resolution is not None:
-                                tested_combinations.append({
-                                    "k": k,
-                                    "resolution": resolution,
-                                    "job_uid": refine_job_uid,
-                                    "type": "heterogeneous_refinement"
-                                })
-                                
-                                # Track best result (lowest resolution)
-                                if resolution < best_resolution:
-                                    best_resolution = resolution
-                                    best_result = {
-                                        "k": k,
-                                        "resolution": resolution,
-                                        "job_uid": refine_job_uid,
-                                        "type": "heterogeneous_refinement"
-                                    }
-                    except (json.JSONDecodeError, TypeError, ValueError) as e:
-                        # Skip invalid results
-                        continue
-                
-                elif tool_name == "test_box_size" and tool_result:
-                    try:
-                        # Parse the result
-                        if isinstance(tool_result, str):
-                            result_data = json.loads(tool_result)
-                        else:
-                            result_data = tool_result
-                        
-                        if result_data.get("success"):
-                            box_size = result_data.get("box_size_pix") or result_data.get("box_size")
-                            resolution = result_data.get("resolution_angstroms")
-                            job_uid = result_data.get("refinement_job_uid")
-                            
-                            if box_size is not None and resolution is not None:
-                                tested_combinations.append({
-                                    "box_size": box_size,
-                                    "resolution": resolution,
-                                    "job_uid": job_uid
-                                })
-                                
-                                # Track best result (lowest resolution)
-                                if resolution < best_resolution:
-                                    best_resolution = resolution
-                                    best_result = {
-                                        "box_size": box_size,
-                                        "resolution": resolution,
-                                        "job_uid": job_uid
-                                    }
-                    except (json.JSONDecodeError, TypeError, ValueError) as e:
-                        # Skip invalid results
-                        continue
-                
-                elif tool_name == "get_fsc_info" and tool_result:
-                    # Also check get_fsc_info for baseline (original refinement)
-                    try:
-                        if isinstance(tool_result, str):
-                            result_data = json.loads(tool_result)
-                        else:
-                            result_data = tool_result
-                        
+
                         if result_data.get("success"):
                             box_size = result_data.get("box_size")
                             resolution = result_data.get("resolution_angstroms")
-                            job_uid = result_data.get("refinement_job_uid")
-                            
-                            if box_size is not None and resolution is not None:
-                                # Check if this is already in tested_combinations
-                                found = False
-                                for combo in tested_combinations:
-                                    if combo.get("box_size") == box_size:
-                                        found = True
-                                        break
-                                
-                                if not found:
+                            job_uid = (
+                                result_data.get("refinement_job_uid")
+                                or result_data.get("job_uid")
+                            )
+
+                            if resolution is not None and job_uid is not None:
+                                # De-duplicate by the measured refinement job UID.
+                                if not any(c.get("job_uid") == job_uid for c in tested_combinations):
                                     tested_combinations.append({
                                         "box_size": box_size,
                                         "resolution": resolution,
-                                        "job_uid": job_uid
+                                        "job_uid": job_uid,
                                     })
-                                    
-                                    # Track best result (lowest resolution)
                                     if resolution < best_resolution:
                                         best_resolution = resolution
                                         best_result = {
                                             "box_size": box_size,
                                             "resolution": resolution,
-                                            "job_uid": job_uid
+                                            "job_uid": job_uid,
                                         }
-                    except (json.JSONDecodeError, TypeError, ValueError) as e:
+                    except (json.JSONDecodeError, TypeError, ValueError):
                         # Skip invalid results
                         continue
             

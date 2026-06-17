@@ -154,14 +154,33 @@ class PolishWorkflow:
             return
         
         records = tool_entries.get(tool_name, [])
-        
-        # For FINAL_REFINEMENT, we want the LAST homogeneous_refinement call
-        # For INITIAL_REFINEMENT, we want the FIRST homogeneous_refinement call
-        if step == PolishStep.FINAL_REFINEMENT and len(records) >= 2:
-            latest_record = records[-1]
-        elif step == PolishStep.INITIAL_REFINEMENT and len(records) >= 1:
-            latest_record = records[0]
+
+        # Only count records that actually submitted a job (no error and a job_uid).
+        # A homogeneous_refinement call can fail on a first attempt (e.g. a bad
+        # parameter) and then succeed on a retry; the failed attempt must not be
+        # mistaken for the step's outcome. verify_inputs has no job_uid, so it is
+        # matched against all its records.
+        def _succeeded(rec):
+            if rec.get("error"):
+                return False
+            res = rec.get("result")
+            return isinstance(res, dict) and bool(res.get("job_uid"))
+
+        if step == PolishStep.VERIFY_INPUTS:
+            successful = records
+        else:
+            successful = [r for r in records if _succeeded(r)]
+
+        # For FINAL_REFINEMENT, we want the LAST successful homogeneous_refinement
+        # call; for INITIAL_REFINEMENT, the FIRST successful one.
+        if step == PolishStep.FINAL_REFINEMENT and len(successful) >= 2:
+            latest_record = successful[-1]
+        elif step == PolishStep.INITIAL_REFINEMENT and len(successful) >= 1:
+            latest_record = successful[0]
+        elif successful:
+            latest_record = successful[-1]
         elif records:
+            # All attempts errored — surface the most recent error.
             latest_record = records[-1]
         else:
             self.results.append(

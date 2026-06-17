@@ -349,10 +349,34 @@ class BaseReActAgent(ABC):
             handle_parsing_errors=True
         )
     
+    def _parse_bool_param(self, value: Any, default: bool = False) -> bool:
+        """
+        Robustly parse a boolean tool parameter.
+
+        Tolerates the LLM passing a real JSON boolean (True/False), a string
+        ("true"/"false"/"1"/"0"/"yes"/"no"/"on"/"off"), a number, or None.
+        This avoids the fragile ``params.get(k, "true").lower()`` pattern which
+        crashes with ``'bool' object has no attribute 'lower'`` when the value is
+        already a Python bool.
+        """
+        if value is None or value == "":
+            return default
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)):
+            return bool(value)
+        if isinstance(value, str):
+            lowered = value.strip().lower()
+            if lowered in {"true", "1", "yes", "on"}:
+                return True
+            if lowered in {"false", "0", "no", "off"}:
+                return False
+        return bool(value)
+
     def _parse_tool_input(self, input_str: str) -> Dict[str, Any]:
         """
         Parse tool input string into parameters.
-        
+
         Supports multiple formats:
         - JSON format: {"key": "value"}
         - Job UID only: J123
@@ -477,8 +501,15 @@ class BaseReActAgent(ABC):
                     "such as 'motion_correction', 'class_2d', or a raw CryoSPARC id "
                     "like 'patch_motion_correction_multi'."
                 )
-            include_hidden = str(params.get("include_hidden", "false")).lower() == "true"
-            spec = self.cryosparc_tools.describe_job_params(job_type, include_hidden=include_hidden)
+            include_hidden = self._parse_bool_param(params.get("include_hidden"), False)
+            project_uid = params.get("project_uid", getattr(self.config.workflow, "project_uid", None))
+            workspace_uid = params.get("workspace_uid", getattr(self.config.workflow, "workspace_uid", None))
+            spec = self.cryosparc_tools.describe_job_params(
+                job_type,
+                include_hidden=include_hidden,
+                project_uid=project_uid,
+                workspace_uid=workspace_uid,
+            )
             self._record_tool_execution("describe_job_params", {"job_type": job_type}, result=spec)
 
             lines = [
@@ -780,18 +811,32 @@ Please continue with the workflow execution."""
                 )
                 self.realtime_logger.log_user_input(react_input)
             
-            result = self.agent_executor.invoke({"input": react_input})
-            
-            # Log the result in real-time
+            # Attach a callback that captures the LLM's intermediate reasoning
+            # (the "responded:" text before each tool call) and its final answer
+            # into the realtime conversation log — not just the final output.
+            invoke_config = None
             if self.enable_conversation_logging:
-                self.realtime_logger.log_assistant_response(result["output"])
+                try:
+                    from ..utils.reasoning_log_callback import ReasoningLogCallbackHandler
+                    invoke_config = {"callbacks": [ReasoningLogCallbackHandler(self.realtime_logger)]}
+                except Exception:
+                    invoke_config = None
+
+            if invoke_config:
+                result = self.agent_executor.invoke({"input": react_input}, config=invoke_config)
+            else:
+                result = self.agent_executor.invoke({"input": react_input})
+
+            # The final answer is already captured by the callback (on_agent_finish);
+            # only close the log here to avoid duplicating the final output.
+            if self.enable_conversation_logging:
                 self._end_realtime_conversation_log(success=True)
-            
+
             # Also log to general LLM logger if available
             if self.general_llm_logger:
                 stage_name = getattr(self, 'stage_name', 'unknown')
                 self.general_llm_logger.log_llm_response(stage_name, result["output"])
-            
+
             return result["output"]
             
         except Exception as e:
@@ -1069,15 +1114,15 @@ Please continue with the workflow execution."""
             if log_result.get("success", False):
                 analysis = log_result.get("error_analysis", {})
                 summary = analysis.get("summary", "No analysis available")
-                suggestions = analysis.get("suggestions", [])
-                
+
                 response = f"📋 Job {job_uid} log analysis:\n{summary}\n"
-                if suggestions:
-                    response += f"\n💡 Suggestions:\n" + "\n".join(f"  - {s}" for s in suggestions)
-                
+
                 if analysis.get("critical_errors"):
-                    response += f"\n🚨 Critical errors found:\n" + "\n".join(f"  - {e}" for e in analysis["critical_errors"][:5])
-                
+                    response += f"\n🚨 Error lines from log:\n" + "\n".join(f"  - {e}" for e in analysis["critical_errors"][:5])
+
+                if analysis.get("warnings"):
+                    response += f"\n⚠️ Warning lines from log:\n" + "\n".join(f"  - {w}" for w in analysis["warnings"][:5])
+
                 return response
             else:
                 return f"❌ Error reading job log: {log_result.get('error', 'Unknown error')}"

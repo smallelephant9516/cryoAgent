@@ -87,7 +87,6 @@ class PreprocessingWorkflow:
         microscope_config = getattr(self.agent, "microscope_config", {})
         preprocessing_config = getattr(self.agent, "preprocessing_config", {})
         workflow_config = preprocessing_config.get("workflow", {})
-        motion_correction_config = workflow_config.get("motion_correction", {})
         ctf_config = workflow_config.get("ctf_estimation", {})
         micrograph_selection_config = workflow_config.get("micrograph_selection", {})
 
@@ -113,8 +112,6 @@ class PreprocessingWorkflow:
                 "dose": microscope_config.get("dose", "N/A"),
                 "project_uid": self.config.workflow.project_uid,
                 "workspace_uid": self.config.workflow.workspace_uid,
-                "motion_binning": motion_correction_config.get("binning", 1),
-                "motion_patch_size": motion_correction_config.get("patch_size", 5),
                 "ctf_min_res": ctf_config.get("min_res", 30.0),
                 "ctf_max_res": ctf_config.get("max_res", 4.0),
                 "min_resolution": min_resolution,

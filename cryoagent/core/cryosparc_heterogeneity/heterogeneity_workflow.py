@@ -156,21 +156,22 @@ class HeterogeneityWorkflow:
                 tool_name = tool_exec.get("tool")
                 tool_result = tool_exec.get("result")
                 
-                if tool_name == "run_ab_initio_hetero_combo" and tool_result:
+                if tool_name == "heterogeneous_refinement" and tool_result:
+                    # With atomic tools the LLM runs ab_initio then heterogeneous_refinement
+                    # itself; the K-class hetero job is what we key results on (k = num_classes).
                     try:
                         if isinstance(tool_result, str):
                             result_data = json.loads(tool_result)
                         else:
                             result_data = tool_result
-                        
+
                         if result_data.get("success"):
-                            k = result_data.get("k")
-                            hetero_job_uid = result_data.get("hetero_job_uid")
+                            k = result_data.get("num_classes") or result_data.get("num_volumes")
+                            hetero_job_uid = result_data.get("job_uid") or result_data.get("hetero_job_uid")
                             if k and hetero_job_uid:
                                 if k not in k_results:
                                     k_results[k] = {}
                                 k_results[k]["hetero_job_uid"] = hetero_job_uid
-                                k_results[k]["ab_initio_job_uid"] = result_data.get("ab_initio_job_uid")
                     except (json.JSONDecodeError, TypeError, ValueError):
                         continue
                 

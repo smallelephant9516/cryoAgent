@@ -2,7 +2,7 @@ Optimize multi-round 3D classification and heterogeneous refinement for 3D recon
 
 I have completed homogeneous refinement with job UID: {{refinement_job_uid}}
 
-IMPORTANT: Box size optimization is DISABLED. DO NOT use test_box_size tool.
+IMPORTANT: Box size optimization is DISABLED. DO NOT re-extract particles or run box-size optimization.
 
 Optimization order:
 {{optimization_order}}

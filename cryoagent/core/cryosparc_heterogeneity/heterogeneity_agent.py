@@ -11,7 +11,6 @@ from langchain_core.language_models import BaseLanguageModel
 
 from ..cryosparc_common_tools import CryoSPARCCommonTools
 from ..base_react_agent import BaseReActAgent
-from .heterogeneity_tools import HeterogeneityTools
 from ...tools.cryosparc_tools import CryoSPARCTools
 from ...tools.alignment_tools.compare_all_densities_tool import CompareAllDensitiesTool
 from ...config.config_loader import CryoAgentConfig
@@ -49,18 +48,9 @@ class HeterogeneityAgent(BaseReActAgent):
     
     def _create_tools(self) -> List[Tool]:
         """Create heterogeneity analysis-specific tools."""
-        tools = [
-            HeterogeneityTools.create_run_ab_initio_hetero_combo_tool(self),
-            HeterogeneityTools.create_extract_density_maps_tool(self),
-            HeterogeneityTools.create_get_hetero_class_resolutions_tool(self),
-            HeterogeneityTools.create_run_non_uniform_refinement_tool(self),
-            HeterogeneityTools.create_get_job_status_tool(self),
-            HeterogeneityTools.create_wait_for_job_tool(self),
-            HeterogeneityTools.create_get_job_log_tool(self),
-            CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
-            CryoSPARCCommonTools.create_describe_job_params_tool(self),
-        ]
-        
+        from ..cryosparc_tool_registry import build_tools, AGENT_TOOL_SETS
+        tools = build_tools(self, AGENT_TOOL_SETS["heterogeneity"])
+
         # Add compare_all_densities tool
         # Note: Contour levels are not provided by default - RMS will be calculated automatically
         compare_tool = CompareAllDensitiesTool.create_compare_all_densities_tool(
@@ -71,7 +61,7 @@ class HeterogeneityAgent(BaseReActAgent):
             default_resolution_threshold=self._get_stage_param("density_comparison", "resolution_threshold", None)
         )
         tools.append(compare_tool)
-        
+
         return tools
     
     def _load_stage_config(self) -> Dict[str, Any]:
@@ -167,305 +157,6 @@ class HeterogeneityAgent(BaseReActAgent):
     # =================================================================
     # Tool Implementation Methods
     # =================================================================
-    
-    def _run_ab_initio_hetero_combo_tool(self, tool_input: str) -> str:
-        """
-        Run ab initio reconstruction + heterogeneous refinement combo with K classes.
-        
-        This tool:
-        1. Runs ab initio reconstruction with K classes
-        2. Runs heterogeneous refinement using the ab initio volumes
-        3. Returns the heterogeneous refinement job UID
-        """
-        try:
-            params = self._parse_tool_input(tool_input)
-            
-            k = params.get("k") or params.get("num_classes")
-            particles_job_uid = params.get("particles_job_uid")
-            
-            if not k or not particles_job_uid:
-                missing = []
-                if not k:
-                    missing.append("k (number of classes)")
-                if not particles_job_uid:
-                    missing.append("particles_job_uid")
-                return json.dumps({
-                    "success": False,
-                    "error": f"Missing required parameters: {', '.join(missing)}"
-                })
-            
-            k = int(k)
-            project_uid = params.get("project_uid", self.config.workflow.project_uid)
-            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
-            
-            self.logger.info(f"🔬 Running ab initio + heterogeneous refinement combo with K={k}")
-            
-            # Get parameters from config
-            ab_initio_initial_res = self._get_stage_param("heterogeneity_analysis", "ab_initio_initial_resolution", 9.0)
-            ab_initio_final_res = self._get_stage_param("heterogeneity_analysis", "ab_initio_final_resolution", 7.0)
-            symmetry = self._get_refinement_symmetry()
-            # For hetero refinement we must not impose symmetry (use C1)
-            hetero_symmetry = "C1"
-            
-            # Step 1: Run ab initio reconstruction with K classes
-            self.logger.info(f"📦 Step 1/2: Running ab initio reconstruction with K={k}...")
-            ab_initio_params = {
-                "project_uid": project_uid,
-                "workspace_uid": workspace_uid,
-                "particles_job_uid": particles_job_uid,
-                "num_classes": k,
-                "initial_resolution": ab_initio_initial_res,
-                "final_resolution": ab_initio_final_res,
-                "symmetry": symmetry
-            }
-            self._record_tool_execution("ab_initio_reconstruction", ab_initio_params)
-            passthrough = self._extract_passthrough_params(
-                params,
-                consumed_keys=["k", "num_classes", "particles_job_uid"],
-            )
-            ab_initio_result = self.cryosparc_tools.ab_initio_reconstruction(
-                **ab_initio_params,
-                wait_for_completion=True,
-                timeout=self.config.job_management.default_timeout,
-                check_interval=self.config.job_management.status_check_interval,
-                params=passthrough
-            )
-            self._record_tool_execution("ab_initio_reconstruction", ab_initio_params, result=ab_initio_result)
-            
-            if not ab_initio_result.get("success", False):
-                error_msg = ab_initio_result.get("error") or "Unknown error"
-                self.logger.error(f"❌ Ab initio reconstruction failed for K={k}: {error_msg}")
-                return json.dumps({
-                    "success": False,
-                    "error": f"Ab initio reconstruction failed: {error_msg}",
-                    "k": k
-                })
-            
-            ab_initio_status = ab_initio_result.get("status", "unknown")
-            if ab_initio_status != "completed":
-                error_msg = ab_initio_result.get("error") or f"Status: {ab_initio_status}"
-                self.logger.error(f"❌ Ab initio reconstruction did not complete for K={k}: {error_msg}")
-                return json.dumps({
-                    "success": False,
-                    "error": f"Ab initio reconstruction did not complete: {error_msg}",
-                    "k": k
-                })
-            
-            ab_initio_job_uid = ab_initio_result["job_uid"]
-            self.logger.info(f"✅ Step 1/2: Ab initio reconstruction completed for K={k}, job: {ab_initio_job_uid}")
-            
-            # Step 2: Run heterogeneous refinement using ab initio volumes and particles
-            # Following the pattern from multi-round 3D classification:
-            # - Use particles from ab initio job (particles_all_classes group)
-            # - Use volumes from ab initio job (volume_class_0, volume_class_1, ..., volume_class_{k-1})
-            # - Do NOT impose symmetry (use C1/default)
-            self.logger.info(f"📦 Step 2/2: Running heterogeneous refinement with K={k} using ab initio volumes and particles...")
-            
-            try:
-                from cryosparc.tools import CryoSPARC
-                project = self.cryosparc_tools.cs.find_project(project_uid)
-                workspace = project.find_workspace(workspace_uid)
-                
-                # Get particles from ab initio job (particles_all_classes)
-                # For ab initio with multiple classes, particles are in particles_all_classes group
-                particles_slot = self.cryosparc_tools._infer_particles_output_slot(project, ab_initio_job_uid)
-                # Ensure we use particles_all_classes if available (for multi-class ab initio)
-                try:
-                    ab_initio_job = project.find_job(ab_initio_job_uid)
-                    ab_initio_job.refresh()
-                    ab_initio_doc = getattr(ab_initio_job, "doc", {}) or {}
-                    ab_initio_outputs = ab_initio_doc.get("output_result_groups", []) or []
-                    for group in ab_initio_outputs:
-                        name = group.get("name") or ""
-                        group_type = (group.get("type") or "").lower()
-                        if "particle" in group_type and "all_classes" in name.lower():
-                            particles_slot = name
-                            break
-                except Exception:
-                    pass  # Fall back to inferred slot
-                
-                # Create volume connections: same ab initio job, different volume group names (0 to k-1)
-                volume_connections = [
-                    (ab_initio_job_uid, f"volume_class_{i}") 
-                    for i in range(k)
-                ]
-                
-                connections = {
-                    "particles": (ab_initio_job_uid, particles_slot),
-                    "volume": volume_connections
-                }
-                
-                self.logger.info(f"🔗 Connecting heterogeneous refinement:")
-                self.logger.info(f"   Particles: from {ab_initio_job_uid} (group: {particles_slot})")
-                self.logger.info(f"   Volumes: from {ab_initio_job_uid} (groups: {[f'volume_class_{i}' for i in range(k)]})")
-                
-                # Do not impose symmetry in heterogeneous refinement (let it use default C1)
-                job_params = {}
-                
-                hetero_job = workspace.create_job(
-                    "hetero_refine",
-                    connections=connections,
-                    params=job_params
-                )
-                
-                # Queue the job
-                used_lane = self.cryosparc_tools._queue_job_with_lane_fallback(
-                    hetero_job,
-                    log_prefix="⚙️ No lane specified; using lane",
-                    logger=self.logger,
-                )
-                
-                hetero_job_uid = hetero_job.uid
-                self.logger.info(f"✅ Queued heterogeneous refinement job: {hetero_job_uid}")
-                
-                # Record tool execution
-                hetero_params = {
-                    "project_uid": project_uid,
-                    "workspace_uid": workspace_uid,
-                    "particles_job_uid": ab_initio_job_uid,
-                    "particles_group": particles_slot,
-                    "volume_job_uid": ab_initio_job_uid,
-                    "volume_groups": [f"volume_class_{i}" for i in range(k)],
-                    "num_classes": k,
-                    "symmetry": "C1"  # No symmetry imposed
-                }
-                self._record_tool_execution("heterogeneous_refinement", hetero_params)
-                
-                # Wait for completion
-                hetero_result = self.cryosparc_tools.wait_for_job_completion(
-                    project_uid=project_uid,
-                    job_uid=hetero_job_uid,
-                    timeout=self.config.job_management.default_timeout,
-                    check_interval=self.config.job_management.status_check_interval
-                )
-                
-                hetero_status = hetero_result.get("status", "unknown")
-                if hetero_status != "completed":
-                    error_msg = hetero_result.get("error") or f"Status: {hetero_status}"
-                    self.logger.error(f"❌ Heterogeneous refinement did not complete for K={k}: {error_msg}")
-                    hetero_result = {
-                        "success": False,
-                        "error": f"Heterogeneous refinement did not complete: {error_msg}",
-                        "job_uid": hetero_job_uid,
-                        "status": hetero_status
-                    }
-                else:
-                    # Create a result dict similar to heterogeneous_refinement method
-                    hetero_result = {
-                        "success": True,
-                        "job_uid": hetero_job_uid,
-                        "status": "completed"
-                    }
-                
-                self._record_tool_execution("heterogeneous_refinement", hetero_params, result=hetero_result)
-                
-            except Exception as e:
-                self.logger.error(f"❌ Failed to create heterogeneous refinement with ab initio volumes: {str(e)}")
-                hetero_result = {"success": False, "error": str(e)}
-            
-            if not hetero_result.get("success", False):
-                error_msg = hetero_result.get("error") or "Unknown error"
-                self.logger.error(f"❌ Heterogeneous refinement failed for K={k}: {error_msg}")
-                return json.dumps({
-                    "success": False,
-                    "error": f"Heterogeneous refinement failed: {error_msg}",
-                    "k": k,
-                    "ab_initio_job_uid": ab_initio_job_uid
-                })
-            
-            hetero_status = hetero_result.get("status", "unknown")
-            if hetero_status != "completed":
-                error_msg = hetero_result.get("error") or f"Status: {hetero_status}"
-                self.logger.error(f"❌ Heterogeneous refinement did not complete for K={k}: {error_msg}")
-                return json.dumps({
-                    "success": False,
-                    "error": f"Heterogeneous refinement did not complete: {error_msg}",
-                    "k": k,
-                    "ab_initio_job_uid": ab_initio_job_uid
-                })
-            
-            hetero_job_uid = hetero_result["job_uid"]
-            self.logger.info(f"✅ Step 2/2: Heterogeneous refinement completed for K={k}, job: {hetero_job_uid}")
-
-            # Immediately extract density maps and compare densities for quality evaluation
-            density_folder = None
-            density_maps = []
-            compare_output = None
-
-            try:
-                extract_params = {"hetero_job_uid": hetero_job_uid}
-                extract_result_raw = self._extract_density_maps_tool(json.dumps(extract_params))
-                extract_result = json.loads(extract_result_raw) if isinstance(extract_result_raw, str) else extract_result_raw
-                self._record_tool_execution("extract_density_maps", extract_params, result=extract_result)
-
-                if extract_result.get("success"):
-                    density_folder = extract_result.get("output_folder")
-                    density_maps = extract_result.get("map_files", [])
-
-                    # Get class resolutions for filtering
-                    class_resolutions_data = None
-                    try:
-                        project_uid = self.config.workflow.project_uid
-                        class_resolutions = self.cryosparc_tools.get_heterogeneous_refinement_class_resolutions(
-                            project_uid, hetero_job_uid
-                        )
-                        if class_resolutions.get("success"):
-                            class_resolutions_data = class_resolutions.get("classes", [])
-                    except Exception as res_exc:
-                        self.logger.warning(f"Failed to get class resolutions for filtering: {res_exc}")
-
-                    # Build comparison parameters from config
-                    compare_params = {
-                        "folder": density_folder,
-                        "voxel_size": self._get_stage_param("density_comparison", "voxel_size", 5.0),
-                        # Contour levels not provided - RMS will be calculated automatically from each density map
-                        "alg_type": self._get_stage_param("density_comparison", "alg_type", "global"),
-                        "resolution_threshold": self._get_stage_param("density_comparison", "resolution_threshold", 20.0),
-                        "n_clusters": self._get_stage_param("density_comparison", "n_clusters", None),
-                        "cluster_method": self._get_stage_param("density_comparison", "cluster_method", "spectral"),
-                        "keep_work_dir": self._get_stage_param("density_comparison", "keep_work_dir", False),
-                        "no_rms_threshold": self._get_stage_param("density_comparison", "no_rms_threshold", False),
-                        "eman2_conda_env": self._get_stage_param("external_tools", "eman2_conda_env", None),
-                        "docker_container": self._get_stage_param("external_tools", "docker_container", None),
-                        "docker_mount_prefix": self._get_stage_param("external_tools", "docker_mount_prefix", None),
-                        "chimerax_cmd": self._get_stage_param("external_tools", "chimerax_cmd", None),
-                        "class_resolutions": class_resolutions_data,
-                        "resolution_filter_threshold": self._get_stage_param("heterogeneity_analysis", "resolution_threshold", 12.0),
-                    }
-                    # Remove None values to avoid cluttering the command
-                    compare_params = {k: v for k, v in compare_params.items() if v is not None}
-
-                    compare_tool = CompareAllDensitiesTool.create_compare_all_densities_tool(
-                        compare_script=self._get_stage_param("script_paths", "compare_all_densities_script", None),
-                        align_script=self._get_stage_param("script_paths", "align_and_compare_script", None),
-                        default_voxel_size=compare_params.get("voxel_size", 5.0),
-                        default_alg_type=compare_params.get("alg_type", "global")
-                    )
-                    compare_input = json.dumps(compare_params)
-                    compare_output = compare_tool.func(compare_input)
-                    self._record_tool_execution("compare_all_densities", compare_params, result=compare_output)
-                else:
-                    self.logger.warning(f"Density extraction failed for hetero job {hetero_job_uid}: {extract_result}")
-            except Exception as extract_compare_exc:
-                self.logger.warning(f"Failed to extract/compare densities for hetero job {hetero_job_uid}: {extract_compare_exc}")
-            
-            result = {
-                "success": True,
-                "k": k,
-                "ab_initio_job_uid": ab_initio_job_uid,
-                "hetero_job_uid": hetero_job_uid,
-                "density_folder": density_folder,
-                "density_maps": density_maps,
-                "density_comparison": compare_output
-            }
-            
-            return json.dumps(result)
-            
-        except Exception as e:
-            error_result = {"success": False, "error": str(e)}
-            self._record_tool_execution("run_ab_initio_hetero_combo", params if 'params' in locals() else {}, error=str(e))
-            return json.dumps(error_result)
-    
     def _extract_density_maps_tool(self, tool_input: str) -> str:
         """
         Get the job directory containing density map files (*_volume.mrc) from a heterogeneous refinement job.
@@ -649,7 +340,17 @@ class HeterogeneityAgent(BaseReActAgent):
                 refine_res_init = self._get_refinement_res_init()
             
             symmetry = self._get_refinement_symmetry()
-            
+
+            # Raw CryoSPARC parameter passthrough (e.g. crg_min_res_A) the LLM may
+            # supply to override defaults. Excludes keys this wrapper consumes.
+            passthrough = self._extract_passthrough_params(
+                params,
+                consumed_keys=[
+                    "hetero_job_uid", "particles_group_names", "particles_group_name",
+                    "volume_group_name", "refine_res_init", "symmetry",
+                ],
+            )
+
             self.logger.info(f"🔧 Running non-uniform refinement for group:")
             self.logger.info(f"   Hetero job: {hetero_job_uid}")
             self.logger.info(f"   Particles groups: {particles_group_names}")
@@ -679,7 +380,10 @@ class HeterogeneityAgent(BaseReActAgent):
                     
                     if refine_res_init is not None:
                         job_params["refine_res_init"] = float(refine_res_init)
-                    
+                    # LLM-supplied raw params take precedence over the defaults above.
+                    if passthrough:
+                        job_params.update(passthrough)
+
                     # Build connections with multiple particle groups
                     # For nonuniform_refine_new, the "particles" input can accept multiple connections
                     # Similar to how heterogeneous refinement handles multiple volumes
@@ -752,7 +456,9 @@ class HeterogeneityAgent(BaseReActAgent):
                 
                 if refine_res_init is not None:
                     refine_params["refine_res_init"] = float(refine_res_init)
-                
+                if passthrough:
+                    refine_params["params"] = passthrough
+
                 # Run non-uniform refinement using standard API
                 refine_result = self.cryosparc_tools.nonuniform_refine_new(**refine_params)
             
@@ -802,3 +508,204 @@ class HeterogeneityAgent(BaseReActAgent):
             self._record_tool_execution("run_non_uniform_refinement", params if 'params' in locals() else {}, error=str(e))
             return json.dumps(error_result)
 
+
+    def _ab_initio_tool(self, tool_input: str) -> str:
+        """Execute ab initio reconstruction (single atomic job)."""
+        try:
+            params = self._parse_tool_input(tool_input)
+
+            particles_job_uid = params.get("particles_job_uid") or params.get("job_uid")
+            if not particles_job_uid and "__arg1" in params:
+                arg_value = str(params.get("__arg1", "")).strip()
+                if arg_value:
+                    particles_job_uid = arg_value.split(",")[0].strip()
+            if not particles_job_uid:
+                return json.dumps({
+                    "success": False,
+                    "error": "Missing required parameter: particles_job_uid or job_uid"
+                })
+
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+
+            ab_initio_defaults = self.stage_workflow.get("ab_initio", {})
+            num_classes = params.get("num_classes", ab_initio_defaults.get("num_classes", 1))
+            initial_resolution = params.get("initial_resolution", ab_initio_defaults.get("initial_resolution", 20.0))
+            final_resolution = params.get("final_resolution", ab_initio_defaults.get("final_resolution", 10.0))
+            max_iterations = params.get("max_iterations", ab_initio_defaults.get("max_iterations", 50))
+            # Heterogeneity analysis: do NOT enforce point-group symmetry during ab initio.
+            # Symmetry is only applied later in the (NU) homogeneous refinement step.
+            # Honor an explicit caller-provided symmetry, otherwise use C1.
+            symmetry = params.get("symmetry") or "C1"
+            params["symmetry"] = symmetry
+
+            wait_for_completion = self._parse_bool_param(params.get("wait_for_completion"), False)
+            timeout = int(params.get("timeout", self.config.job_management.default_timeout))
+            check_interval = int(params.get("check_interval", self.config.job_management.status_check_interval))
+
+            passthrough = self._extract_passthrough_params(
+                params,
+                consumed_keys=["particles_job_uid", "job_uid", "num_classes", "initial_resolution", "final_resolution", "max_iterations", "symmetry"],
+            )
+
+            result = self.cryosparc_tools.ab_initio_reconstruction(
+                project_uid=project_uid,
+                workspace_uid=workspace_uid,
+                particles_job_uid=particles_job_uid,
+                num_classes=num_classes,
+                initial_resolution=initial_resolution,
+                final_resolution=final_resolution,
+                max_iterations=max_iterations,
+                symmetry=symmetry,
+                wait_for_completion=wait_for_completion,
+                timeout=timeout,
+                check_interval=check_interval,
+                params=passthrough
+            )
+
+            self._record_tool_execution("ab_initio_reconstruction", params, result=result)
+            return json.dumps(result)
+
+        except Exception as e:
+            self._record_tool_execution("ab_initio_reconstruction", params if 'params' in locals() else {}, error=str(e))
+            return json.dumps({"success": False, "error": str(e)})
+
+    def _heterogeneous_refinement_tool(self, tool_input: str) -> str:
+        """Execute a single heterogeneous refinement job (atomic).
+
+        Accepts two forms for supplying initial volumes:
+        1. volume_from_job_uid (+ num_classes or volume_group_names): connect K
+           distinct volume outputs of a single job.
+        2. volume_job_uids: a list (or comma-separated string) of volume job UIDs.
+        """
+        try:
+            params = self._parse_tool_input(tool_input)
+
+            particles_job_uid = params.get("particles_job_uid")
+            if not particles_job_uid:
+                return json.dumps({
+                    "success": False,
+                    "error": "Missing required parameter: particles_job_uid"
+                })
+
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+            workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
+
+            # Heterogeneity analysis: do NOT enforce point-group symmetry during
+            # heterogeneous refinement. Symmetry is only applied later in the (NU)
+            # homogeneous refinement step. Honor an explicit override, else C1.
+            symmetry = params.get("symmetry") or "C1"
+
+            volume_from_job_uid = params.get("volume_from_job_uid")
+            volume_job_uids = params.get("volume_job_uids")
+
+            wait_for_completion = self._parse_bool_param(params.get("wait_for_completion"), False)
+            timeout = int(params.get("timeout", self.config.job_management.default_timeout))
+            check_interval = int(params.get("check_interval", self.config.job_management.status_check_interval))
+
+            consumed = [
+                "particles_job_uid", "volume_job_uids", "num_classes", "symmetry",
+                "volume_from_job_uid", "volume_group_names", "particles_group_name",
+            ]
+            passthrough = self._extract_passthrough_params(params, consumed_keys=consumed)
+
+            if volume_from_job_uid:
+                volume_group_names = params.get("volume_group_names")
+                if isinstance(volume_group_names, str):
+                    volume_group_names = [v.strip() for v in volume_group_names.split(",")]
+                num_classes = params.get("num_classes")
+                if num_classes is not None:
+                    num_classes = int(num_classes)
+                result = self.cryosparc_tools.heterogeneous_refinement(
+                    project_uid=project_uid,
+                    workspace_uid=workspace_uid,
+                    particles_job_uid=particles_job_uid,
+                    num_classes=num_classes,
+                    symmetry=symmetry,
+                    volume_from_job_uid=volume_from_job_uid,
+                    volume_group_names=volume_group_names,
+                    particles_group_name=params.get("particles_group_name"),
+                    wait_for_completion=wait_for_completion,
+                    timeout=timeout,
+                    check_interval=check_interval,
+                    params=passthrough
+                )
+            else:
+                if not volume_job_uids:
+                    return json.dumps({
+                        "success": False,
+                        "error": "Missing required parameter: provide volume_from_job_uid or volume_job_uids"
+                    })
+                if isinstance(volume_job_uids, str):
+                    volume_job_uids = [v.strip() for v in volume_job_uids.split(",")]
+                num_classes = params.get("num_classes", len(volume_job_uids))
+                result = self.cryosparc_tools.heterogeneous_refinement(
+                    project_uid=project_uid,
+                    workspace_uid=workspace_uid,
+                    particles_job_uid=particles_job_uid,
+                    volume_job_uids=volume_job_uids,
+                    num_classes=num_classes,
+                    symmetry=symmetry,
+                    wait_for_completion=wait_for_completion,
+                    timeout=timeout,
+                    check_interval=check_interval,
+                    params=passthrough
+                )
+
+            self._record_tool_execution("heterogeneous_refinement", params, result=result)
+            return json.dumps(result)
+
+        except Exception as e:
+            self._record_tool_execution("heterogeneous_refinement", params if 'params' in locals() else {}, error=str(e))
+            return json.dumps({"success": False, "error": str(e)})
+
+    def _get_fsc_info_tool(self, tool_input: str) -> str:
+        """Get FSC resolution and box size from a refinement job.
+
+        Can accept either:
+        - Just the job UID as a string (e.g., "JXXX")
+        - JSON with refinement_job_uid parameter
+        """
+        try:
+            params = self._parse_tool_input(tool_input)
+
+            refinement_job_uid = params.get("refinement_job_uid") or params.get("job_uid")
+
+            if not refinement_job_uid:
+                input_stripped = tool_input.strip().strip('"\'')
+                if input_stripped.startswith("J") and len(input_stripped) <= 10:
+                    refinement_job_uid = input_stripped
+                elif "input" in params:
+                    input_val = str(params["input"]).strip().strip('"\'')
+                    if input_val.startswith("J") and len(input_val) <= 10:
+                        refinement_job_uid = input_val
+
+            if not refinement_job_uid:
+                return json.dumps({
+                    "success": False,
+                    "error": "Missing required parameter: refinement_job_uid. You can pass just the job UID (e.g., 'JXXX') or JSON with refinement_job_uid parameter."
+                })
+
+            project_uid = params.get("project_uid", self.config.workflow.project_uid)
+
+            fsc_info = self.cryosparc_tools.get_refinement_fsc_info(project_uid, refinement_job_uid)
+
+            if not fsc_info.get("success"):
+                return json.dumps({
+                    "success": False,
+                    "error": f"Failed to get FSC info: {fsc_info.get('error', 'Unknown error')}"
+                })
+
+            result = {
+                "success": True,
+                "refinement_job_uid": refinement_job_uid,
+                "box_size": fsc_info.get("box_size"),
+                "resolution_angstroms": fsc_info.get("resolution_angstroms")
+            }
+
+            self._record_tool_execution("get_fsc_info", {"refinement_job_uid": refinement_job_uid, "project_uid": project_uid}, result=result)
+            return json.dumps(result)
+
+        except Exception as e:
+            self._record_tool_execution("get_fsc_info", params if 'params' in locals() else {}, error=str(e))
+            return json.dumps({"success": False, "error": str(e)})

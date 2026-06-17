@@ -65,6 +65,10 @@ _spec("get_job_log", "get_job_log", "_get_job_log_tool",
       "and get suggestions. Required parameters: job_uid. Optional parameters: "
       "project_uid, workspace_uid. This tool helps diagnose why a job failed and "
       "provides suggestions for fixing the issues.")
+_spec("get_job_log_common", "get_job_log", "_get_job_log_tool",
+      "Read and analyze the log file of a CryoSPARC job to understand failures "
+      "and get suggestions. Required parameters: job_uid. Optional parameters: "
+      "project_uid, workspace_uid. Use after get_job_status confirms status = failed.")
 _spec("search_cryosparc_forum", "search_cryosparc_forum", "_search_cryosparc_forum_tool",
       "Search https://discuss.cryosparc.com for troubleshooting threads related "
       "to a CryoSPARC error. Use after a job fails to find community solutions "
@@ -120,8 +124,10 @@ _spec("motion_correction", "motion_correction", "_motion_correction_tool",
       "Perform motion correction on imported movies. Required parameters: "
       "movies_job_uid or movies_job_uids (comma-separated when multiple import jobs "
       "exist). When omitted, uses all import_movies job UIDs from the current session. "
-      "Optional parameters: binning, patch_size, max_shift, project_uid, workspace_uid, "
-      "wait_for_completion, timeout, check_interval.", job_tool=True)
+      "Optional parameters: project_uid, workspace_uid, wait_for_completion, timeout, "
+      "check_interval. NOTE: patch_motion_correction_multi has no 'binning'/'patch_size' "
+      "params; to tune motion correction pass real CryoSPARC keys (e.g. res_max_align) "
+      "via the params dict.", job_tool=True)
 _spec("ctf_estimation", "ctf_estimation", "_ctf_estimation_tool",
       "Estimate CTF parameters for micrographs. Required parameters: "
       "micrographs_job_uid. Optional parameters: min_res, max_res, defocus_range, "
@@ -224,7 +230,8 @@ _spec("homogeneous_refinement_recon", "homogeneous_refinement", "_homogeneous_re
       "volume_job_uid (from ab initio reconstruction job). CRITICAL: particles_job_uid "
       "and volume_job_uid must be DIFFERENT - particles from original input, volume "
       "from ab initio. Optional parameters: refinement_resolution (target resolution "
-      "in Å), symmetry, refine_do_init_scale_est (enable initial scale estimation), "
+      "in Å as a NUMBER; omit it for automatic — do NOT pass 'auto'), symmetry, "
+      "refine_do_init_scale_est (enable initial scale estimation), "
       "refine_highpass_res (high-pass filter resolution in Å), refine_num_final_iterations "
       "(number of final iterations), refine_res_init (initial resolution in Å), "
       "refine_symmetry_do_align (enable symmetry alignment), refine_defocus_refine "
@@ -239,19 +246,9 @@ _spec("heterogeneous_refinement", "heterogeneous_refinement", "_heterogeneous_re
       "wait_for_completion, timeout, check_interval.", job_tool=True)
 
 # ---------------------------------------------------------------------------
-# Box-size / 3D optimization tools.
+# Box-size / 3D optimization analysis tools (composite test_* specs removed —
+# the optimization stage now uses the atomic opt_* tools defined below).
 # ---------------------------------------------------------------------------
-_spec("test_box_size", "test_box_size", "_test_box_size_tool",
-      "Test a specific box size by extracting particles, running refinement, and "
-      "getting FSC resolution. This tool: 1) Extracts particles with the specified "
-      "box_size_pix using refined coordinates from refinement_job_uid, 2) Runs "
-      "homogeneous refinement, 3) Gets FSC resolution. Required parameters: "
-      "box_size_pix (box size in pixels to test), refinement_job_uid (source of "
-      "refined particle coordinates). Optional parameters: micrographs_job_uid "
-      "(micrographs for re-extraction), volume_job_uid (initial volume for "
-      "refinement), refinement_resolution (target resolution in Angstroms), "
-      "project_uid, workspace_uid. Returns: job_uid, box_size, resolution_angstroms, "
-      "and status.")
 _spec("get_fsc_info", "get_fsc_info", "_get_fsc_info_tool",
       "Get FSC resolution and box size information from a refinement job. You can pass "
       "just the job UID (e.g., 'JXXX') or JSON with refinement_job_uid parameter. "
@@ -264,44 +261,11 @@ _spec("get_hetero_class_resolutions_opt", "get_hetero_class_resolutions", "_get_
       "each class. Optional parameters: project_uid, workspace_uid. Returns: classes "
       "(list with class_id, resolution_angstroms, fsc_loosemask_last), num_classes, "
       "and success status.")
-_spec("test_heterogeneous_refinement", "test_heterogeneous_refinement", "_test_heterogeneous_refinement_tool",
-      "Test heterogeneous refinement with K classes. This tool: 1) Repeats the volume "
-      "from refinement_job_uid K times as initial densities, 2) Runs heterogeneous "
-      "refinement using particles from refinement_job_uid, 3) Runs regroup to regroup "
-      "K classes into 2 superclasses (job name: regroup_3D_new), 4) Gets num_items for "
-      "each superclass from regroup job.json, 5) Selects the superclass with more "
-      "particles, 6) Runs homogeneous refinement on selected superclass particles and "
-      "volumes, 7) Gets final FSC resolution. Required parameters: k (number of "
-      "classes, e.g., 3 or 5), refinement_job_uid (source of particles and volume, "
-      "e.g., 'JXXX'). Optional parameters: project_uid, workspace_uid. Returns: "
-      "hetero_job_uid, regroup_job_uid, best_superclass_id, best_superclass_num_items, "
-      "refine_job_uid, final_resolution_angstroms, and status.")
-_spec("test_multi_round_3d_classification", "test_multi_round_3d_classification", "_test_multi_round_3d_classification_tool",
-      "Run multi-round 3D classification optimization. This tool iteratively: 1) Runs "
-      "3D classification (heterogeneous refinement) with specified number of classes, "
-      "2) Selects best class based on resolution metric, 3) Runs 3D refinement "
-      "(homogeneous refinement) on selected class, 4) Checks if resolution improved, "
-      "5) If improved, continues with refined result as input for next round, 6) If "
-      "plateau or worse, stops and returns best refinement job. Required parameters: "
-      "refinement_job_uid (source of particles and volume from previous best "
-      "homogeneous refinement, e.g., 'JXXX'). Optional parameters: num_classes (number "
-      "of classes for 3D classification, default: 4), max_rounds (maximum number of "
-      "rounds, default: 5), improvement_threshold (minimum improvement in resolution "
-      "in Å to continue, default: 0.1), project_uid, workspace_uid. Returns: "
-      "best_refinement_job_uid, best_resolution_angstroms, rounds_completed, "
-      "all_rounds_data, and status.")
 
 # ---------------------------------------------------------------------------
-# Heterogeneity tools.
+# Heterogeneity tools (composite run_ab_initio_hetero_combo removed — the stage
+# now uses atomic het_ab_initio + het_heterogeneous_refinement defined below).
 # ---------------------------------------------------------------------------
-_spec("run_ab_initio_hetero_combo", "run_ab_initio_hetero_combo", "_run_ab_initio_hetero_combo_tool",
-      "Run ab initio reconstruction + heterogeneous refinement combo with K classes. "
-      "This tool: 1) Runs ab initio reconstruction with K classes, 2) Runs "
-      "heterogeneous refinement using the ab initio volumes, 3) Returns the "
-      "heterogeneous refinement job UID. Required parameters: k (number of classes, "
-      "e.g., 3 or 5), particles_job_uid (source of particles, e.g., 'JXXX'). Optional "
-      "parameters: project_uid, workspace_uid. Returns: ab_initio_job_uid, "
-      "hetero_job_uid, and status.")
 _spec("extract_density_maps_hetero", "extract_density_maps", "_extract_density_maps_tool",
       "Get the job directory containing density map files (*_volume.mrc) from a "
       "heterogeneous refinement job. Returns the job directory directly without "
@@ -325,8 +289,251 @@ _spec("run_non_uniform_refinement_hetero", "run_non_uniform_refinement", "_run_n
       "like 'volume_class_0' from the class with best resolution). Optional "
       "parameters: project_uid, workspace_uid, refine_res_init (initial lowpass "
       "resolution in Angstroms). Returns: job_uid, job_type, and status.")
-_spec("compare_all_densities_hetero", "compare_all_densities", "_compare_all_densities_tool",
-      "Compare all density maps and cluster them by structural similarity.")
+
+
+# ---------------------------------------------------------------------------
+# Polish tools.
+# ---------------------------------------------------------------------------
+_spec("homogeneous_refinement_polish", "homogeneous_refinement", "_homogeneous_refinement_tool",
+      "Refine a single 3D structure with local and global CTF refinement enabled. "
+      "Required parameters: particles_job_uid, volume_job_uid. Optional parameters: "
+      "refinement_resolution, symmetry, refine_defocus_refine (enable local CTF "
+      "refinement, default: True), refine_ctf_global_refine (enable global CTF "
+      "refinement, default: True), refine_do_init_scale_est, refine_highpass_res, "
+      "refine_num_final_iterations, refine_res_init, refine_symmetry_do_align, "
+      "particles_group_name, project_uid, workspace_uid, wait_for_completion, timeout, "
+      "check_interval.", job_tool=True)
+_spec("reference_motion_correction", "reference_motion_correction", "_reference_motion_correction_tool",
+      "Run reference-based motion correction on particles using a reference volume. "
+      "Required parameters: micrographs_job_uid, particles_job_uid, volume_job_uid. "
+      "Optional parameters: All reference_motion_correction job parameters can be "
+      "passed via kwargs. project_uid, workspace_uid, wait_for_completion, timeout, "
+      "check_interval.", job_tool=True)
+_spec("verify_inputs", "verify_inputs", "_verify_inputs_tool",
+      "Verify that optimization and preprocessing stages are complete and read "
+      "required job UIDs. This checks for optimization_results_cryosparc_*.json and "
+      "preprocessing_results_cryosparc_*.json files. No parameters required.")
+
+# Heterogeneity-depth specific specs (distinct descriptions from the plain
+# heterogeneity stage).
+_spec("read_input_json", "read_input_json", "_read_input_json_tool",
+      "Read JSON file from either refinement job (reconstruction_results_*.json) or "
+      "heterogeneity job (heterogeneity_analysis_results_*.json). If heterogeneity job "
+      "JSON exists, it will be preferred. When reading from "
+      "heterogeneity_analysis_results_*.json, returns all clusters from "
+      "final_refinement_jobs with: num_clusters, clusters (array with "
+      "refinement_job_uid, particles_job_uid, volume_job_uid, particles_group_name, "
+      "volume_group_name for each cluster). When reading from "
+      "reconstruction_results_*.json, returns: refinement_job_uid, particles_job_uid, "
+      "volume_job_uid. Optional parameter: config_path (path to config file).")
+_spec("extract_density_maps_depth", "extract_density_maps", "_extract_density_maps_tool",
+      "Get the job directory containing density map files (*_volume.mrc) from a "
+      "heterogeneous refinement job. Returns the job directory directly without "
+      "copying files. You can pass just the job UID (e.g., 'JXXX') or JSON with "
+      "hetero_job_uid parameter. Optional parameters: project_uid. Returns: "
+      "output_folder (job directory path), num_maps_extracted, map_files list (full "
+      "paths), and success status.")
+_spec("run_homogeneous_refinement_depth", "run_homogeneous_refinement", "_run_homogeneous_refinement_tool",
+      "Run homogeneous refinement using particles and volume from a job. Required "
+      "parameters: particles_job_uid, volume_job_uid. Optional parameters: "
+      "particles_group_name (e.g., 'particles_class_0' or 'particles_all_classes'), "
+      "volume_group_name (e.g., 'volume_class_0'), refine_defocus_refine (enable "
+      "defocus refinement during CTF refinement, default: True), "
+      "refine_ctf_global_refine (enable global CTF refinement, default: True), "
+      "project_uid, workspace_uid. Returns: job_uid, status.")
+_spec("get_hetero_class_resolutions_depth", "get_hetero_class_resolutions", "_get_hetero_class_resolutions_tool",
+      "Get resolution for each class and label GOOD vs BAD relative to the depth "
+      "threshold. Normally auto-run inside run_heterogeneous_refinement — call manually "
+      "only to re-analyze an older job UID. You can pass just the job UID (e.g., "
+      "'JXXX') or JSON with job_uid parameter. Returns: good_classes, bad_classes, "
+      "fallback_non_uniform (when zero good classes), resolution_threshold_angstroms, "
+      "next_action, and per-class quality labels.")
+_spec("run_non_uniform_refinement_depth", "run_non_uniform_refinement", "_run_non_uniform_refinement_tool",
+      "Run non-uniform refinement to terminate a branch. Converged good cluster: "
+      "hetero_job_uid + particles_group_names (good class(es)) + best volume. Zero good "
+      "classes fallback: hetero_job_uid + particles_group_names=['particles_all_classes'] "
+      "+ best volume_class_X. Required: hetero_job_uid, particles_group_names (list), "
+      "volume_group_name. Optional: project_uid, workspace_uid, refine_res_init. After "
+      "completion, call wait_for_job then get_fsc_info to report final resolution.")
+_spec("get_fsc_info_depth", "get_fsc_info", "_get_fsc_info_tool",
+      "Get FSC resolution and box size from a completed non-uniform refinement job. "
+      "Pass job UID (e.g. 'JXXX') or JSON with refinement_job_uid. MUST be called after "
+      "wait_for_job on the final non-uniform refinement job.")
+_spec("compare_all_densities_depth", "compare_all_densities", "_compare_all_densities_tool",
+      "Compare density maps in a folder and filter clusters by resolution. Normally "
+      "auto-run inside run_heterogeneous_refinement — call manually only to re-analyze "
+      "an older job UID. Required: folder (path to hetero job directory). Do NOT pass "
+      "the full get_hetero_class_resolutions JSON — only folder + optional "
+      "class_resolutions. KEPT clusters continue; FILTERED OUT (BAD) clusters must be "
+      "thrown away with no further processing.")
+
+
+# ---------------------------------------------------------------------------
+# Atomic optimization tools (decomposed from the former composite test_* tools).
+# These let the LLM drive box-size sweeps, hetero-K tests and multi-round 3D
+# classification step by step (recipes live in the optimization task prompt).
+# ---------------------------------------------------------------------------
+_spec("opt_extract_particles", "extract_particles", "_extract_particles_tool",
+      "Re-extract particles at a chosen box size using refined coordinates. Required: "
+      "particles_job_uid (refined-coords source), micrographs_job_uid, box_size_pix. "
+      "Used in box-size optimization to test a candidate box size before refinement.",
+      job_tool=True)
+_spec("opt_ab_initio", "ab_initio_reconstruction", "_ab_initio_tool",
+      "Ab-initio 3D reconstruction. Required: particles_job_uid. Optional: num_classes "
+      "(K), initial_resolution, final_resolution, symmetry. In multi-round 3D "
+      "classification, run this with K classes to seed heterogeneous refinement.",
+      job_tool=True)
+_spec("opt_heterogeneous_refinement", "heterogeneous_refinement", "_heterogeneous_refinement_tool",
+      "Heterogeneous (K-class) refinement. Supply volumes either as volume_job_uids "
+      "(list/comma-string) OR volume_from_job_uid + num_classes (to use the K "
+      "volume_class outputs of one ab-initio/refinement job). Required: "
+      "particles_job_uid. Used in hetero-K tests and multi-round classification.",
+      job_tool=True)
+_spec("opt_regroup_classes", "regroup_classes", "_regroup_classes_tool",
+      "Regroup the K classes of a heterogeneous refinement into fewer superclasses. "
+      "Required: particles_job_uid (the hetero refinement job). Optional: "
+      "num_superclasses (default 2). Returns the regroup job UID.", job_tool=True)
+_spec("opt_get_regroup_superclass_info", "get_regroup_superclass_info", "_get_regroup_superclass_info_tool",
+      "Read per-superclass particle counts (num_items) from a regroup job so you can "
+      "pick the largest superclass. Required: regroup_job_uid.")
+_spec("opt_nonuniform_refinement", "nonuniform_refinement", "_nonuniform_refinement_tool",
+      "Non-uniform 3D refinement (higher resolution). Required: particles_job_uid, "
+      "volume_job_uid. Optional: particles_group_name/volume_group_name (to refine a "
+      "specific class/superclass), refine_res_init, symmetry. Used as the refinement "
+      "step in optimization recipes when non-uniform refinement is preferred.",
+      job_tool=True)
+_spec("opt_homogeneous_refinement", "homogeneous_refinement", "_homogeneous_refinement_tool",
+      "Homogeneous 3D refinement. Required: particles_job_uid, volume_job_uid. Optional: "
+      "particles_group_name/volume_group_name, refinement_resolution, symmetry. Used as "
+      "the refinement step in optimization recipes.", job_tool=True)
+
+
+# ---------------------------------------------------------------------------
+# Atomic heterogeneity tools (decomposed from run_ab_initio_hetero_combo).
+# ---------------------------------------------------------------------------
+_spec("het_ab_initio", "ab_initio_reconstruction", "_ab_initio_tool",
+      "Ab-initio 3D reconstruction with K classes. Required: particles_job_uid. "
+      "Optional: num_classes (K), symmetry, initial_resolution, final_resolution. "
+      "Run this first, then heterogeneous_refinement using its K volume_class outputs.",
+      job_tool=True)
+_spec("het_heterogeneous_refinement", "heterogeneous_refinement", "_heterogeneous_refinement_tool",
+      "Heterogeneous (K-class) refinement seeded from an ab-initio job's volumes. Pass "
+      "volume_from_job_uid=<ab_initio_job> + num_classes=K (uses its volume_class_0..K-1 "
+      "outputs), or volume_job_uids. Required: particles_job_uid. Then extract density "
+      "maps, get class resolutions, and compare densities.", job_tool=True)
+_spec("het_get_fsc_info", "get_fsc_info", "_get_fsc_info_tool",
+      "Get FSC resolution and box size from a completed refinement job. Pass job UID or "
+      "JSON with refinement_job_uid.")
+
+# Atomic heterogeneity-depth tools (decomposed from the auto-analyzing
+# run_heterogeneous_refinement composite).
+_spec("depth_ab_initio", "ab_initio_reconstruction", "_ab_initio_tool",
+      "Ab-initio 3D reconstruction with K classes. Required: particles_job_uid. "
+      "Optional: num_classes (K), symmetry. Seeds heterogeneous_refinement.",
+      job_tool=True)
+_spec("depth_heterogeneous_refinement", "heterogeneous_refinement", "_heterogeneous_refinement_tool",
+      "Heterogeneous (K-class) refinement — runs ONLY the hetero_refine job (no auto "
+      "analysis). Pass volume_from_job_uid + num_classes, or volume_job_uids. Required: "
+      "particles_job_uid. After it completes, call get_hetero_class_resolutions, "
+      "extract_density_maps and compare_all_densities yourself.", job_tool=True)
+
+
+# ---------------------------------------------------------------------------
+# Per-stage ordered tool sets (spec ids). These reproduce each agent's existing
+# tool list exactly, in order. ``compare_all_densities`` for the heterogeneity
+# stages is omitted here because those agents construct it with config-bound
+# scripts and append it themselves.
+# ---------------------------------------------------------------------------
+AGENT_TOOL_SETS: Dict[str, List[str]] = {
+    "preprocessing": [
+        "import_movies", "import_micrographs", "motion_correction", "ctf_estimation",
+        "micrograph_selection", "get_job_status", "wait_for_job", "get_job_log",
+        "search_cryosparc_forum", "describe_job_params", "reason_preprocessing",
+    ],
+    "particle_picking": [
+        "blob_picker", "extract_particles", "class_2d_picking",
+        "select_2d_classes_picking", "template_picker", "get_job_status",
+        "wait_for_job", "get_job_log", "search_cryosparc_forum", "describe_job_params",
+        "reason_picking",
+    ],
+    "optimization_2d": [
+        "class_2d_opt2d", "select_2d_classes_opt2d", "get_particle_count",
+        "merge_particles", "get_job_status", "wait_for_job", "get_job_log_common",
+        "search_cryosparc_forum", "describe_job_params",
+    ],
+    "reconstruction": [
+        "ab_initio_reconstruction", "homogeneous_refinement_recon",
+        "heterogeneous_refinement", "get_job_status", "wait_for_job", "get_job_log",
+        "search_cryosparc_forum", "describe_job_params", "reason_reconstruction",
+    ],
+    "optimization": [
+        # Atomic action tools (LLM drives box-size sweep / hetero-K / multi-round
+        # recipes via the optimization task prompt).
+        "opt_extract_particles", "opt_ab_initio", "opt_heterogeneous_refinement",
+        "opt_regroup_classes", "opt_get_regroup_superclass_info",
+        "opt_nonuniform_refinement", "opt_homogeneous_refinement",
+        # Analysis + diagnostics.
+        "get_fsc_info", "get_hetero_class_resolutions_opt",
+        "get_job_status", "wait_for_job", "get_job_log", "search_cryosparc_forum",
+        "describe_job_params", "reason_optimizer",
+    ],
+    "heterogeneity": [
+        # Atomic: ab-initio then K-class heterogeneous refinement (LLM drives the
+        # combo + density-analysis recipe via the heterogeneity task prompt).
+        "het_ab_initio", "het_heterogeneous_refinement",
+        "extract_density_maps_hetero", "get_hetero_class_resolutions_hetero",
+        "run_non_uniform_refinement_hetero", "het_get_fsc_info",
+        "get_job_status", "wait_for_job", "get_job_log", "search_cryosparc_forum",
+        "describe_job_params",
+        # compare_all_densities appended by the agent (config-bound construction)
+    ],
+    "heterogeneity_depth": [
+        # Atomic hetero refinement (no auto-analysis); LLM runs the analyze/branch
+        # recipe itself via the heterogeneity_depth task prompt.
+        "read_input_json", "depth_ab_initio", "depth_heterogeneous_refinement",
+        "extract_density_maps_depth", "get_hetero_class_resolutions_depth",
+        "run_homogeneous_refinement_depth", "run_non_uniform_refinement_depth",
+        "get_fsc_info_depth", "get_job_status", "wait_for_job", "get_job_log",
+        "search_cryosparc_forum", "describe_job_params",
+        # compare_all_densities appended by the agent
+    ],
+    "polish": [
+        "homogeneous_refinement_polish", "reference_motion_correction",
+        "get_job_status", "wait_for_job", "get_job_log_common", "search_cryosparc_forum",
+        "describe_job_params", "verify_inputs",
+    ],
+}
+
+
+def build_tool(agent, spec_id: str) -> Optional[Tool]:
+    """Build one plain Tool from a spec id, bound to the agent's wrapper method.
+
+    Returns None when the spec id is unknown or the agent does not implement the
+    bound method (so an agent can be handed any list and skip what it lacks).
+    """
+    spec = _SPECS.get(spec_id)
+    if spec is None:
+        return None
+    func: Callable = getattr(agent, spec.method, None)
+    if func is None or not callable(func):
+        return None
+    return Tool(name=spec.name, description=spec.description, func=func)
+
+
+def build_tools(agent, spec_ids: List[str]) -> List[Tool]:
+    """Build the ordered list of Tools for the given spec ids the agent supports."""
+    tools: List[Tool] = []
+    for spec_id in spec_ids:
+        tool = build_tool(agent, spec_id)
+        if tool is not None:
+            tools.append(tool)
+    return tools
+
+
+def get_spec(spec_id: str) -> Optional[ToolSpec]:
+    """Return the ToolSpec for a spec id (or None)."""
+    return _SPECS.get(spec_id)
+
 
 
 

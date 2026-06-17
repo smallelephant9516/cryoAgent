@@ -10,7 +10,6 @@ from langchain_core.language_models import BaseLanguageModel
 
 from ..cryosparc_common_tools import CryoSPARCCommonTools
 from ..base_react_agent import BaseReActAgent
-from .picking_tools import PickingTools
 from ...tools.cryosparc_tools import CryoSPARCTools
 from ...tools.cryosparc_parser_tools import CryoSPARCPickingParser, WorkflowContext
 from ...config.config_loader import CryoAgentConfig
@@ -54,19 +53,8 @@ class PickingAgent(BaseReActAgent):
     
     def _create_tools(self) -> List[Tool]:
         """Create particle picking-specific tools."""
-        return [
-            PickingTools.create_blob_picker_tool(self),
-            PickingTools.create_extract_particles_tool(self),
-            PickingTools.create_class_2d_tool(self),
-            PickingTools.create_select_2d_classes_tool(self),
-            PickingTools.create_template_picker_tool(self),
-            PickingTools.create_get_job_status_tool(self),
-            PickingTools.create_wait_for_job_tool(self),
-            PickingTools.create_get_job_log_tool(self),
-            CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
-            CryoSPARCCommonTools.create_describe_job_params_tool(self),
-            PickingTools.create_reason_about_workflow_tool(self)
-        ]
+        from ..cryosparc_tool_registry import build_tools, AGENT_TOOL_SETS
+        return build_tools(self, AGENT_TOOL_SETS["particle_picking"])
     
     def _load_stage_config(self) -> Dict[str, Any]:
         """Load particle picking stage configuration."""
@@ -139,7 +127,7 @@ class PickingAgent(BaseReActAgent):
                 "workspace_uid": workspace_uid,
                 "micrographs_job_uid": params.get("micrographs_job_uid"),
                 "particle_diameter": float(particle_diameter_value),
-                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "wait_for_completion": self._parse_bool_param(params.get("wait_for_completion"), False),
                 "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
                 "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
             }
@@ -216,7 +204,7 @@ class PickingAgent(BaseReActAgent):
                 "particles_job_uid": params.get("particles_job_uid"),
                 "micrographs_job_uid": micrographs_job_uid,
                 "box_size_pix": int(box_size_pix),
-                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "wait_for_completion": self._parse_bool_param(params.get("wait_for_completion"), False),
                 "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
                 "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
             }
@@ -325,7 +313,7 @@ class PickingAgent(BaseReActAgent):
                     "workspace_uid": workspace_uid,
                     "particles_job_uid": particles_job_uid,
                     "num_classes": int(num_classes),
-                    "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                    "wait_for_completion": self._parse_bool_param(params.get("wait_for_completion"), False),
                     "timeout": int(params.get("timeout", self.config.job_management.default_timeout * 2)),  # 2D classification takes longer
                     "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
                 }
@@ -399,7 +387,7 @@ class PickingAgent(BaseReActAgent):
                 "workspace_uid": workspace_uid,
                 "class_2d_job_uid": class_2d_job_uid,
                 "selection_mode": selection_mode,
-                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "wait_for_completion": self._parse_bool_param(params.get("wait_for_completion"), False),
                 "timeout": int(params.get("timeout", 300)),
                 "check_interval": int(params.get("check_interval", 10))
             }
@@ -499,10 +487,22 @@ class PickingAgent(BaseReActAgent):
                 "min_distance": float(params.get("min_distance")) if params.get("min_distance") else None,
                 "use_ctf": params.get("use_ctf"),
                 "blob_picker_job_uid": blob_picker_job_uid,
-                "wait_for_completion": params.get("wait_for_completion", "false").lower() == "true",
+                "wait_for_completion": self._parse_bool_param(params.get("wait_for_completion"), False),
                 "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
                 "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
             }
+
+            # Raw CryoSPARC parameter passthrough (LLM-supplied overrides).
+            passthrough = self._extract_passthrough_params(
+                params,
+                consumed_keys=[
+                    "micrographs_job_uid", "template_job_uid", "lowpass_resolution",
+                    "particle_diameter", "lowpass_micrograph", "angular_spacing_deg",
+                    "angle_search_range", "min_distance", "use_ctf", "blob_picker_job_uid",
+                ],
+            )
+            if passthrough:
+                used_params["params"] = passthrough
 
             result = self.cryosparc_tools.template_picker(**used_params)
             self._record_tool_execution("template_picker", used_params, result=result)

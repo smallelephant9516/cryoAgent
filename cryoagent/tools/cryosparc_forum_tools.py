@@ -25,18 +25,6 @@ _ERROR_TOKEN_PATTERNS = [
     re.compile(r"traceback", re.IGNORECASE),
 ]
 
-_ERROR_TYPE_QUERIES = {
-    "memory_error": "cuda out of memory cryosparc",
-    "parameter_error": "invalid parameter cryosparc job failed",
-    "file_error": "file not found cryosparc job",
-    "convergence_error": "ab initio failed to converge",
-    "symmetry_error": "symmetry error cryosparc refinement",
-    "gpu_error": "cuda error cryosparc",
-    "timeout_error": "job timeout cryosparc",
-    "ctf_error": "ctf refinement failed cryosparc",
-    "motion_correction_error": "motion correction error cryosparc",
-}
-
 
 def _normalize_query(query: str) -> str:
     """Collapse whitespace and cap length for Discourse search."""
@@ -74,10 +62,6 @@ def extract_search_queries_from_log(
         queries.append(normalized)
 
     if error_analysis:
-        for error_type in error_analysis.get("error_types", []):
-            mapped = _ERROR_TYPE_QUERIES.get(error_type)
-            if mapped:
-                _add(mapped)
         for line in error_analysis.get("critical_errors", [])[:5]:
             for pattern in _ERROR_TOKEN_PATTERNS:
                 match = pattern.search(line)
@@ -387,9 +371,7 @@ def _collect_search_corpus(
         parts.append(entry.get("title", ""))
         parts.append(entry.get("blurb", ""))
     if log_analysis:
-        parts.extend(log_analysis.get("error_types", []))
         parts.extend(log_analysis.get("critical_errors", []))
-        parts.extend(log_analysis.get("suggestions", []))
     return " ".join(parts).lower()
 
 

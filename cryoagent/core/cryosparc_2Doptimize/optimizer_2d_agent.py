@@ -9,7 +9,6 @@ from langchain_core.language_models import BaseLanguageModel
 
 from ..cryosparc_common_tools import CryoSPARCCommonTools
 from ..base_react_agent import BaseReActAgent
-from .optimizer_2d_tools import Optimizer2DTools
 from ...tools.cryosparc_tools import CryoSPARCTools
 from ...config.config_loader import CryoAgentConfig
 from ...prompts.prompt_loader import load_prompt
@@ -60,17 +59,8 @@ class Optimizer2DAgent(BaseReActAgent):
     
     def _create_tools(self) -> List[Tool]:
         """Create 2D optimization-specific tools."""
-        return [
-            Optimizer2DTools.create_class_2d_tool(self),
-            Optimizer2DTools.create_select_2d_classes_tool(self),
-            Optimizer2DTools.create_get_particle_count_tool(self),
-            Optimizer2DTools.create_merge_particles_tool(self),
-            Optimizer2DTools.create_get_job_status_tool(self),
-            Optimizer2DTools.create_wait_for_job_tool(self),
-            CryoSPARCCommonTools.create_get_job_log_tool(self),
-            CryoSPARCCommonTools.create_search_cryosparc_forum_tool(self),
-            CryoSPARCCommonTools.create_describe_job_params_tool(self),
-        ]
+        from ..cryosparc_tool_registry import build_tools, AGENT_TOOL_SETS
+        return build_tools(self, AGENT_TOOL_SETS["optimization_2d"])
     
     def _load_stage_config(self) -> Dict[str, Any]:
         """Load 2D optimization stage configuration."""
@@ -555,7 +545,7 @@ class Optimizer2DAgent(BaseReActAgent):
                         "project_uid": project_uid,
                         "workspace_uid": workspace_uid,
                         "num_classes": int(num_classes),
-                        "wait_for_completion": params.get("wait_for_completion", "true").lower() == "true",
+                        "wait_for_completion": self._parse_bool_param(params.get("wait_for_completion"), True),
                         "timeout": int(params.get("timeout", self.config.job_management.default_timeout * 2)),
                         "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
                     }
@@ -706,7 +696,7 @@ class Optimizer2DAgent(BaseReActAgent):
                 "workspace_uid": workspace_uid,
                 "class_2d_job_uid": class_2d_job_uid,
                 "selection_mode": selection_mode,
-                "wait_for_completion": params.get("wait_for_completion", "true").lower() == "true",
+                "wait_for_completion": self._parse_bool_param(params.get("wait_for_completion"), True),
                 "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
                 "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
             }
@@ -857,12 +847,18 @@ class Optimizer2DAgent(BaseReActAgent):
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
             
             particles_job_uids = params.get("particles_job_uids")
+            # Accept a comma-separated string (e.g. "J123,J124") as well as a list,
+            # so this works as a plain Tool without the former StructuredTool adapter.
+            if isinstance(particles_job_uids, str):
+                particles_job_uids = [
+                    uid.strip() for uid in particles_job_uids.split(",") if uid.strip()
+                ]
             if not particles_job_uids:
                 return json.dumps({
                     "success": False,
                     "error": "Missing required parameter: particles_job_uids (should be a list)"
                 })
-            
+
             if not isinstance(particles_job_uids, list):
                 return json.dumps({
                     "success": False,
@@ -882,7 +878,7 @@ class Optimizer2DAgent(BaseReActAgent):
                 "workspace_uid": workspace_uid,
                 "particles_job_uids": particles_job_uids,
                 "particles_group_names": particles_group_names,
-                "wait_for_completion": params.get("wait_for_completion", "true").lower() == "true",
+                "wait_for_completion": self._parse_bool_param(params.get("wait_for_completion"), True),
                 "timeout": int(params.get("timeout", self.config.job_management.default_timeout)),
                 "check_interval": int(params.get("check_interval", self.config.job_management.status_check_interval))
             }
