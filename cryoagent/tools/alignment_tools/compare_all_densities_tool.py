@@ -28,6 +28,8 @@ from typing import Dict, Any, Optional
 
 from langchain.tools import Tool
 
+from cryoagent.tools.flexible_tool import make_flexible_tool
+
 
 class CompareAllDensitiesTool:
     """Tool factory for comparing all density maps in a folder."""
@@ -474,9 +476,9 @@ class CompareAllDensitiesTool:
             except Exception as e:
                 return f"❌ Error: {str(e)}\n{type(e).__name__}"
         
-        return Tool(
-            name="compare_all_densities",
-            description=(
+        return make_flexible_tool(
+            "compare_all_densities",
+            (
                 "Compare all density maps (*_volume.mrc files) in a folder and create a resolution relationship matrix. "
                 "This tool performs pairwise comparisons using align_and_compare_maps.py and creates: "
                 "1) A resolution matrix showing best resolution between each pair, "
@@ -489,7 +491,7 @@ class CompareAllDensitiesTool:
                 "keep_work_dir, no_rms_threshold. "
                 "Returns paths to output files including CSV matrices, summary, and clustering results."
             ),
-            func=_compare_all_densities_tool
+            _compare_all_densities_tool,
         )
 
 

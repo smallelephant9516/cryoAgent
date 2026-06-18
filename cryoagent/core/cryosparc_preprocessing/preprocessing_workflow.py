@@ -7,6 +7,7 @@ from enum import Enum
 from .preprocessing_agent import PreprocessingAgent
 from ...config.config_loader import CryoAgentConfig
 from ...prompts.prompt_loader import load_prompt
+from ..stage_result_parser import index_execution_log, check_step
 
 
 class PreprocessingStep(Enum):
@@ -136,103 +137,19 @@ class PreprocessingWorkflow:
         waits: Dict[str, Dict[str, Any]] = {}
         tool_entries: Dict[str, List[Dict[str, Any]]] = {}
 
-        for entry in execution_log:
-            tool_name = entry.get("tool")
-            tool_entries.setdefault(tool_name, []).append(entry)
-            if tool_name == "wait_for_job" and entry.get("result"):
-                job_uid = entry.get("params", {}).get("job_uid")
-                if job_uid:
-                    waits[job_uid] = entry["result"]
+        tool_entries, waits = index_execution_log(execution_log)
 
-        for step in [PreprocessingStep.IMPORT_MOVIES, PreprocessingStep.IMPORT_MICROGRAPHS, 
-                     PreprocessingStep.MOTION_CORRECTION, PreprocessingStep.CTF_ESTIMATION, 
+        for step in [PreprocessingStep.IMPORT_MOVIES, PreprocessingStep.IMPORT_MICROGRAPHS,
+                     PreprocessingStep.MOTION_CORRECTION, PreprocessingStep.CTF_ESTIMATION,
                      PreprocessingStep.MICROGRAPH_SELECTION]:
-            records = tool_entries.get(step.value, [])
-            if not records:
-                self.results.append(
-                    PreprocessingResult(
-                        step=step,
-                        success=False,
-                        error="Step was never executed",
-                        message="No tool invocation recorded",
-                        reasoning=result
-                    )
-                )
-                continue
-
-            latest_record = records[-1]
-            error_message = latest_record.get("error")
-            result_payload = latest_record.get("result", {})
-            job_uid = result_payload.get("job_uid") if isinstance(result_payload, dict) else None
-            job_uids_to_check: List[str] = []
-            if isinstance(result_payload, dict):
-                if result_payload.get("job_uids"):
-                    job_uids_to_check = list(result_payload["job_uids"])
-                elif job_uid:
-                    job_uids_to_check = [job_uid]
-
-            if error_message:
-                self.results.append(
-                    PreprocessingResult(
-                        step=step,
-                        success=False,
-                        job_uid=job_uid,
-                        error=error_message,
-                        message="Tool execution reported an error",
-                        reasoning=result
-                    )
-                )
-                continue
-
-            if not job_uids_to_check:
-                self.results.append(
-                    PreprocessingResult(
-                        step=step,
-                        success=False,
-                        error="Tool did not return a job UID",
-                        message="Unable to confirm CryoSPARC job submission",
-                        reasoning=result
-                    )
-                )
-                continue
-
-            missing_waits = [uid for uid in job_uids_to_check if uid not in waits]
-            if missing_waits:
-                self.results.append(
-                    PreprocessingResult(
-                        step=step,
-                        success=False,
-                        job_uid=job_uid,
-                        error="Job completion was not confirmed",
-                        message=f"Missing wait_for_job invocation for: {', '.join(missing_waits)}",
-                        reasoning=result
-                    )
-                )
-                continue
-
-            statuses = [waits[uid].get("status") for uid in job_uids_to_check]
-            success = all(status == "completed" for status in statuses)
-            if len(job_uids_to_check) == 1:
-                message = (
-                    f"CryoSPARC job {job_uids_to_check[0]} completed successfully"
-                    if success
-                    else f"CryoSPARC job {job_uids_to_check[0]} finished with status '{statuses[0]}'"
-                )
-            else:
-                message = (
-                    f"CryoSPARC jobs {', '.join(job_uids_to_check)} completed successfully"
-                    if success
-                    else f"CryoSPARC jobs finished with statuses: {', '.join(statuses)}"
-                )
-            error = None if success else f"Job statuses: {', '.join(str(s) for s in statuses)}"
-
+            outcome = check_step(tool_entries, waits, step.value)
             self.results.append(
                 PreprocessingResult(
                     step=step,
-                    success=success,
-                    job_uid=job_uid,
-                    message=message,
-                    error=error,
+                    success=outcome.success,
+                    job_uid=outcome.job_uid,
+                    message=outcome.message,
+                    error=outcome.error,
                     reasoning=result
                 )
             )

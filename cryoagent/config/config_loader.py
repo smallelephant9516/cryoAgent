@@ -225,6 +225,7 @@ class AgentSettings(BaseModel):
     model_name: str = Field(default="deepseek-chat", description="LLM model name (legacy)")
     temperature: float = Field(default=0.1, description="LLM temperature (legacy)")
     max_iterations: int = Field(default=10, description="Maximum agent iterations")
+    improvement_max_iterations: Optional[int] = Field(default=None, description="ReAct iteration cap for the opt-in improvement agent; falls back to max(30, max_iterations) when unset")
     verbose: bool = Field(default=True, description="Enable verbose logging")
     timeout: int = Field(default=60, description="Request timeout in seconds")
     api_key: str = Field(default="", description="API key (legacy)")

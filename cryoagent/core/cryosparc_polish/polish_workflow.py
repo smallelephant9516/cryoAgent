@@ -10,6 +10,7 @@ from pathlib import Path
 from .polish_agent import PolishAgent
 from ...config.config_loader import CryoAgentConfig
 from ...prompts.prompt_loader import load_prompt
+from ..stage_result_parser import index_execution_log, outcome_for_record
 from ...tools.cryosparc_tools import CryoSPARCTools
 
 
@@ -118,14 +119,8 @@ class PolishWorkflow:
         
         waits: Dict[str, Dict[str, Any]] = {}
         tool_entries: Dict[str, List[Dict[str, Any]]] = {}
-        
-        for entry in execution_log:
-            tool_name = entry.get("tool")
-            tool_entries.setdefault(tool_name, []).append(entry)
-            if tool_name == "wait_for_job" and entry.get("result"):
-                job_uid = entry.get("params", {}).get("job_uid")
-                if job_uid:
-                    waits[job_uid] = entry["result"]
+
+        tool_entries, waits = index_execution_log(execution_log)
         
         # Check each step
         self._check_step_result(PolishStep.VERIFY_INPUTS, tool_entries, waits, result)
@@ -196,21 +191,20 @@ class PolishWorkflow:
         
         error_message = latest_record.get("error")
         result_payload = latest_record.get("result", {})
-        job_uid = result_payload.get("job_uid") if isinstance(result_payload, dict) else None
-        
+
         if error_message:
             self.results.append(
                 PolishResult(
                     step=step,
                     success=False,
-                    job_uid=job_uid,
+                    job_uid=result_payload.get("job_uid") if isinstance(result_payload, dict) else None,
                     error=error_message,
                     message="Tool execution reported an error",
                     reasoning=reasoning
                 )
             )
             return
-        
+
         if step == PolishStep.VERIFY_INPUTS:
             # For verify_inputs, success is determined by the result itself
             if isinstance(result_payload, dict) and result_payload.get("success"):
@@ -233,46 +227,16 @@ class PolishWorkflow:
                     )
                 )
             return
-        
-        if not job_uid:
-            self.results.append(
-                PolishResult(
-                    step=step,
-                    success=False,
-                    error="Tool did not return a job UID",
-                    message="Unable to confirm CryoSPARC job submission",
-                    reasoning=reasoning
-                )
-            )
-            return
-        
-        wait_info = waits.get(job_uid)
-        if not wait_info:
-            self.results.append(
-                PolishResult(
-                    step=step,
-                    success=False,
-                    job_uid=job_uid,
-                    error="Job completion was not confirmed",
-                    message="Missing wait_for_job invocation",
-                    reasoning=reasoning
-                )
-            )
-            return
-        
-        status = wait_info.get("status")
-        success = status == "completed"
-        step_name = step.value.replace('_', ' ').title()
-        message = f"CryoSPARC {step_name} job {job_uid} completed successfully" if success else f"CryoSPARC {step_name} job {job_uid} finished with status '{status}'"
-        error = None if success else f"Job status: {status}"
-        
+
+        # Job steps: run the shared completion ladder on the selected record.
+        outcome = outcome_for_record(latest_record, waits)
         self.results.append(
             PolishResult(
                 step=step,
-                success=success,
-                job_uid=job_uid,
-                message=message,
-                error=error,
+                success=outcome.success,
+                job_uid=outcome.job_uid,
+                message=outcome.message,
+                error=outcome.error,
                 reasoning=reasoning
             )
         )

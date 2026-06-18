@@ -331,6 +331,11 @@ class BaseReActAgent(ABC):
         )
         return int(closest)
     
+    def _max_iterations(self) -> int:
+        """ReAct iteration cap for this agent. Subclasses may raise it for
+        multi-job loops (e.g. the improvement agent). Defaults to config."""
+        return self.config.agent.max_iterations
+
     def _create_agent_executor(self) -> AgentExecutor:
         """Create the agent executor with ReAct-style prompt."""
         prompt = ChatPromptTemplate.from_messages([
@@ -345,7 +350,7 @@ class BaseReActAgent(ABC):
             agent=agent,
             tools=self.tools,
             verbose=self.config.agent.verbose,
-            max_iterations=self.config.agent.max_iterations,
+            max_iterations=self._max_iterations(),
             handle_parsing_errors=True
         )
     
@@ -533,6 +538,260 @@ class BaseReActAgent(ABC):
             context = params or {"raw_input": input_str}
             self._record_tool_execution("describe_job_params", context, error=str(e))
             return f"❌ Error describing job params: {str(e)}"
+
+    def _describe_job_results_tool(self, input_str: str) -> str:
+        """Common tool wrapper: summarize a completed job's real result metrics."""
+        params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            job_uid = params.get("job_uid") or params.get("input")
+            if not job_uid:
+                return "❌ Error: job_uid parameter is required."
+            project_uid = params.get("project_uid", getattr(self.config.workflow, "project_uid", None))
+            res = self.cryosparc_tools.describe_job_results(job_uid, project_uid=project_uid)
+            self._record_tool_execution("describe_job_results", {"job_uid": job_uid}, result=res)
+            if not res.get("success"):
+                return f"❌ {res.get('error', 'Unknown error')}"
+
+            lines = [f"📊 Results for {res['job_uid']} ({res.get('job_type')}, status={res.get('status')}):"]
+            if res.get("resolution_angstroms") is not None:
+                lines.append(f"  - resolution: {res['resolution_angstroms']:.2f} Å (lower is better)")
+            if res.get("box_size") is not None:
+                lines.append(f"  - box size: {res['box_size']} px")
+            if res.get("symmetry"):
+                lines.append(f"  - symmetry: {res['symmetry']}")
+            if res.get("num_particles") is not None:
+                lines.append(f"  - particles: {res['num_particles']}")
+            if res.get("cfar") is not None:
+                lines.append(f"  - cFAR: {res['cfar']:.3f} ({res.get('cfar_label')}) (higher is better)")
+            elif res.get("cfar_note"):
+                lines.append(f"  - cFAR: not computed — {res['cfar_note']}")
+            if res.get("classes"):
+                lines.append(f"  - {res.get('num_classes')} classes (per-class resolution / particle share / cFAR):")
+                for c in res["classes"]:
+                    frac = c.get("particle_fraction")
+                    frac_s = f"{frac*100:.1f}%" if isinstance(frac, (int, float)) else "?"
+                    rr = c.get("resolution_angstroms")
+                    rr_s = f"{rr:.2f} Å" if isinstance(rr, (int, float)) else "?"
+                    cf = c.get("cfar")
+                    cf_s = f", cFAR {cf:.3f} ({c.get('cfar_label')})" if isinstance(cf, (int, float)) else ""
+                    lines.append(
+                        f"      class {c.get('class_id')}: {rr_s}, "
+                        f"{c.get('num_particles')} particles ({frac_s}){cf_s}"
+                    )
+                if res.get("cfar_note"):
+                    lines.append(f"  - note: {res['cfar_note']}")
+            return "\n".join(lines)
+        except Exception as e:
+            context = params or {"raw_input": input_str}
+            self._record_tool_execution("describe_job_results", context, error=str(e))
+            return f"❌ Error describing job results: {str(e)}"
+
+    def _get_orientation_diagnostics_tool(self, input_str: str) -> str:
+        """Common tool wrapper: get/compute cFAR for a refinement via orientation diagnostics."""
+        params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            refinement_job_uid = (
+                params.get("refinement_job_uid") or params.get("job_uid") or params.get("input")
+            )
+            if not refinement_job_uid:
+                return "❌ Error: refinement_job_uid parameter is required."
+            project_uid = params.get("project_uid", getattr(self.config.workflow, "project_uid", None))
+            workspace_uid = params.get("workspace_uid", getattr(self.config.workflow, "workspace_uid", None))
+            run_if_missing = self._parse_bool_param(params.get("run_if_missing"), True)
+            # Optional per-class targeting for heterogeneous refinements.
+            volume_group_name = params.get("volume_group_name")
+            particles_group_name = params.get("particles_group_name")
+            res = self.cryosparc_tools.get_orientation_diagnostics(
+                project_uid=project_uid,
+                workspace_uid=workspace_uid,
+                refinement_job_uid=refinement_job_uid,
+                volume_group_name=volume_group_name,
+                particles_group_name=particles_group_name,
+                run_if_missing=run_if_missing,
+            )
+            self._record_tool_execution(
+                "get_orientation_diagnostics",
+                {"refinement_job_uid": refinement_job_uid, "volume_group_name": volume_group_name},
+                result=res,
+            )
+            if not res.get("success"):
+                return f"❌ {res.get('error', 'Unknown error')}"
+            computed = " (newly computed)" if res.get("computed") else " (from existing job)"
+            target = f" {res.get('volume_group_name')}" if res.get("volume_group_name") else ""
+            return (
+                f"🧭 cFAR for {refinement_job_uid}{target}: {res.get('cfar'):.3f} "
+                f"({res.get('cfar_label')}){computed} [diagnostics job {res.get('job_uid')}]"
+            )
+        except Exception as e:
+            context = params or {"raw_input": input_str}
+            self._record_tool_execution("get_orientation_diagnostics", context, error=str(e))
+            return f"❌ Error getting orientation diagnostics: {str(e)}"
+
+    def _consult_cryosparc_guide_tool(self, input_str: str) -> str:
+        """
+        Advisor tool: consult the official CryoSPARC guide AND tutorial/case-study
+        library for a processing problem.
+
+        Input (plain question, or JSON):
+          - question: the processing problem (auto-matches job pages + tutorials).
+          - slug: fetch a specific tutorial/case-study by slug (from a prior list).
+          - list_tutorials: true -> browse the whole tutorial/case-study catalog.
+        Advisory only.
+        """
+        try:
+            from cryoagent.tools.cryosparc_guide_tools import consult_cryosparc_guide
+            question = input_str if isinstance(input_str, str) else ""
+            slug = None
+            want_list = False
+            params = self._parse_tool_input(input_str)
+            if isinstance(params, dict):
+                question = params.get("question", question if not params else "") or ""
+                slug = params.get("slug")
+                want_list = self._parse_bool_param(params.get("list_tutorials"), False) or \
+                    self._parse_bool_param(params.get("list"), False)
+            res = consult_cryosparc_guide(question, slug=slug, list_tutorials=want_list)
+            self._record_tool_execution(
+                "consult_cryosparc_guide",
+                {"question": question, "slug": slug, "list_tutorials": want_list},
+                result=res)
+
+            # Browse-catalog response.
+            if res.get("tutorials"):
+                lines = [f"📚 CryoSPARC tutorial library ({res.get('message')}):"]
+                for t in res["tutorials"]:
+                    lines.append(f"- [{t['slug']}] {t['title']} — {t['when']}")
+                return "\n".join(lines)
+
+            if not res.get("success"):
+                return f"ℹ️ {res.get('message')}"
+
+            lines = [f"📖 CryoSPARC guide ({res.get('message')}):"]
+            for p in res.get("pages", []):
+                lines.append(f"\n— {p['url']}\n{p['excerpt']}")
+            related = res.get("related_tutorials") or []
+            if related:
+                lines.append("\nRelated tutorials/case-studies (fetch with slug=<slug>):")
+                for t in related:
+                    lines.append(f"- [{t['slug']}] {t['title']} — {t['when']}")
+            return "\n".join(lines)
+        except Exception as e:
+            self._record_tool_execution("consult_cryosparc_guide", {"raw_input": input_str}, error=str(e))
+            return f"❌ Error consulting CryoSPARC guide: {str(e)}"
+
+
+    # ------------------------------------------------------------------
+    # SPA resolution-improvement + deep-picking tool adapters (shared).
+    # Thin LLM-facing wrappers over the CryoSPARCTools methods of the same
+    # name. Defined on the base agent so every stage AND the improvement
+    # agent can use them without per-stage duplication.
+    # ------------------------------------------------------------------
+    def _invoke_job_tool(self, wrapper_name: str, input_str: str, *,
+                         required: Sequence[str],
+                         optional: Optional[Sequence[str]] = None) -> str:
+        """Generic adapter: parse input, validate, call the named CryoSPARCTools
+        wrapper with required+optional args, forward raw `params`, record, return.
+
+        `required`/`optional` entries are BOTH the tool-input key and the wrapper
+        keyword argument (they share names by design).
+        """
+        params = self._parse_tool_input(input_str)
+        missing = [k for k in required if not params.get(k)]
+        if missing:
+            return json.dumps({"success": False,
+                               "error": f"Missing required parameters: {', '.join(missing)}"})
+        call: Dict[str, Any] = {
+            "project_uid": params.get("project_uid", self.config.workflow.project_uid),
+            "workspace_uid": params.get("workspace_uid", self.config.workflow.workspace_uid),
+        }
+        for k in required:
+            call[k] = params.get(k)
+        for k in (optional or []):
+            if params.get(k) is not None:
+                call[k] = params.get(k)
+        consumed = (["project_uid", "workspace_uid", "wait_for_completion",
+                     "timeout", "check_interval"] + list(required) + list(optional or []))
+        passthrough = self._extract_passthrough_params(params, consumed_keys=consumed)
+        if passthrough:
+            call["params"] = passthrough
+        call["wait_for_completion"] = self._parse_bool_param(params.get("wait_for_completion"), False)
+        if params.get("timeout") is not None:
+            call["timeout"] = int(params.get("timeout"))
+        if params.get("check_interval") is not None:
+            call["check_interval"] = int(params.get("check_interval"))
+        try:
+            result = getattr(self.cryosparc_tools, wrapper_name)(**call)
+        except Exception as e:
+            self._record_tool_execution(wrapper_name, call, error=str(e))
+            return json.dumps({"success": False, "error": str(e)})
+        self._record_tool_execution(wrapper_name, call, result=result)
+        return json.dumps(result)
+
+    def _ctf_refine_global_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("ctf_refine_global", input_str,
+            required=["particles_job_uid", "volume_job_uid"], optional=["mask_job_uid"])
+
+    def _ctf_refine_local_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("ctf_refine_local", input_str,
+            required=["particles_job_uid", "volume_job_uid"], optional=["mask_job_uid"])
+
+    def _local_refinement_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("local_refinement", input_str,
+            required=["particles_job_uid", "volume_job_uid"], optional=["mask_job_uid"])
+
+    def _particle_subtract_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("particle_subtract", input_str,
+            required=["particles_job_uid", "volume_job_uid"], optional=["mask_job_uid"])
+
+    def _symmetry_expansion_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("symmetry_expansion", input_str,
+            required=["particles_job_uid"], optional=["symmetry"])
+
+    def _sharpen_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("sharpen", input_str,
+            required=["volume_job_uid"], optional=["mask_job_uid", "bfactor"])
+
+    def _deepemhancer_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("deepemhancer", input_str,
+            required=["volume_job_uid"], optional=["mask_job_uid"])
+
+    def _local_resolution_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("local_resolution", input_str,
+            required=["volume_job_uid"], optional=["mask_job_uid"])
+
+    def _class_3d_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("class_3d", input_str,
+            required=["particles_job_uid"],
+            optional=["volume_job_uid", "mask_job_uid", "focus_mask_job_uid", "num_classes"])
+
+    def _variability_3d_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("variability_3d", input_str,
+            required=["particles_job_uid"], optional=["mask_job_uid", "num_modes", "symmetry"])
+
+    def _remove_duplicate_particles_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("remove_duplicate_particles", input_str,
+            required=["particles_job_uid"], optional=["micrographs_job_uid", "min_dist_A"])
+
+    def _downsample_particles_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("downsample_particles", input_str,
+            required=["particles_job_uid"], optional=["box_size_pix", "bin_size_pix"])
+
+    def _topaz_train_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("topaz_train", input_str,
+            required=["micrographs_job_uid", "particles_job_uid"])
+
+    def _topaz_extract_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("topaz_extract", input_str,
+            required=["model_job_uid", "micrographs_job_uid"])
+
+    def _topaz_denoise_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("topaz_denoise", input_str,
+            required=["micrographs_job_uid"], optional=["denoise_model_job_uid"])
+
+    def _class_2d_new_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("class_2d_new", input_str,
+            required=["particles_job_uid"], optional=["num_classes"])
 
     def _record_tool_execution(
         self,

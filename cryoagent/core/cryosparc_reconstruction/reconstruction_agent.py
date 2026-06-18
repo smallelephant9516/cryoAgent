@@ -300,7 +300,7 @@ class ReconstructionAgent(BaseReActAgent):
             
             # Extract required parameters
             particles_job_uid = params.get("particles_job_uid")
-            volume_job_uids = params.get("volume_job_uids")
+            volume_job_uids = params.get("volume_job_uids") or params.get("volume_job_uid")
             
             if not particles_job_uid or not volume_job_uids:
                 return json.dumps({
@@ -328,7 +328,7 @@ class ReconstructionAgent(BaseReActAgent):
             passthrough = self._extract_passthrough_params(
                 params,
                 consumed_keys=[
-                    "particles_job_uid", "volume_job_uids", "num_classes",
+                    "particles_job_uid", "volume_job_uids", "volume_job_uid", "num_classes",
                     "volume_from_job_uid", "volume_group_names", "particles_group_name",
                     "symmetry",
                 ],

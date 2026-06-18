@@ -597,14 +597,14 @@ class HeterogeneityAgent(BaseReActAgent):
             symmetry = params.get("symmetry") or "C1"
 
             volume_from_job_uid = params.get("volume_from_job_uid")
-            volume_job_uids = params.get("volume_job_uids")
+            volume_job_uids = params.get("volume_job_uids") or params.get("volume_job_uid")
 
             wait_for_completion = self._parse_bool_param(params.get("wait_for_completion"), False)
             timeout = int(params.get("timeout", self.config.job_management.default_timeout))
             check_interval = int(params.get("check_interval", self.config.job_management.status_check_interval))
 
             consumed = [
-                "particles_job_uid", "volume_job_uids", "num_classes", "symmetry",
+                "particles_job_uid", "volume_job_uids", "volume_job_uid", "num_classes", "symmetry",
                 "volume_from_job_uid", "volume_group_names", "particles_group_name",
             ]
             passthrough = self._extract_passthrough_params(params, consumed_keys=consumed)

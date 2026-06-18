@@ -19,6 +19,8 @@ from typing import Callable, Dict, List, Optional
 
 from langchain.tools import Tool
 
+from ..tools.flexible_tool import make_flexible_tool
+
 
 class ToolSpec:
     """One registered tool: unique id, exposed name, wrapper method, description."""
@@ -83,6 +85,19 @@ _spec("describe_job_params", "describe_job_params", "_describe_job_params_tool",
       "CryoSPARC id like 'patch_motion_correction_multi'). Optional: include_hidden. "
       "Call this before submitting a job when you need a parameter that is not one "
       "of the tool's friendly named arguments.")
+_spec("describe_job_results", "describe_job_results", "_describe_job_results_tool",
+      "Read the real result metrics of a COMPLETED job: resolution (Å, lower is "
+      "better), box size, symmetry, particle count, and — for heterogeneous "
+      "refinement — per-class resolution and particle distribution. For 3D "
+      "refinements it also reports cFAR (higher is better) if orientation "
+      "diagnostics were already run. Required: job_uid. Use this to evaluate a "
+      "result and decide the next step.")
+_spec("get_orientation_diagnostics", "get_orientation_diagnostics", "_get_orientation_diagnostics_tool",
+      "Get the cFAR (conical FSC area ratio; higher is better — >0.5 good, "
+      "0.15-0.5 acceptable, <0.1 likely no structure / severe preferred "
+      "orientation) for a 3D refinement. Reads an existing orientation_diagnostics "
+      "job if present, otherwise runs one (run_if_missing defaults true). "
+      "Required: refinement_job_uid.")
 
 # Per-stage "reason about workflow" tools (intentionally distinct text).
 _spec("reason_preprocessing", "reason_about_workflow", "_reason_about_workflow_tool",
@@ -142,8 +157,11 @@ _spec("micrograph_selection", "micrograph_selection", "_micrograph_selection_too
 # Picking job tools.
 # ---------------------------------------------------------------------------
 _spec("blob_picker", "blob_picker", "_blob_picker_tool",
-      "Detect and pick particles from micrographs using GPU-accelerated blob "
-      "detection. Required parameters: micrographs_job_uid, particle_diameter. "
+      "Detect and pick particles using GPU blob detection. USE WHEN starting picking with "
+      "no templates yet (first pass) — pick generously, then 2D-classify to build "
+      "templates. For a more selective second pass use template_picker; for hard/"
+      "low-contrast data consider topaz_train+topaz_extract. Required parameters: "
+      "micrographs_job_uid, particle_diameter. "
       "Optional parameters: diameter_max (default: 2x particle_diameter), project_uid, "
       "workspace_uid, wait_for_completion, timeout, check_interval.", job_tool=True)
 _spec("extract_particles", "extract_particles", "_extract_particles_tool",
@@ -209,13 +227,14 @@ _spec("merge_particles", "merge_particles", "_merge_particles_tool",
 # Reconstruction tools.
 # ---------------------------------------------------------------------------
 _spec("ab_initio_reconstruction", "ab_initio_reconstruction", "_ab_initio_tool",
-      "Generate initial 3D models from 2D particles using ab initio reconstruction. "
-      "Required parameters: particles_job_uid (from 2D class selection or extraction). "
-      "Optional parameters: num_classes (number of 3D classes, default: 1), "
-      "initial_resolution (starting resolution in Å, default: 20.0), final_resolution "
-      "(target resolution in Å, default: 10.0), max_iterations (default: 50), symmetry "
-      "(default: C1), project_uid, workspace_uid, wait_for_completion, timeout, "
-      "check_interval.", job_tool=True)
+      "Generate an initial 3D model from 2D particles with NO reference. USE WHEN you "
+      "need a starting volume for refinement, or to detect heterogeneity (num_classes>1 "
+      "splits the set into distinct 3D states). Required parameters: particles_job_uid "
+      "(from 2D class selection or extraction). Optional parameters: num_classes (number "
+      "of 3D classes, default: 1), initial_resolution (starting resolution in Å, default: "
+      "20.0), final_resolution (target resolution in Å, default: 10.0), max_iterations "
+      "(default: 50), symmetry (default: C1), project_uid, workspace_uid, "
+      "wait_for_completion, timeout, check_interval.", job_tool=True)
 _spec("homogeneous_reconstruction", "homogeneous_reconstruction", "_homogeneous_reconstruction_tool",
       "Generate a 3D model from 2D particles using homogeneous reconstruction. This is "
       "an alternative to ab initio that's often faster and more robust for homogeneous "
@@ -225,7 +244,11 @@ _spec("homogeneous_reconstruction", "homogeneous_reconstruction", "_homogeneous_
       "symmetry (default: C1), project_uid, workspace_uid, wait_for_completion, "
       "timeout, check_interval.", job_tool=True)
 _spec("homogeneous_refinement_recon", "homogeneous_refinement", "_homogeneous_refinement_tool",
-      "Refine a single 3D structure with all particles. Required parameters: "
+      "Refine a single 3D structure to high resolution with all particles (consensus "
+      "refinement). USE WHEN the dataset is one homogeneous species — this is the default "
+      "refinement after ab-initio. For small/membrane/anisotropic proteins prefer "
+      "nonuniform_refinement; for a mix of states use heterogeneous_refinement first. "
+      "Required parameters: "
       "particles_job_uid (from ORIGINAL input - Select 2D job or import particle job), "
       "volume_job_uid (from ab initio reconstruction job). CRITICAL: particles_job_uid "
       "and volume_job_uid must be DIFFERENT - particles from original input, volume "
@@ -439,6 +462,98 @@ _spec("depth_heterogeneous_refinement", "heterogeneous_refinement", "_heterogene
 
 
 # ---------------------------------------------------------------------------
+# SPA resolution-improvement + deep-picking tools (added 2026-06). Descriptions
+# are purpose-first ("use when ...") so the LLM can pick the right lever; full
+# docs are available on demand via consult_cryosparc_guide.
+# ---------------------------------------------------------------------------
+_spec("ctf_refine_global", "ctf_refine_global", "_ctf_refine_global_tool",
+      "Refine dataset/group-level CTF aberrations (beam tilt, trefoil, spherical, "
+      "anisotropic mag). USE WHEN a refinement has stalled at moderate resolution and "
+      "you suspect higher-order optical aberrations — common past ~3-4 Å. Run AFTER a "
+      "refinement, then re-refine with the corrected particles. Required: "
+      "particles_job_uid, volume_job_uid. Optional: mask_job_uid; params crg_* "
+      "(crg_do_tilt, crg_do_trefoil, crg_max_res_A). ", job_tool=True)
+_spec("ctf_refine_local", "ctf_refine_local", "_ctf_refine_local_tool",
+      "Refine per-particle defocus (local CTF). USE WHEN particles have variable ice "
+      "thickness / defocus spread and global CTF is already good — squeezes extra "
+      "resolution before/with the final refinement. Run after a refinement then "
+      "re-refine. Required: particles_job_uid, volume_job_uid. Optional: mask_job_uid; "
+      "params crl_* (crl_df_range, crl_max_res_A).", job_tool=True)
+_spec("local_refinement", "local_refinement", "_local_refinement_tool",
+      "Local refinement of a masked sub-region (new_local_refine). USE WHEN one domain "
+      "is flexible/blurred relative to a rigid core — mask the region and refine it "
+      "independently to improve its local resolution. Required: particles_job_uid, "
+      "volume_job_uid, mask_job_uid (focus mask). Optional: params (fulcrum, "
+      "init_r_extent, init_s_extent).", job_tool=True)
+_spec("particle_subtract", "particle_subtract", "_particle_subtract_tool",
+      "Subtract a masked region's signal from particles. USE WHEN you want to remove a "
+      "dominant rigid part (e.g. a large complex or detergent micelle) so downstream "
+      "local refinement / 3D classification can focus on the rest. Required: "
+      "particles_job_uid, volume_job_uid, mask_job_uid (region to subtract).",
+      job_tool=True)
+_spec("symmetry_expansion", "symmetry_expansion", "_symmetry_expansion_tool",
+      "Symmetry-expand particles around a point group (sym_expand). USE WHEN a symmetric "
+      "complex has pseudo-symmetry or you want per-subunit local refinement / 3D "
+      "classification — expands each particle into its symmetry-equivalent copies. "
+      "Required: particles_job_uid. Optional: symmetry (e.g. C2, D7).", job_tool=True)
+_spec("sharpen", "sharpen", "_sharpen_tool",
+      "Sharpen a refined map (B-factor + FSC weighting) for interpretation/deposition. "
+      "USE WHEN a refinement is final and you want a sharpened map. Required: "
+      "volume_job_uid. Optional: mask_job_uid, bfactor (negative sharpens; omit to "
+      "auto-estimate); params sharp_*.", job_tool=True)
+_spec("deepemhancer", "deepemhancer", "_deepemhancer_tool",
+      "Deep-learning post-processing (DeepEMhancer) — an alternative to classical "
+      "sharpening that often improves map interpretability. USE WHEN classical sharpen "
+      "looks noisy. Requires DeepEMhancer installed on the worker. Required: "
+      "volume_job_uid. Optional: mask_job_uid.", job_tool=True)
+_spec("local_resolution", "local_resolution", "_local_resolution_tool",
+      "Estimate a local resolution map from a refinement's half-maps. USE WHEN you need "
+      "to know WHICH regions are well/poorly resolved (diagnose flexible domains, guide "
+      "local refinement/masking). Required: volume_job_uid (the refinement). Optional: "
+      "mask_job_uid; params locres_*.", job_tool=True)
+_spec("class_3d", "class_3d", "_class_3d_tool",
+      "3D Classification (class_3D) — sort aligned particles into 3D classes WITHOUT "
+      "re-refining poses. USE WHEN you suspect discrete conformational/compositional "
+      "states and want cleaner subsets than heterogeneous refinement. Required: "
+      "particles_job_uid. Optional: volume_job_uid, mask_job_uid, focus_mask_job_uid "
+      "(focus on a region), num_classes.", job_tool=True)
+_spec("variability_3d", "variability_3d", "_variability_3d_tool",
+      "3D Variability Analysis (var_3D) — find continuous motions/flexibility in the "
+      "data. USE WHEN classification doesn't cleanly separate states and you suspect "
+      "continuous heterogeneity (e.g. hinge motions). Required: particles_job_uid. "
+      "Optional: mask_job_uid, num_modes (var_K), symmetry.", job_tool=True)
+_spec("remove_duplicate_particles", "remove_duplicate_particles", "_remove_duplicate_particles_tool",
+      "Remove duplicate particle picks within a minimum separation. USE WHEN overlapping "
+      "picks (template + blob, or aggressive picking) inflate the set and bias "
+      "refinement. Required: particles_job_uid. Optional: micrographs_job_uid, "
+      "min_dist_A (minimum separation).", job_tool=True)
+_spec("downsample_particles", "downsample_particles", "_downsample_particles_tool",
+      "Downsample / Fourier-crop particles to a smaller box. USE WHEN early steps "
+      "(ab-initio, 2D, initial 3D class) are slow and full resolution isn't needed yet — "
+      "re-extract full size later. Required: particles_job_uid. Optional: box_size_pix, "
+      "bin_size_pix.", job_tool=True)
+_spec("topaz_train", "topaz_train", "_topaz_train_tool",
+      "Train a Topaz deep-picking model from known-good particles. USE WHEN blob/template "
+      "picking misses particles or has high junk and you have a clean particle subset to "
+      "learn from. Required: micrographs_job_uid, particles_job_uid. Pairs with "
+      "topaz_extract.", job_tool=True)
+_spec("topaz_extract", "topaz_extract", "_topaz_extract_tool",
+      "Pick particles with a trained/pretrained Topaz model. USE WHEN you want a deep "
+      "picker as an alternative/complement to blob/template picking (often recovers more "
+      "true particles). Required: model_job_uid (from topaz_train), micrographs_job_uid.",
+      job_tool=True)
+_spec("topaz_denoise", "topaz_denoise", "_topaz_denoise_tool",
+      "Denoise micrographs with Topaz. USE WHEN low-contrast micrographs make picking "
+      "hard (small particles, thick ice) — improves visual picking and inspection. "
+      "Required: micrographs_job_uid. Optional: denoise_model_job_uid.", job_tool=True)
+_spec("class_2d_new", "class_2d_new", "_class_2d_new_tool",
+      "2D Classification with the newer/faster engine (class_2D_new). USE WHEN cleaning a "
+      "particle stack / inspecting quality and you want a faster alternative to legacy "
+      "class_2d (helpful across many iterative rounds). "
+      "Required: particles_job_uid. Optional: num_classes.", job_tool=True)
+
+
+# ---------------------------------------------------------------------------
 # Per-stage ordered tool sets (spec ids). These reproduce each agent's existing
 # tool list exactly, in order. ``compare_all_densities`` for the heterogeneity
 # stages is omitted here because those agents construct it with config-bound
@@ -449,22 +564,28 @@ AGENT_TOOL_SETS: Dict[str, List[str]] = {
         "import_movies", "import_micrographs", "motion_correction", "ctf_estimation",
         "micrograph_selection", "get_job_status", "wait_for_job", "get_job_log",
         "search_cryosparc_forum", "describe_job_params", "reason_preprocessing",
+        "topaz_denoise",
     ],
     "particle_picking": [
         "blob_picker", "extract_particles", "class_2d_picking",
         "select_2d_classes_picking", "template_picker", "get_job_status",
         "wait_for_job", "get_job_log", "search_cryosparc_forum", "describe_job_params",
         "reason_picking",
+        "topaz_train", "topaz_extract", "topaz_denoise", "remove_duplicate_particles",
     ],
     "optimization_2d": [
         "class_2d_opt2d", "select_2d_classes_opt2d", "get_particle_count",
         "merge_particles", "get_job_status", "wait_for_job", "get_job_log_common",
         "search_cryosparc_forum", "describe_job_params",
+        "class_2d_new",
     ],
     "reconstruction": [
         "ab_initio_reconstruction", "homogeneous_refinement_recon",
         "heterogeneous_refinement", "get_job_status", "wait_for_job", "get_job_log",
-        "search_cryosparc_forum", "describe_job_params", "reason_reconstruction",
+        "search_cryosparc_forum", "describe_job_params", "describe_job_results",
+        "get_orientation_diagnostics", "reason_reconstruction",
+        "ctf_refine_global", "ctf_refine_local", "local_refinement",
+        "sharpen", "local_resolution",
     ],
     "optimization": [
         # Atomic action tools (LLM drives box-size sweep / hetero-K / multi-round
@@ -474,8 +595,13 @@ AGENT_TOOL_SETS: Dict[str, List[str]] = {
         "opt_nonuniform_refinement", "opt_homogeneous_refinement",
         # Analysis + diagnostics.
         "get_fsc_info", "get_hetero_class_resolutions_opt",
+        "describe_job_results", "get_orientation_diagnostics",
         "get_job_status", "wait_for_job", "get_job_log", "search_cryosparc_forum",
         "describe_job_params", "reason_optimizer",
+        # Resolution-improvement levers.
+        "ctf_refine_global", "ctf_refine_local", "local_refinement",
+        "particle_subtract", "symmetry_expansion", "class_3d",
+        "remove_duplicate_particles", "downsample_particles",
     ],
     "heterogeneity": [
         # Atomic: ab-initio then K-class heterogeneous refinement (LLM drives the
@@ -483,8 +609,10 @@ AGENT_TOOL_SETS: Dict[str, List[str]] = {
         "het_ab_initio", "het_heterogeneous_refinement",
         "extract_density_maps_hetero", "get_hetero_class_resolutions_hetero",
         "run_non_uniform_refinement_hetero", "het_get_fsc_info",
+        "describe_job_results", "get_orientation_diagnostics",
         "get_job_status", "wait_for_job", "get_job_log", "search_cryosparc_forum",
         "describe_job_params",
+        "class_3d", "variability_3d",
         # compare_all_densities appended by the agent (config-bound construction)
     ],
     "heterogeneity_depth": [
@@ -493,14 +621,18 @@ AGENT_TOOL_SETS: Dict[str, List[str]] = {
         "read_input_json", "depth_ab_initio", "depth_heterogeneous_refinement",
         "extract_density_maps_depth", "get_hetero_class_resolutions_depth",
         "run_homogeneous_refinement_depth", "run_non_uniform_refinement_depth",
-        "get_fsc_info_depth", "get_job_status", "wait_for_job", "get_job_log",
+        "get_fsc_info_depth", "describe_job_results", "get_orientation_diagnostics",
+        "get_job_status", "wait_for_job", "get_job_log",
         "search_cryosparc_forum", "describe_job_params",
         # compare_all_densities appended by the agent
     ],
     "polish": [
         "homogeneous_refinement_polish", "reference_motion_correction",
         "get_job_status", "wait_for_job", "get_job_log_common", "search_cryosparc_forum",
-        "describe_job_params", "verify_inputs",
+        "describe_job_params", "describe_job_results", "get_orientation_diagnostics",
+        "verify_inputs",
+        "ctf_refine_global", "ctf_refine_local", "sharpen", "deepemhancer",
+        "local_resolution",
     ],
 }
 
@@ -517,7 +649,7 @@ def build_tool(agent, spec_id: str) -> Optional[Tool]:
     func: Callable = getattr(agent, spec.method, None)
     if func is None or not callable(func):
         return None
-    return Tool(name=spec.name, description=spec.description, func=func)
+    return make_flexible_tool(spec.name, spec.description, func)
 
 
 def build_tools(agent, spec_ids: List[str]) -> List[Tool]:

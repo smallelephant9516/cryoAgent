@@ -8,6 +8,7 @@ from enum import Enum
 from .picking_agent import PickingAgent
 from ...config.config_loader import CryoAgentConfig
 from ...prompts.prompt_loader import load_prompt
+from ..stage_result_parser import index_execution_log, check_step
 
 
 class PickingStep(Enum):
@@ -275,13 +276,7 @@ class PickingWorkflow:
         waits: Dict[str, Dict[str, Any]] = {}
         tool_entries: Dict[str, List[Dict[str, Any]]] = {}
 
-        for entry in execution_log:
-            tool_name = entry.get("tool")
-            tool_entries.setdefault(tool_name, []).append(entry)
-            if tool_name == "wait_for_job" and entry.get("result"):
-                job_uid = entry.get("params", {}).get("job_uid")
-                if job_uid:
-                    waits[job_uid] = entry["result"]
+        tool_entries, waits = index_execution_log(execution_log)
 
         # Map workflow steps to tool names and their index in the tool call sequence
         # Format: (step_enum, tool_name, tool_call_index)
@@ -296,105 +291,23 @@ class PickingWorkflow:
             (PickingStep.SELECT_FINAL_CLASSES, "select_2d_classes", 1),
         ]
 
-        # Check all steps in order
+        # select_2d_classes completes synchronously (waits internally).
+        synchronous_steps = {PickingStep.SELECT_2D_CLASSES, PickingStep.SELECT_FINAL_CLASSES}
+
+        # Check all steps in order via the shared parser.
         for step_enum, tool_name, tool_index in step_mapping:
-            records = tool_entries.get(tool_name, [])
-            
-            # Check if we have enough invocations for this tool
-            if len(records) <= tool_index:
-                self.results.append(
-                    PickingResult(
-                        step=step_enum,
-                        success=False,
-                        error=f"{tool_name} invocation #{tool_index+1} was never executed",
-                        message="No tool invocation recorded",
-                        reasoning=result
-                    )
-                )
-                continue
-
-            # Get the specific invocation for this step
-            record = records[tool_index]
-            error_message = record.get("error")
-            result_payload = record.get("result", {})
-            job_uid = result_payload.get("job_uid") if isinstance(result_payload, dict) else None
-
-            if error_message:
-                self.results.append(
-                    PickingResult(
-                        step=step_enum,
-                        success=False,
-                        job_uid=job_uid,
-                        error=error_message,
-                        message="Tool execution reported an error",
-                        reasoning=result
-                    )
-                )
-                continue
-
-            if not job_uid:
-                self.results.append(
-                    PickingResult(
-                        step=step_enum,
-                        success=False,
-                        error="Tool did not return a job UID",
-                        message="Unable to confirm CryoSPARC job submission",
-                        reasoning=result
-                    )
-                )
-                continue
-
-            wait_info = waits.get(job_uid)
-            
-            # select_2d_classes completes synchronously (waits internally), so it doesn't require wait_for_job
-            is_select_2d_classes = step_enum in (PickingStep.SELECT_2D_CLASSES, PickingStep.SELECT_FINAL_CLASSES)
-            
-            if not wait_info:
-                if is_select_2d_classes:
-                    # For select_2d_classes, if we have a job_uid and the tool returned successfully,
-                    # assume it completed (the tool waits internally)
-                    # Check if the result payload indicates success
-                    if isinstance(result_payload, dict) and "job_uid" in result_payload:
-                        # The tool completed synchronously, so mark as successful
-                        step_name = step_enum.value.replace('_', ' ').title()
-                        self.results.append(
-                            PickingResult(
-                                step=step_enum,
-                                success=True,
-                                job_uid=job_uid,
-                                message=f"CryoSPARC {step_name} job {job_uid} completed successfully (synchronous operation)",
-                                error=None,
-                                reasoning=result
-                            )
-                        )
-                        continue
-                
-                # For other steps, require wait_for_job
-                self.results.append(
-                    PickingResult(
-                        step=step_enum,
-                        success=False,
-                        job_uid=job_uid,
-                        error="Job completion was not confirmed",
-                        message="Missing wait_for_job invocation",
-                        reasoning=result
-                    )
-                )
-                continue
-
-            status = wait_info.get("status")
-            success = status == "completed"
-            step_name = step_enum.value.replace('_', ' ').title()
-            message = f"CryoSPARC {step_name} job {job_uid} completed successfully" if success else f"CryoSPARC {step_name} job {job_uid} finished with status '{status}'"
-            error = None if success else f"Job status: {status}"
-
+            outcome = check_step(
+                tool_entries, waits, tool_name,
+                record_index=tool_index,
+                synchronous=step_enum in synchronous_steps,
+            )
             self.results.append(
                 PickingResult(
                     step=step_enum,
-                    success=success,
-                    job_uid=job_uid,
-                    message=message,
-                    error=error,
+                    success=outcome.success,
+                    job_uid=outcome.job_uid,
+                    message=outcome.message,
+                    error=outcome.error,
                     reasoning=result
                 )
             )

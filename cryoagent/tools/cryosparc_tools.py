@@ -207,6 +207,35 @@ class CryoSPARCTools:
         except Exception:
             return "particles"
 
+    def _resolve_output_slot(self, project, job_uid: str, slot_type: str,
+                             default: Optional[str] = None) -> Optional[str]:
+        """Resolve the first output group of a given type (volume/mask/particle/
+        exposure) to connect FROM a job, by inspecting its real output_result_groups.
+
+        Returns the slot name, or `default` (or `slot_type` itself) when none found.
+        Used by the resolution-improvement tools that consume volume/mask inputs.
+        """
+        fallback = default if default is not None else slot_type
+        try:
+            job = project.find_job(job_uid)
+            job.refresh()
+            doc = getattr(job, "doc", {}) or {}
+            outputs = doc.get("output_result_groups", []) or []
+            matches = [g.get("name") for g in outputs
+                       if (g.get("type") == slot_type) and g.get("name")]
+            if not matches:
+                return fallback
+            # Prefer the conventional bare name when present (e.g. 'volume', 'mask').
+            if slot_type in matches:
+                return slot_type
+            # Prefer a sharpened/refined volume's main map over half-maps if named so.
+            for preferred in (f"{slot_type}", "mask_refine", "volume"):
+                if preferred in matches:
+                    return preferred
+            return matches[0]
+        except Exception:
+            return fallback
+
     def _queue_job_with_lane_fallback(
         self,
         job,
@@ -1267,6 +1296,28 @@ class CryoSPARCTools:
         "heterogeneous_refinement": "hetero_refine",
         "hetero_refine": "hetero_refine",
         "reference_motion_correction": "reference_motion_correction",
+        # SPA resolution-improvement + deep-picking tools.
+        "ctf_refine_global": "ctf_refine_global",
+        "ctf_refine_local": "ctf_refine_local",
+        "local_refinement": "new_local_refine",
+        "new_local_refine": "new_local_refine",
+        "particle_subtract": "particle_subtract",
+        "symmetry_expansion": "sym_expand",
+        "sym_expand": "sym_expand",
+        "sharpen": "sharpen",
+        "deepemhancer": "deepemhancer",
+        "local_resolution": "local_resolution",
+        "class_3d": "class_3D",
+        "class_3D": "class_3D",
+        "variability_3d": "var_3D",
+        "var_3D": "var_3D",
+        "remove_duplicate_particles": "remove_duplicate_particles",
+        "downsample_particles": "downsample_particles",
+        "topaz_train": "topaz_train",
+        "topaz_extract": "topaz_extract",
+        "topaz_denoise": "topaz_denoise",
+        "class_2d_new": "class_2D_new",
+        "class_2D_new": "class_2D_new",
     }
 
     def _resolve_job_type(self, job_type: str) -> str:
@@ -2738,6 +2789,417 @@ class CryoSPARCTools:
                 "error": f"Failed to get heterogeneous refinement class resolutions from job {job_uid}: {str(e)}",
                 "classes": []
             }
+
+    # ------------------------------------------------------------------
+    # Generic result introspection (for data-driven workflow)
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _extract_resolution_from_stats(stats: Dict[str, Any]) -> Optional[float]:
+        """
+        Pull the reported resolution in Angstroms from a latest_summary_stats dict.
+
+        Handles the layouts seen across refinement types: resolution lives either
+        directly under the stats, or nested under 'fsc_info'/'fsc_info_autotight'/
+        'fsc_info_best'. The reported value is the loose-mask (or noise-substituted)
+        resolution; only the '*_A' keys are in Angstroms (others are Fourier radius).
+        Preference order favors the gold-standard masked estimate.
+        """
+        if not isinstance(stats, dict):
+            return None
+        # Candidate containers, in order of preference.
+        containers = [stats]
+        for key in ("fsc_info_best", "fsc_info", "fsc_info_autotight"):
+            sub = stats.get(key)
+            if isinstance(sub, dict):
+                containers.append(sub)
+        # Preferred Angstrom keys, best-practice first.
+        pref_keys = (
+            "radwn_loosemask_A",
+            "radwn_noisesub_A",
+            "radwn_tightmask_A",
+            "radwn_sphericalmask_A",
+            "radwn_final_A",
+        )
+        for container in containers:
+            for k in pref_keys:
+                v = container.get(k)
+                if isinstance(v, (int, float)):
+                    return float(v)
+        return None
+
+    def describe_job_results(
+        self,
+        job_uid: str,
+        project_uid: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Return a compact, factual summary of a completed job's results.
+
+        Intended for data-driven workflow decisions: reports the real measured
+        values (no canned classification beyond labeling the cFAR band). Read-only
+        and cheap — does NOT create jobs. For 3D refinement jobs it reports
+        resolution; cFAR is reported only if a downstream orientation_diagnostics
+        job already exists (use get_orientation_diagnostics to compute it).
+
+        Returns a dict with: job_uid, job_type, status, and (when available)
+        resolution_angstroms, box_size, symmetry, num_particles, per-class info,
+        cfar + cfar_label, plus output_groups (name/type/num_items).
+        """
+        try:
+            cached = self._job_cache.get(job_uid, {})
+            project_uid = project_uid or cached.get("project_uid")
+            if not project_uid:
+                raise ValueError(
+                    "project_uid is required to describe job results "
+                    "(pass it or ensure the job was queued via CryoSPARCTools)."
+                )
+
+            job = self.cs.find_job(project_uid, job_uid)
+            job.refresh()
+            doc = getattr(job, "doc", {}) or {}
+            job_type = doc.get("type") or doc.get("job_type")
+            status = doc.get("status")
+            output_groups = doc.get("output_result_groups", []) or []
+
+            result: Dict[str, Any] = {
+                "success": True,
+                "job_uid": job_uid,
+                "job_type": job_type,
+                "status": status,
+            }
+
+            # Compact list of output groups (name/type/count) — useful provenance.
+            result["output_groups"] = [
+                {
+                    "name": g.get("name"),
+                    "type": g.get("type"),
+                    "num_items": g.get("num_items"),
+                }
+                for g in output_groups if isinstance(g, dict)
+            ]
+
+            # Total particles: prefer a 'particles' / 'particles_all_classes' group.
+            for g in output_groups:
+                if isinstance(g, dict) and g.get("type") == "particle":
+                    name = g.get("name") or ""
+                    if name in ("particles", "particles_all_classes", "particles_selected"):
+                        result["num_particles"] = g.get("num_items")
+                        break
+
+            # Symmetry actually used, if recorded.
+            params_spec = doc.get("params_spec", {}) or {}
+            for sk in ("refine_symmetry", "abinit_symmetry", "multirefine_symmetry"):
+                if sk in params_spec and isinstance(params_spec[sk], dict):
+                    result["symmetry"] = params_spec[sk].get("value")
+                    break
+
+            jt = (job_type or "").lower()
+            is_hetero = "hetero" in jt
+            is_refine = "refine" in jt or "abinit" in jt
+
+            if is_hetero:
+                # Per-class resolution + particle distribution.
+                cls = self.get_heterogeneous_refinement_class_resolutions(project_uid, job_uid)
+                classes = cls.get("classes", []) if cls.get("success") else []
+                # Attach per-class particle counts from particles_class_<i> groups.
+                counts = {}
+                for g in output_groups:
+                    if isinstance(g, dict) and (g.get("name") or "").startswith("particles_class_"):
+                        try:
+                            cid = int((g["name"]).replace("particles_class_", ""))
+                            counts[cid] = g.get("num_items")
+                        except (ValueError, TypeError):
+                            continue
+                total = sum(v for v in counts.values() if isinstance(v, (int, float))) or 0
+                for c in classes:
+                    cid = c.get("class_id")
+                    c["num_particles"] = counts.get(cid)
+                    c["particle_fraction"] = (
+                        round(counts[cid] / total, 4) if total and counts.get(cid) is not None else None
+                    )
+                    # Read EXISTING per-class cFAR only (do not compute here — the LLM
+                    # decides which class is worth running orientation diagnostics on).
+                    vol_slot = c.get("group_name") or f"volume_class_{cid}"
+                    od = self._find_orientation_diagnostics(project_uid, job_uid, volume_group_name=vol_slot)
+                    if od is not None:
+                        c["cfar"] = od.get("cfar")
+                        c["cfar_label"] = self._cfar_label(od.get("cfar"))
+                        c["orientation_diagnostics_job_uid"] = od.get("job_uid")
+                    else:
+                        c["cfar"] = None
+                result["classes"] = classes
+                result["num_classes"] = len(classes)
+                if any(c.get("cfar") is None for c in classes):
+                    result["cfar_note"] = (
+                        "Per-class cFAR not computed for some classes. Use "
+                        "get_orientation_diagnostics with volume_group_name/particles_group_name "
+                        "(e.g. volume_class_1 / particles_class_1) to compute cFAR for a class worth evaluating."
+                    )
+            elif is_refine:
+                # Single-volume resolution from latest_summary_stats.
+                res = None
+                box = None
+                for g in output_groups:
+                    if isinstance(g, dict) and g.get("latest_summary_stats"):
+                        stats = g["latest_summary_stats"]
+                        res = self._extract_resolution_from_stats(stats)
+                        # box size N if present
+                        for cont in (stats, stats.get("fsc_info", {}), stats.get("fsc_info_autotight", {})):
+                            if isinstance(cont, dict) and cont.get("N"):
+                                box = cont.get("N"); break
+                        if res is not None:
+                            break
+                if res is not None:
+                    result["resolution_angstroms"] = res
+                if box is not None:
+                    result["box_size"] = int(box)
+                # cFAR only if a downstream orientation_diagnostics job already exists.
+                od = self._find_orientation_diagnostics(project_uid, job_uid)
+                if od is not None:
+                    result["cfar"] = od.get("cfar")
+                    result["cfar_label"] = self._cfar_label(od.get("cfar"))
+                    result["orientation_diagnostics_job_uid"] = od.get("job_uid")
+                else:
+                    result["cfar"] = None
+                    result["cfar_note"] = "Run get_orientation_diagnostics to compute cFAR for this refinement."
+
+            return result
+
+        except Exception as e:
+            return {
+                "success": False,
+                "job_uid": job_uid,
+                "error": f"Failed to describe job results for {job_uid}: {str(e)}",
+            }
+
+    @staticmethod
+    def _cfar_label(cfar: Optional[float]) -> Optional[str]:
+        """Label a cFAR value per the agreed bands (reporting only, not a gate)."""
+        if cfar is None:
+            return None
+        try:
+            c = float(cfar)
+        except (TypeError, ValueError):
+            return None
+        if c > 0.5:
+            return "good"
+        if c >= 0.15:
+            return "acceptable (not ideal)"
+        if c >= 0.1:
+            return "poor"
+        return "very poor — likely no real structure or severe preferred orientation"
+
+    @staticmethod
+    def _extract_cfar_from_job(job) -> Optional[float]:
+        """
+        Extract the cFAR (conical FSC area ratio) value from an
+        orientation_diagnostics job's doc/summary stats.
+
+        The exact key is confirmed at runtime against the live job; we search a
+        set of likely keys recursively. cFAR is a single scalar in [0,1].
+        """
+        import re
+        doc = getattr(job, "doc", {}) or {}
+
+        def _search(o):
+            if isinstance(o, dict):
+                for k, v in o.items():
+                    if isinstance(v, (int, float)) and re.search(r"cfar|conical_fsc_area|area_ratio", str(k), re.I):
+                        return float(v)
+                for v in o.values():
+                    r = _search(v)
+                    if r is not None:
+                        return r
+            elif isinstance(o, list):
+                for x in o:
+                    r = _search(x)
+                    if r is not None:
+                        return r
+            return None
+
+        return _search(doc)
+
+    def _find_orientation_diagnostics(
+        self,
+        project_uid: str,
+        refinement_job_uid: str,
+        volume_group_name: Optional[str] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Find an existing completed orientation_diagnostics job whose input is the
+        given refinement job. When volume_group_name is given (e.g. a specific
+        'volume_class_2' of a heterogeneous job), only match a diagnostics job that
+        was connected to THAT volume slot — so per-class cFARs aren't confused.
+        Returns {job_uid, cfar} or None.
+        """
+        try:
+            refine_job = self.cs.find_job(project_uid, refinement_job_uid)
+            refine_job.refresh()
+            child_uids = refine_job.doc.get("children", []) or []
+            for child_uid in child_uids:
+                try:
+                    child = self.cs.find_job(project_uid, child_uid)
+                    child.refresh()
+                    cdoc = child.doc
+                    if cdoc.get("type") != "orientation_diagnostics" or cdoc.get("status") != "completed":
+                        continue
+                    if volume_group_name is not None:
+                        # Only accept if this diagnostics job's volume input came from
+                        # the requested slot of the refinement job.
+                        if not self._diagnostics_uses_volume_slot(cdoc, refinement_job_uid, volume_group_name):
+                            continue
+                    return {"job_uid": child_uid, "cfar": self._extract_cfar_from_job(child)}
+                except Exception:
+                    continue
+        except Exception:
+            pass
+        return None
+
+    @staticmethod
+    def _diagnostics_uses_volume_slot(diag_doc: Dict[str, Any], source_job_uid: str, volume_group_name: str) -> bool:
+        """Check whether a diagnostics job's volume input connects to source_job_uid.volume_group_name."""
+        try:
+            for ig in diag_doc.get("input_slot_groups", []) or []:
+                if (ig.get("type") or "") != "volume" and "volume" not in (ig.get("name") or ""):
+                    continue
+                for conn in ig.get("connections", []) or []:
+                    juid = conn.get("job_uid") or conn.get("group_name")
+                    gname = conn.get("group_name") or conn.get("slot_name")
+                    if juid == source_job_uid and gname == volume_group_name:
+                        return True
+        except Exception:
+            pass
+        return False
+
+    def get_orientation_diagnostics(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        refinement_job_uid: str,
+        volume_group_name: Optional[str] = None,
+        particles_group_name: Optional[str] = None,
+        run_if_missing: bool = True,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """
+        Get the cFAR (conical FSC area ratio) for a refinement, via an
+        orientation_diagnostics job.
+
+        First looks for an existing completed orientation_diagnostics job
+        downstream of the refinement. If none exists and run_if_missing is True,
+        creates and runs one, then reads cFAR.
+
+        For a HETEROGENEOUS refinement, pass volume_group_name (e.g. "volume_class_1")
+        and particles_group_name (e.g. "particles_class_1") to evaluate ONE class.
+        When omitted, the first volume/particle output slots are used (appropriate
+        for single-volume refinements).
+
+        Returns: {success, cfar, cfar_label, job_uid, computed (bool)}.
+        """
+        try:
+            existing = self._find_orientation_diagnostics(
+                project_uid, refinement_job_uid, volume_group_name=volume_group_name
+            )
+            if existing is not None:
+                return {
+                    "success": True,
+                    "cfar": existing.get("cfar"),
+                    "cfar_label": self._cfar_label(existing.get("cfar")),
+                    "job_uid": existing.get("job_uid"),
+                    "computed": False,
+                }
+
+            if not run_if_missing:
+                return {
+                    "success": False,
+                    "error": "No orientation_diagnostics job found; pass run_if_missing=True to compute.",
+                }
+
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+
+            # Resolve the volume + particle output slots to connect.
+            refine_job = project.find_job(refinement_job_uid)
+            refine_job.refresh()
+            rdoc = getattr(refine_job, "doc", {}) or {}
+            vol_slot = volume_group_name
+            part_slot = particles_group_name
+            if vol_slot is None or part_slot is None:
+                for g in rdoc.get("output_result_groups", []):
+                    if not isinstance(g, dict):
+                        continue
+                    gt, gn = g.get("type"), g.get("name")
+                    if gt == "volume" and vol_slot is None:
+                        vol_slot = gn
+                    if gt == "particle" and part_slot is None:
+                        part_slot = gn
+            vol_slot = vol_slot or "volume"
+            part_slot = part_slot or "particles"
+
+            # Orientation diagnostics requires half-maps (map_half_A / map_half_B) on
+            # the volume input — cFAR is derived from the directional half-map FSC.
+            # Heterogeneous-refinement class volumes (volume_class_i) expose only
+            # 'map'/'map_sharp' (no half-maps), so cFAR cannot be computed directly on
+            # a class. Detect this and return an actionable message instead of letting
+            # the job fail cryptically.
+            for g in rdoc.get("output_result_groups", []):
+                if isinstance(g, dict) and g.get("name") == vol_slot:
+                    slots = g.get("contains") or g.get("slots") or []
+                    slot_names = {s.get("name") for s in slots if isinstance(s, dict)}
+                    if slot_names and not {"map_half_A", "map_half_B"} <= slot_names:
+                        return {
+                            "success": False,
+                            "error": (
+                                f"Volume '{vol_slot}' of {refinement_job_uid} has no half-maps "
+                                f"(map_half_A/map_half_B), so cFAR cannot be computed on it. "
+                                f"This is expected for heterogeneous-refinement class volumes. "
+                                f"To get cFAR for this class, first run a homogeneous/non-uniform "
+                                f"refinement on its particles ({part_slot}) to produce half-maps, "
+                                f"then run orientation diagnostics on that refinement."
+                            ),
+                        }
+                    break
+
+            connections = {
+                "volume": (refinement_job_uid, vol_slot),
+                "particles": (refinement_job_uid, part_slot),
+            }
+            job = workspace.create_job(
+                "orientation_diagnostics",
+                connections=connections,
+                params=dict(kwargs) if kwargs else {},
+            )
+            self._queue_job_with_lane_fallback(job, lane=lane, hostname=hostname)
+            print(f"Queued orientation diagnostics job: {job.uid} "
+                  f"(volume={vol_slot}, particles={part_slot})")
+
+            final = self.wait_for_job_completion(project_uid, job.uid, workspace_uid, timeout, check_interval)
+            if final.get("status") != "completed":
+                return {
+                    "success": False,
+                    "job_uid": job.uid,
+                    "error": f"orientation_diagnostics finished with status: {final.get('status')}",
+                }
+            job.refresh()
+            cfar = self._extract_cfar_from_job(job)
+            return {
+                "success": True,
+                "cfar": cfar,
+                "cfar_label": self._cfar_label(cfar),
+                "job_uid": job.uid,
+                "computed": True,
+                "volume_group_name": vol_slot,
+            }
+        except Exception as e:
+            return {
+                "success": False,
+                "error": f"Failed to get orientation diagnostics for {refinement_job_uid}: {str(e)}",
+            }
     
     def ab_initio_reconstruction(
         self,
@@ -3745,8 +4207,21 @@ class CryoSPARCTools:
                         "heterogeneous_refinement: provide either volume_job_uids or "
                         "volume_from_job_uid."
                     )
+                # Normalize a single UID / comma-separated string to a list (adapters
+                # may forward a bare `volume_job_uid` string).
+                if isinstance(volume_job_uids, str):
+                    volume_job_uids = [v.strip() for v in volume_job_uids.split(",") if v.strip()]
                 if num_classes is None:
                     num_classes = len(volume_job_uids)
+
+                # If fewer volumes than requested classes were supplied (commonly a
+                # SINGLE consensus volume + num_classes=K), repeat them to reach K so
+                # the job actually runs K classes. CryoSPARC seeds K classes from K
+                # identical volumes — this is the intended "one volume as K seeds"
+                # behavior. Without this, K silently collapses to len(volume_job_uids).
+                k = int(num_classes)
+                if 0 < len(volume_job_uids) < k:
+                    volume_job_uids = [volume_job_uids[i % len(volume_job_uids)] for i in range(k)]
 
                 # Determine the correct volume output slot from the first volume job
                 # (all volumes should use the same slot since they're the same job repeated)
@@ -3765,8 +4240,9 @@ class CryoSPARCTools:
                     print(f"⚠️  Could not detect volume slot, using default 'volume': {e}")
 
                 volume_connections = [(vol_job_uid, volume_slot) for vol_job_uid in volume_job_uids]
+                num_classes = len(volume_connections)
                 print(f"ℹ️  Heterogeneous refinement: connecting {len(volume_connections)} volumes (K={len(volume_connections)}) to 'volume' input group")
-                print(f"ℹ️  All volumes from: {volume_job_uids[0]} (same volume repeated {len(volume_connections)} times)")
+                print(f"ℹ️  All volumes from: {volume_job_uids[0]} (repeated {len(volume_connections)} times)")
 
             connections = {
                 "particles": (particles_job_uid, particles_slot),
@@ -4623,3 +5099,364 @@ class CryoSPARCTools:
                 "job_type": "compute_fsc_validation",
                 "message": f"Failed to compute FSC validation: {str(e)}"
             }
+
+    # ==================================================================
+    # SPA resolution-improvement + deep-picking tools (added 2026-06).
+    # Each wrapper resolves input slots from the source jobs' real output
+    # groups, merges friendly params + a raw `params` passthrough, creates
+    # and queues the job, and returns {success, job_uid, job_type, message}.
+    # ==================================================================
+
+    def _create_and_queue_job(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        job_type: str,
+        inputs: List[Any],
+        job_params: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+        passthrough_kwargs: Optional[Dict[str, Any]] = None,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        result_extra: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """Shared job runner for the new tools.
+
+        `inputs` is a list of (connection_name, source_job_uid, slot_type),
+        e.g. [("particles", "J10", "particle"), ("volume", "J20", "volume"),
+        ("mask", "J30", "mask")]. A source_job_uid of None skips that connection
+        (optional inputs like mask). Slot names are resolved from each source
+        job's real output groups. Returns a result dict; never raises.
+        """
+        try:
+            project = self.cs.find_project(project_uid)
+            workspace = project.find_workspace(workspace_uid)
+
+            connections: Dict[str, Any] = {}
+            for conn_name, src_uid, slot_type in inputs:
+                if not src_uid:
+                    continue
+                if slot_type == "particle":
+                    slot = self._resolve_particles_slot(project, src_uid)
+                else:
+                    slot = self._resolve_output_slot(project, src_uid, slot_type)
+                connections[conn_name] = (src_uid, slot)
+
+            merged = self._merge_passthrough_params(
+                dict(job_params or {}), params=params, kwargs=passthrough_kwargs
+            )
+
+            job = workspace.create_job(job_type, connections=connections, params=merged)
+            used_lane = self._queue_job_with_lane_fallback(job, lane=lane, hostname=hostname)
+            print(f"Queued {job_type} job: {job.uid}")
+
+            result = {
+                "success": True,
+                "job_uid": job.uid,
+                "job_type": job_type,
+                "message": f"{job_type} job {job.uid} queued successfully",
+                "lane": used_lane,
+            }
+            if result_extra:
+                result.update(result_extra)
+            if wait_for_completion:
+                status_result = self.wait_for_job_completion(
+                    project_uid=project_uid, job_uid=job.uid,
+                    timeout=timeout, check_interval=check_interval)
+                result.update(status_result)
+            return result
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "job_type": job_type,
+                "message": f"Failed to queue {job_type} job: {str(e)}",
+            }
+
+    def ctf_refine_global(self, project_uid: str, workspace_uid: str,
+                          particles_job_uid: str, volume_job_uid: str,
+                          mask_job_uid: Optional[str] = None,
+                          params: Optional[Dict[str, Any]] = None,
+                          lane: Optional[str] = None, hostname: Optional[str] = None,
+                          wait_for_completion: bool = False, timeout: int = 3600,
+                          check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """Global CTF refinement (beam tilt / trefoil / higher-order aberrations).
+        Inputs: particles, volume, optional mask. Tune via params keys crg_*."""
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "ctf_refine_global",
+            [("particles", particles_job_uid, "particle"),
+             ("volume", volume_job_uid, "volume"),
+             ("mask", mask_job_uid, "mask")],
+            params=params, passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
+            wait_for_completion=wait_for_completion, timeout=timeout, check_interval=check_interval)
+
+    def ctf_refine_local(self, project_uid: str, workspace_uid: str,
+                         particles_job_uid: str, volume_job_uid: str,
+                         mask_job_uid: Optional[str] = None,
+                         params: Optional[Dict[str, Any]] = None,
+                         lane: Optional[str] = None, hostname: Optional[str] = None,
+                         wait_for_completion: bool = False, timeout: int = 3600,
+                         check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """Local (per-particle) defocus refinement. Inputs: particles, volume,
+        optional mask. Tune via params keys crl_* (e.g. crl_df_range)."""
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "ctf_refine_local",
+            [("particles", particles_job_uid, "particle"),
+             ("volume", volume_job_uid, "volume"),
+             ("mask", mask_job_uid, "mask")],
+            params=params, passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
+            wait_for_completion=wait_for_completion, timeout=timeout, check_interval=check_interval)
+
+    def local_refinement(self, project_uid: str, workspace_uid: str,
+                         particles_job_uid: str, volume_job_uid: str,
+                         mask_job_uid: Optional[str] = None,
+                         params: Optional[Dict[str, Any]] = None,
+                         lane: Optional[str] = None, hostname: Optional[str] = None,
+                         wait_for_completion: bool = False, timeout: int = 3600,
+                         check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """Local refinement of a masked region (new_local_refine). Inputs:
+        particles, volume, mask (a focus mask strongly recommended)."""
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "new_local_refine",
+            [("particles", particles_job_uid, "particle"),
+             ("volume", volume_job_uid, "volume"),
+             ("mask", mask_job_uid, "mask")],
+            params=params, passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
+            wait_for_completion=wait_for_completion, timeout=timeout, check_interval=check_interval)
+
+    def particle_subtract(self, project_uid: str, workspace_uid: str,
+                          particles_job_uid: str, volume_job_uid: str,
+                          mask_job_uid: Optional[str] = None,
+                          params: Optional[Dict[str, Any]] = None,
+                          lane: Optional[str] = None, hostname: Optional[str] = None,
+                          wait_for_completion: bool = False, timeout: int = 3600,
+                          check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """Subtract the masked region's signal from particles. Inputs: particles,
+        volume, mask (mask defines the region to subtract)."""
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "particle_subtract",
+            [("particles", particles_job_uid, "particle"),
+             ("volume", volume_job_uid, "volume"),
+             ("mask", mask_job_uid, "mask")],
+            params=params, passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
+            wait_for_completion=wait_for_completion, timeout=timeout, check_interval=check_interval)
+
+    def symmetry_expansion(self, project_uid: str, workspace_uid: str,
+                           particles_job_uid: str, symmetry: Optional[str] = None,
+                           params: Optional[Dict[str, Any]] = None,
+                           lane: Optional[str] = None, hostname: Optional[str] = None,
+                           wait_for_completion: bool = False, timeout: int = 3600,
+                           check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """Symmetry-expand particles around a point group (sym_expand). Input:
+        particles. `symmetry` -> sym_symmetry (e.g. C2, D7)."""
+        job_params: Dict[str, Any] = {}
+        if symmetry:
+            job_params["sym_symmetry"] = symmetry
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "sym_expand",
+            [("particles", particles_job_uid, "particle")],
+            job_params=job_params, params=params, passthrough_kwargs=kwargs,
+            lane=lane, hostname=hostname, wait_for_completion=wait_for_completion,
+            timeout=timeout, check_interval=check_interval)
+
+    def sharpen(self, project_uid: str, workspace_uid: str, volume_job_uid: str,
+                mask_job_uid: Optional[str] = None, bfactor: Optional[float] = None,
+                params: Optional[Dict[str, Any]] = None,
+                lane: Optional[str] = None, hostname: Optional[str] = None,
+                wait_for_completion: bool = False, timeout: int = 3600,
+                check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """Sharpen a refined volume (B-factor / FSC weighting). Inputs: volume,
+        optional mask. `bfactor` -> sharp_bfactor (negative sharpens)."""
+        job_params: Dict[str, Any] = {}
+        bf = self._coerce_float(bfactor)
+        if bf is not None:
+            job_params["sharp_bfactor"] = bf
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "sharpen",
+            [("volume", volume_job_uid, "volume"), ("mask", mask_job_uid, "mask")],
+            job_params=job_params, params=params, passthrough_kwargs=kwargs,
+            lane=lane, hostname=hostname, wait_for_completion=wait_for_completion,
+            timeout=timeout, check_interval=check_interval)
+
+    def deepemhancer(self, project_uid: str, workspace_uid: str, volume_job_uid: str,
+                     mask_job_uid: Optional[str] = None,
+                     params: Optional[Dict[str, Any]] = None,
+                     lane: Optional[str] = None, hostname: Optional[str] = None,
+                     wait_for_completion: bool = False, timeout: int = 3600,
+                     check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """DeepEMhancer deep-learning post-processing/sharpening. Inputs: volume,
+        optional mask. Requires DeepEMhancer install on the worker."""
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "deepemhancer",
+            [("volume", volume_job_uid, "volume"), ("mask", mask_job_uid, "mask")],
+            params=params, passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
+            wait_for_completion=wait_for_completion, timeout=timeout, check_interval=check_interval)
+
+    def local_resolution(self, project_uid: str, workspace_uid: str, volume_job_uid: str,
+                         mask_job_uid: Optional[str] = None,
+                         params: Optional[Dict[str, Any]] = None,
+                         lane: Optional[str] = None, hostname: Optional[str] = None,
+                         wait_for_completion: bool = False, timeout: int = 3600,
+                         check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """Estimate a local resolution map from a refinement's half-maps. Inputs:
+        volume (the refinement), optional mask."""
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "local_resolution",
+            [("volume", volume_job_uid, "volume"), ("mask", mask_job_uid, "mask")],
+            params=params, passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
+            wait_for_completion=wait_for_completion, timeout=timeout, check_interval=check_interval)
+
+    def class_3d(self, project_uid: str, workspace_uid: str,
+                 particles_job_uid: str, volume_job_uid: Optional[str] = None,
+                 mask_job_uid: Optional[str] = None, focus_mask_job_uid: Optional[str] = None,
+                 num_classes: Optional[int] = None,
+                 params: Optional[Dict[str, Any]] = None,
+                 lane: Optional[str] = None, hostname: Optional[str] = None,
+                 wait_for_completion: bool = False, timeout: int = 3600,
+                 check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """3D Classification (class_3D) on aligned particles. Inputs: particles,
+        optional volume/mask/focus-mask. `num_classes` -> class3D_N_K."""
+        job_params: Dict[str, Any] = {}
+        if num_classes:
+            job_params["class3D_N_K"] = int(num_classes)
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "class_3D",
+            [("particles", particles_job_uid, "particle"),
+             ("volume", volume_job_uid, "volume"),
+             ("mask", mask_job_uid, "mask"),
+             ("mask_focus", focus_mask_job_uid, "mask")],
+            job_params=job_params, params=params, passthrough_kwargs=kwargs,
+            lane=lane, hostname=hostname, wait_for_completion=wait_for_completion,
+            timeout=timeout, check_interval=check_interval,
+            result_extra={"num_classes": num_classes})
+
+    def variability_3d(self, project_uid: str, workspace_uid: str,
+                       particles_job_uid: str, mask_job_uid: Optional[str] = None,
+                       num_modes: Optional[int] = None, symmetry: Optional[str] = None,
+                       params: Optional[Dict[str, Any]] = None,
+                       lane: Optional[str] = None, hostname: Optional[str] = None,
+                       wait_for_completion: bool = False, timeout: int = 3600,
+                       check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """3D Variability Analysis (var_3D) to probe continuous heterogeneity.
+        Inputs: particles, mask. `num_modes` -> var_K, `symmetry` -> var_symmetry."""
+        job_params: Dict[str, Any] = {}
+        if num_modes:
+            job_params["var_K"] = int(num_modes)
+        if symmetry:
+            job_params["var_symmetry"] = symmetry
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "var_3D",
+            [("particles", particles_job_uid, "particle"),
+             ("mask", mask_job_uid, "mask")],
+            job_params=job_params, params=params, passthrough_kwargs=kwargs,
+            lane=lane, hostname=hostname, wait_for_completion=wait_for_completion,
+            timeout=timeout, check_interval=check_interval)
+
+    def remove_duplicate_particles(self, project_uid: str, workspace_uid: str,
+                                    particles_job_uid: str, micrographs_job_uid: Optional[str] = None,
+                                    min_dist_A: Optional[float] = None,
+                                    params: Optional[Dict[str, Any]] = None,
+                                    lane: Optional[str] = None, hostname: Optional[str] = None,
+                                    wait_for_completion: bool = False, timeout: int = 3600,
+                                    check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """Remove duplicate particle picks within a minimum separation. Inputs:
+        particles, optional micrographs. `min_dist_A` -> min_dist_A."""
+        job_params: Dict[str, Any] = {}
+        md = self._coerce_float(min_dist_A)
+        if md is not None:
+            job_params["min_dist_A"] = md
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "remove_duplicate_particles",
+            [("particles", particles_job_uid, "particle"),
+             ("micrographs", micrographs_job_uid, "exposure")],
+            job_params=job_params, params=params, passthrough_kwargs=kwargs,
+            lane=lane, hostname=hostname, wait_for_completion=wait_for_completion,
+            timeout=timeout, check_interval=check_interval)
+
+    def downsample_particles(self, project_uid: str, workspace_uid: str,
+                             particles_job_uid: str, box_size_pix: Optional[int] = None,
+                             bin_size_pix: Optional[int] = None,
+                             params: Optional[Dict[str, Any]] = None,
+                             lane: Optional[str] = None, hostname: Optional[str] = None,
+                             wait_for_completion: bool = False, timeout: int = 3600,
+                             check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """Downsample / Fourier-crop particles to a smaller box (faster early
+        processing). Input: particles. `box_size_pix`, `bin_size_pix`."""
+        job_params: Dict[str, Any] = {}
+        if box_size_pix:
+            job_params["box_size_pix"] = int(box_size_pix)
+        if bin_size_pix:
+            job_params["bin_size_pix"] = int(bin_size_pix)
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "downsample_particles",
+            [("particles", particles_job_uid, "particle")],
+            job_params=job_params, params=params, passthrough_kwargs=kwargs,
+            lane=lane, hostname=hostname, wait_for_completion=wait_for_completion,
+            timeout=timeout, check_interval=check_interval)
+
+    def topaz_train(self, project_uid: str, workspace_uid: str,
+                    micrographs_job_uid: str, particles_job_uid: str,
+                    params: Optional[Dict[str, Any]] = None,
+                    lane: Optional[str] = None, hostname: Optional[str] = None,
+                    wait_for_completion: bool = False, timeout: int = 3600,
+                    check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """Train a Topaz deep-picking model. Inputs: micrographs + a set of
+        known-good particles to learn from. Requires Topaz on the worker."""
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "topaz_train",
+            [("micrographs", micrographs_job_uid, "exposure"),
+             ("particles", particles_job_uid, "particle")],
+            params=params, passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
+            wait_for_completion=wait_for_completion, timeout=timeout, check_interval=check_interval)
+
+    def topaz_extract(self, project_uid: str, workspace_uid: str,
+                      model_job_uid: str, micrographs_job_uid: str,
+                      params: Optional[Dict[str, Any]] = None,
+                      lane: Optional[str] = None, hostname: Optional[str] = None,
+                      wait_for_completion: bool = False, timeout: int = 3600,
+                      check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """Pick particles with a trained/pretrained Topaz model. Inputs: model
+        (from topaz_train) + micrographs. Alternative to blob/template picking."""
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "topaz_extract",
+            [("model", model_job_uid, "ml_model"),
+             ("micrographs", micrographs_job_uid, "exposure")],
+            params=params, passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
+            wait_for_completion=wait_for_completion, timeout=timeout, check_interval=check_interval)
+
+    def topaz_denoise(self, project_uid: str, workspace_uid: str,
+                      micrographs_job_uid: str, denoise_model_job_uid: Optional[str] = None,
+                      params: Optional[Dict[str, Any]] = None,
+                      lane: Optional[str] = None, hostname: Optional[str] = None,
+                      wait_for_completion: bool = False, timeout: int = 3600,
+                      check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """Denoise micrographs with Topaz (improves picking on low-contrast data).
+        Inputs: micrographs, optional pretrained denoise model."""
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "topaz_denoise",
+            [("micrographs", micrographs_job_uid, "exposure"),
+             ("denoise_model", denoise_model_job_uid, "ml_model")],
+            params=params, passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
+            wait_for_completion=wait_for_completion, timeout=timeout, check_interval=check_interval)
+
+    def class_2d_new(self, project_uid: str, workspace_uid: str,
+                     particles_job_uid: str, num_classes: Optional[int] = None,
+                     params: Optional[Dict[str, Any]] = None,
+                     lane: Optional[str] = None, hostname: Optional[str] = None,
+                     wait_for_completion: bool = False, timeout: int = 3600,
+                     check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """2D Classification (new/faster engine, class_2D_new). Input: particles.
+        `num_classes` -> class2D_K. Use as an alternative to legacy class_2D."""
+        job_params: Dict[str, Any] = {}
+        if num_classes:
+            job_params["class2D_K"] = int(num_classes)
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "class_2D_new",
+            [("particles", particles_job_uid, "particle")],
+            job_params=job_params, params=params, passthrough_kwargs=kwargs,
+            lane=lane, hostname=hostname, wait_for_completion=wait_for_completion,
+            timeout=timeout, check_interval=check_interval,
+            result_extra={"num_classes": num_classes})

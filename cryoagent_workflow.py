@@ -194,7 +194,7 @@ class CryoAgentMasterWorkflow:
         
         print()
     
-    def run_complete_workflow(self, dry_run: bool = False, conversation_id: Optional[str] = None, mode: str = "guided", goal: Optional[str] = None) -> bool:
+    def run_complete_workflow(self, dry_run: bool = False, conversation_id: Optional[str] = None, mode: str = "guided", goal: Optional[str] = None, improve: bool = False) -> bool:
         """
         Run the complete cryoEM workflow.
 
@@ -238,6 +238,17 @@ class CryoAgentMasterWorkflow:
                     self.llm_logger.end_workflow_log(False, "Dynamic workflow failed")
                 if 'final_report_path' in result:
                     print(f"\n📊 Workflow Report: {result['final_report_path']}")
+                if success and improve:
+                    print("\n🔬 Running dynamic improvement on the completed run...")
+                    try:
+                        imp = self.orchestrator.execute_improvement(conversation_id=conversation_id, goal=goal)
+                        if imp.get("success"):
+                            print("✅ Improvement phase finished.")
+                            print(imp.get("output", ""))
+                        else:
+                            print(f"⚠️ Improvement phase did not run: {imp.get('error')}")
+                    except Exception as e:
+                        print(f"⚠️ Improvement phase error: {e}")
                 return success
 
             print("🎯 Starting Complete CryoEM Workflow (guided mode)")
@@ -319,15 +330,28 @@ class CryoAgentMasterWorkflow:
                     print(f"   Markdown: {md_report}")
                 
                 self.llm_logger.end_workflow_log(False, "Workflow failed - one or more stages did not complete")
-            
+
+            # Opt-in dynamic improvement: only after a successful guided run.
+            if success and improve:
+                print("\n🔬 Running dynamic improvement on the completed run...")
+                try:
+                    imp = self.orchestrator.execute_improvement(conversation_id=conversation_id, goal=goal)
+                    if imp.get("success"):
+                        print("✅ Improvement phase finished.")
+                        print(imp.get("output", ""))
+                    else:
+                        print(f"⚠️ Improvement phase did not run: {imp.get('error')}")
+                except Exception as e:
+                    print(f"⚠️ Improvement phase error: {e}")
+
             return success
-            
+
         except Exception as e:
             print(f"❌ Complete workflow failed: {e}")
             import traceback
             traceback.print_exc()
             return False
-    
+
     def run_preprocessing_workflow(self, dry_run: bool = False, conversation_id: Optional[str] = None) -> bool:
         """
         Run only the pre-processing stage workflow.
@@ -597,6 +621,16 @@ Examples:
     )
 
     parser.add_argument(
+        "--improve",
+        action="store_true",
+        help="After the workflow completes, run the dynamic improvement agent: it "
+             "reads the blackboard (all stages' real metrics), diagnoses the "
+             "limiting factor and root cause across stages, and acts with atomic "
+             "tools to further improve the result (reusing prior good jobs), "
+             "stopping when no significant FSC/cFAR gain remains."
+    )
+
+    parser.add_argument(
         "--goal",
         default=None,
         help="Optional high-level goal statement passed to the workflow planner."
@@ -624,7 +658,7 @@ Examples:
         elif args.workflow == "complete":
             # Use provided conversation ID or generate a unique one to ensure fresh start
             conversation_id = args.conversation_id or f"complete_workflow_{int(time.time())}"
-            success = master_workflow.run_complete_workflow(args.dry_run, conversation_id, mode=args.mode, goal=args.goal)
+            success = master_workflow.run_complete_workflow(args.dry_run, conversation_id, mode=args.mode, goal=args.goal, improve=args.improve)
             
         elif args.workflow == "preprocessing":
             # Use provided conversation ID or generate a unique one to ensure fresh start

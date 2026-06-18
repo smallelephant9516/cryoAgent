@@ -121,6 +121,8 @@
     "provider": "deepseek",
     "temperature": 0.1,
     "max_iterations": 50,
+    "improvement_max_iterations": 80,
+    "improvement_max_iterations_description": "ReAct step cap for the opt-in --improve agent (baseline + up to 5 jobs, each with wait/describe/diagnostics). Falls back to max(30, max_iterations) when unset.",
     "verbose": true,
     "timeout": 60,
     "memory_control": {

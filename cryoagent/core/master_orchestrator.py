@@ -2385,7 +2385,61 @@ class MasterOrchestrator:
         self.logger = logging.getLogger("MasterOrchestrator")
         self.transition_agent = None
         self.summary_agent = SummaryAgent(outputs_dir=outputs_dir)
-        
+        self.cryosparc_tools = None
+        self.workflow_state = None
+
+    def _find_cryosparc_tools(self):
+        """Return a CryoSPARCTools instance from any initialized stage agent."""
+        if getattr(self, "cryosparc_tools", None):
+            return self.cryosparc_tools
+        for agent in self.stage_agents.values():
+            ct = getattr(agent, "cryosparc_tools", None)
+            if ct:
+                return ct
+            ma = getattr(agent, "modular_agent", None)
+            if ma is not None and getattr(ma, "cryosparc_tools", None):
+                return ma.cryosparc_tools
+        return None
+
+    def _record_to_blackboard(self, stage_name: str, success: bool, stage_outputs: dict) -> None:
+        """Record a finished stage's outputs + real metrics to the blackboard,
+        plus the narrative (goal + the action choices it actually made) so
+        dynamic/improvement mode can reason about intent, not just numbers."""
+        try:
+            from .workflow_state import WorkflowState, summarize_decisions
+            if self.workflow_state is None:
+                wc = self.workflow_context
+                self.workflow_state = WorkflowState(
+                    outputs_dir=self.outputs_dir,
+                    project_uid=getattr(wc, "project_uid", None) if wc else None,
+                    workspace_uid=getattr(wc, "workspace_uid", None) if wc else None,
+                )
+
+            # Narrative context, best-effort (never block recording on it).
+            goal = None
+            decisions = None
+            try:
+                stage_agent = self.stage_agents.get(stage_name)
+                if stage_agent is not None:
+                    if hasattr(stage_agent, "get_stage_description"):
+                        goal = stage_agent.get_stage_description()
+                    modular = getattr(stage_agent, "modular_agent", None) or stage_agent
+                    if hasattr(modular, "get_tool_execution_log"):
+                        decisions = summarize_decisions(modular.get_tool_execution_log())
+            except Exception as ctx_exc:
+                self.logger.debug(f"Blackboard narrative extraction skipped for {stage_name}: {ctx_exc}")
+
+            self.workflow_state.record_stage(
+                stage=stage_name,
+                success=success,
+                stage_outputs=stage_outputs or {},
+                cryosparc_tools=self._find_cryosparc_tools(),
+                goal=goal,
+                decisions=decisions,
+            )
+        except Exception as e:
+            self.logger.warning(f"Failed to record stage {stage_name} to blackboard: {e}")
+
     def initialize(self) -> bool:
         """
         Initialize the master orchestrator and all stage agents.
@@ -2969,6 +3023,7 @@ class MasterOrchestrator:
                             print(f"⚠️ Warning: Transition failed: {e}")
                 
                 self.workflow_context.stage_outputs[stage] = stage_outputs
+                self._record_to_blackboard(stage_name, True, stage_outputs)
                 print(f"✅ Stage {stage_name} completed successfully")
                 print(f"   Execution time: {stage_result.execution_time:.2f} seconds")
             else:
@@ -3051,8 +3106,78 @@ class MasterOrchestrator:
         
         # Display results
         self._display_workflow_results(summary)
-        
+
         return summary
+
+    def execute_improvement(
+        self,
+        conversation_id: Optional[str] = None,
+        goal: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Run the opt-in dynamic improvement agent over a completed run.
+
+        Builds an ImprovementAgent with the full atomic toolset (delegating to the
+        initialized stage agents) + the blackboard, and lets it reason/act across
+        stage boundaries to better the result. Loads an existing
+        workflow_state.json if the blackboard wasn't populated in-process (e.g.
+        improving a prior run).
+        """
+        from .improvement_agent import ImprovementAgent
+        from .workflow_state import WorkflowState
+
+        cryosparc_tools = self._find_cryosparc_tools()
+        if cryosparc_tools is None:
+            print("⚠️ Improvement requires CryoSPARC tools; none available.")
+            return {"success": False, "error": "no cryosparc tools"}
+
+        # Use in-process blackboard, else load persisted one (resume-and-improve).
+        if self.workflow_state is None:
+            self.workflow_state = WorkflowState.load(outputs_dir=self.outputs_dir)
+        if self.workflow_state is None:
+            print("⚠️ No workflow_state.json found; run the guided workflow first.")
+            return {"success": False, "error": "no blackboard"}
+
+        # Reuse a stage agent's full config object.
+        config = None
+        for agent in self.stage_agents.values():
+            if getattr(agent, "config", None) is not None:
+                config = agent.config
+                break
+        if config is None:
+            print("⚠️ No stage config available for improvement agent.")
+            return {"success": False, "error": "no config"}
+
+        print("🔬 Starting dynamic improvement (cross-stage, atomic tools)")
+        print("=" * 60)
+        print(self.workflow_state.summary_for_planner())
+        print("=" * 60)
+
+        agent = ImprovementAgent(
+            stage_agents=self.stage_agents,
+            cryosparc_tools=cryosparc_tools,
+            config=config,
+            workflow_state=self.workflow_state,
+        )
+        if hasattr(agent, "realtime_logger"):
+            agent.realtime_logger.outputs_dir = Path(self.outputs_dir)
+        agent.outputs_dir = self.outputs_dir
+
+        task = (
+            "Improve the current best 3D reconstruction. Follow your instructions "
+            "exactly: first establish the baseline (describe_job_results + "
+            "get_orientation_diagnostics on the current best refinement), then "
+            "diagnose the single biggest limiting factor using the symptom table, "
+            "act on ONE hypothesis at a time reusing prior good jobs, verify each "
+            "change against the baseline, and STOP per your stop conditions "
+            "(no meaningful gain, data-limited, or the job cap). Report the final "
+            "best result, what you changed, your diagnosis, and a recommendation."
+        )
+        if goal:
+            task += f"\n\nUser goal for this run: {goal}"
+
+        output = agent.run_react_workflow(task, conversation_id=conversation_id)
+        return {"success": True, "output": output, "blackboard": self.workflow_state.to_dict()}
 
     def execute_dynamic_workflow(
         self,
@@ -3462,6 +3587,7 @@ class MasterOrchestrator:
                                 break
                 
                 self.workflow_context.stage_outputs[stage] = stage_outputs
+                self._record_to_blackboard(stage_name, True, stage_outputs)
                 print(f"✅ Stage {stage_name} completed successfully")
                 print(f"   Execution time: {stage_result.execution_time:.2f} seconds")
             else:
