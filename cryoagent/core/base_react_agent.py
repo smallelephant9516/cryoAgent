@@ -789,6 +789,10 @@ class BaseReActAgent(ABC):
         return self._invoke_job_tool("topaz_denoise", input_str,
             required=["micrographs_job_uid"], optional=["denoise_model_job_uid"])
 
+    def _create_templates_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("create_templates", input_str,
+            required=["volume_job_uid"], optional=["num_projections"])
+
     def _class_2d_new_tool(self, input_str: str) -> str:
         return self._invoke_job_tool("class_2d_new", input_str,
             required=["particles_job_uid"], optional=["num_classes"])

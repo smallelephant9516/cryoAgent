@@ -29,6 +29,7 @@ logger = logging.getLogger("WorkflowState")
 _PRIMARY_JOB_KEYS = (
     "final_refinement_job_uid",
     "best_refinement_job_uid",
+    "best_job_uid",
     "final_volume_job_uid",
     "homogeneous_refinement_job_uid",
     "final_particles_job_uid",
@@ -82,6 +83,42 @@ def summarize_decisions(tool_execution_log: Optional[List[Dict[str, Any]]],
         if not deduped or deduped[-1] != d:
             deduped.append(d)
     return deduped[:max_items]
+
+
+# Action tools whose output is a refined 3D volume (candidates for "best result"
+# when recording an improvement run). Matched against the tool name AND the
+# returned job_type, so both friendly names and raw CryoSPARC job types qualify.
+_REFINEMENT_TOOL_HINTS = (
+    "refine", "refinement", "reconstruct", "abinit", "ab_initio",
+)
+
+
+def refinement_job_uids_from_log(tool_execution_log: Optional[List[Dict[str, Any]]]) -> List[str]:
+    """Extract, in order, the job UIDs of refinement/reconstruction jobs an agent
+    created (from its tool-execution log). These are the candidates whose
+    resolution can be compared to find the improvement run's best result.
+
+    Skips diagnostics/infrastructure tools and non-volume-producing actions
+    (picking, extraction, 2D, curation), and de-dups while preserving order.
+    """
+    uids: List[str] = []
+    for entry in tool_execution_log or []:
+        tool = (entry.get("tool") or "").lower()
+        if not tool or tool in _NON_ACTION_TOOLS or entry.get("error"):
+            continue
+        result = entry.get("result")
+        if not isinstance(result, dict):
+            continue
+        job_uid = result.get("job_uid")
+        if not isinstance(job_uid, str) or not job_uid.strip():
+            continue
+        job_type = (result.get("job_type") or "").lower()
+        haystack = f"{tool} {job_type}"
+        if any(h in haystack for h in _REFINEMENT_TOOL_HINTS):
+            u = job_uid.strip()
+            if u not in uids:
+                uids.append(u)
+    return uids
 
 
 class StageRecord:
@@ -219,12 +256,76 @@ class WorkflowState:
                 logger.warning("Failed to read metrics for %s (%s): %s", stage, primary, e)
                 metrics["note"] = f"metric read error: {e}"
 
+        # Fallback: if no resolution was obtained from describe_job_results but the
+        # stage already computed one in its outputs (e.g. polish writes
+        # `final_resolution`), trust that rather than recording None.
+        if metrics.get("resolution_angstroms") is None:
+            for k in ("final_resolution", "resolution_angstroms"):
+                v = stage_outputs.get(k)
+                if isinstance(v, (int, float)):
+                    metrics["resolution_angstroms"] = float(v)
+                    break
+
         # Replace any existing record for this stage (latest wins), else append.
         rec = StageRecord(stage, success, stage_outputs, primary, metrics, assessment,
                           goal=goal, decisions=decisions, reasoning_summary=reasoning_summary)
         self.records = [r for r in self.records if r.stage != stage] + [rec]
         self.save()
         return rec
+
+    def record_improvement(
+        self,
+        cryosparc_tools,
+        candidate_job_uids: List[str],
+        assessment: Optional[str] = None,
+        decisions: Optional[List[str]] = None,
+    ) -> Optional[StageRecord]:
+        """Record the best refinement the improvement agent produced.
+
+        Reads `describe_job_results` for each candidate job UID (jobs the agent
+        created during --improve), keeps those with a numeric resolution, picks
+        the best (lowest resolution; tie-break on higher cFAR), and records it as
+        an 'improvement' stage via the normal record_stage path. Returns the
+        StageRecord, or None when no candidate yields a resolution (nothing is
+        recorded in that case). Never raises.
+        """
+        best_uid = None
+        best_res = None
+        best_cfar = None
+        for uid in candidate_job_uids or []:
+            if not isinstance(uid, str) or not uid.strip():
+                continue
+            try:
+                res = cryosparc_tools.describe_job_results(uid.strip(), project_uid=self.project_uid)
+            except Exception as e:
+                logger.warning("record_improvement: describe_job_results failed for %s: %s", uid, e)
+                continue
+            if not res.get("success"):
+                continue
+            r = res.get("resolution_angstroms")
+            if not isinstance(r, (int, float)):
+                continue
+            c = res.get("cfar") if isinstance(res.get("cfar"), (int, float)) else None
+            better = (
+                best_res is None
+                or r < best_res
+                or (r == best_res and c is not None and (best_cfar is None or c > best_cfar))
+            )
+            if better:
+                best_uid, best_res, best_cfar = uid.strip(), r, c
+
+        if best_uid is None:
+            logger.info("record_improvement: no candidate job produced a resolution; nothing recorded.")
+            return None
+
+        return self.record_stage(
+            stage="improvement",
+            success=True,
+            stage_outputs={"final_refinement_job_uid": best_uid},
+            cryosparc_tools=cryosparc_tools,
+            assessment=assessment,
+            decisions=decisions,
+        )
 
     def set_assessment(self, stage: str, assessment: str) -> None:
         for r in self.records:

@@ -546,6 +546,14 @@ _spec("topaz_denoise", "topaz_denoise", "_topaz_denoise_tool",
       "Denoise micrographs with Topaz. USE WHEN low-contrast micrographs make picking "
       "hard (small particles, thick ice) — improves visual picking and inspection. "
       "Required: micrographs_job_uid. Optional: denoise_model_job_uid.", job_tool=True)
+_spec("create_templates", "create_templates", "_create_templates_tool",
+      "Project a refined 3D volume into 2D templates covering all viewing directions, "
+      "for reference-based re-picking. USE WHEN too few particles or preferred orientation "
+      "— volume-projected templates recover under-represented views that 2D-average "
+      "templates miss. Feed the output into template_picker (its 'templates' output), then "
+      "re-extract and re-curate. Caveat: re-picking from your own map risks model bias — "
+      "verify resolution/cFAR actually improve, not just particle count. "
+      "Required: volume_job_uid. Optional: num_projections.", job_tool=True)
 _spec("class_2d_new", "class_2d_new", "_class_2d_new_tool",
       "2D Classification with the newer/faster engine (class_2D_new). USE WHEN cleaning a "
       "particle stack / inspecting quality and you want a faster alternative to legacy "
@@ -571,7 +579,8 @@ AGENT_TOOL_SETS: Dict[str, List[str]] = {
         "select_2d_classes_picking", "template_picker", "get_job_status",
         "wait_for_job", "get_job_log", "search_cryosparc_forum", "describe_job_params",
         "reason_picking",
-        "topaz_train", "topaz_extract", "topaz_denoise", "remove_duplicate_particles",
+        "topaz_train", "topaz_extract", "topaz_denoise", "create_templates",
+        "remove_duplicate_particles",
     ],
     "optimization_2d": [
         "class_2d_opt2d", "select_2d_classes_opt2d", "get_particle_count",
@@ -602,6 +611,7 @@ AGENT_TOOL_SETS: Dict[str, List[str]] = {
         "ctf_refine_global", "ctf_refine_local", "local_refinement",
         "particle_subtract", "symmetry_expansion", "class_3d",
         "remove_duplicate_particles", "downsample_particles",
+        "create_templates",
     ],
     "heterogeneity": [
         # Atomic: ab-initio then K-class heterogeneous refinement (LLM drives the

@@ -3177,7 +3177,38 @@ class MasterOrchestrator:
             task += f"\n\nUser goal for this run: {goal}"
 
         output = agent.run_react_workflow(task, conversation_id=conversation_id)
-        return {"success": True, "output": output, "blackboard": self.workflow_state.to_dict()}
+
+        # Record the improvement agent's best refinement to the blackboard. The
+        # agent reads the blackboard but does not write to it; without this its
+        # result (e.g. a CTF-refined 2.98 Å map) lives only in the transcript.
+        improved_best = None
+        try:
+            from .workflow_state import refinement_job_uids_from_log
+            tool_log = agent.get_tool_execution_log() if hasattr(agent, "get_tool_execution_log") else []
+            candidates = refinement_job_uids_from_log(tool_log)
+            if candidates:
+                rec = self.workflow_state.record_improvement(
+                    cryosparc_tools=cryosparc_tools,
+                    candidate_job_uids=candidates,
+                    assessment="best refinement produced during --improve",
+                )
+                if rec is not None:
+                    improved_best = {
+                        "job_uid": rec.primary_job_uid,
+                        "resolution_angstroms": rec.metrics.get("resolution_angstroms"),
+                        "cfar": rec.metrics.get("cfar"),
+                    }
+                    print(f"📝 Recorded improvement best: {rec.primary_job_uid} "
+                          f"@ {rec.metrics.get('resolution_angstroms')} Å")
+        except Exception as e:
+            self.logger.warning(f"Failed to record improvement result to blackboard: {e}")
+
+        return {
+            "success": True,
+            "output": output,
+            "improved_best": improved_best,
+            "blackboard": self.workflow_state.to_dict(),
+        }
 
     def execute_dynamic_workflow(
         self,

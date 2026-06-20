@@ -199,12 +199,24 @@ _TUTORIALS: List[Dict[str, Any]] = [
 
 
 def _strip_html(html: str) -> str:
-    """Crude HTML → text: drop scripts/styles/tags, collapse whitespace."""
+    """HTML → text. The guide is a GitBook site; the real page body lives inside
+    the <main> element, while everything else is the nav sidebar/boilerplate
+    ("CryoSPARC Guide About... Changelog Licensing..."). Extract <main> first so
+    excerpts are the actual tutorial content, not the navigation menu."""
+    mains = re.findall(r"<main\b[^>]*>(.*?)</main>", html, flags=re.S | re.I)
+    if mains:
+        html = max(mains, key=len)  # the largest <main> is the page body
     html = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", html, flags=re.S | re.I)
     text = re.sub(r"<[^>]+>", " ", html)
     text = re.sub(r"&[a-z]+;", " ", text)
     text = re.sub(r"\s+", " ", text)
-    return text.strip()
+    text = text.strip()
+    # Drop the common GitBook page-header preamble ("...llms.txt ... On this page")
+    # that precedes the real content, keeping the body that follows it.
+    m = re.search(r"On this page\b", text)
+    if m and m.end() < len(text) - 50:
+        text = text[m.end():].strip()
+    return text
 
 
 def _fetch(url: str, timeout: int = DEFAULT_TIMEOUT) -> Optional[str]:
@@ -312,6 +324,17 @@ def consult_cryosparc_guide(question: str = "", max_pages: int = 2, *,
         return list_cryosparc_tutorials()
     if slug:
         return fetch_guide_page(slug, question)
+
+    # Empty/whitespace question with no slug: there is nothing to match on.
+    # Return the browsable catalog so the agent can pick a slug, rather than a
+    # dead "no match" (the agent sometimes calls with question="" expecting the
+    # tool to infer intent).
+    if not (question or "").strip():
+        res = list_cryosparc_tutorials()
+        res["message"] = ("No question provided. Browse the catalog below and "
+                          "re-call with slug=<slug>, or pass a specific question. "
+                          + str(res.get("message", "")))
+        return res
 
     q = (question or "").lower()
     pages: List[Dict[str, str]] = []

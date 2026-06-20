@@ -1316,6 +1316,7 @@ class CryoSPARCTools:
         "topaz_train": "topaz_train",
         "topaz_extract": "topaz_extract",
         "topaz_denoise": "topaz_denoise",
+        "create_templates": "create_templates",
         "class_2d_new": "class_2D_new",
         "class_2D_new": "class_2D_new",
     }
@@ -2797,36 +2798,60 @@ class CryoSPARCTools:
     @staticmethod
     def _extract_resolution_from_stats(stats: Dict[str, Any]) -> Optional[float]:
         """
-        Pull the reported resolution in Angstroms from a latest_summary_stats dict.
+        Pull the reported GOLD-STANDARD resolution in Angstroms from a
+        latest_summary_stats dict.
 
         Handles the layouts seen across refinement types: resolution lives either
         directly under the stats, or nested under 'fsc_info'/'fsc_info_autotight'/
-        'fsc_info_best'. The reported value is the loose-mask (or noise-substituted)
-        resolution; only the '*_A' keys are in Angstroms (others are Fourier radius).
-        Preference order favors the gold-standard masked estimate.
+        'fsc_info_best'. Only the '*_A' keys are in Angstroms (others are Fourier
+        radius). The headline value is CryoSPARC's gold-standard FSC=0.143
+        resolution: `radwn_final_A` (the value CryoSPARC reports as THE resolution),
+        then the tight-mask / noise-substituted estimates, and only LAST the
+        loose-mask value (which is coarser/larger and was previously reported by
+        mistake — e.g. 3.17 Å loose vs 2.80 Å gold-standard for the same job).
+        """
+        res, _ = CryoSPARCTools._extract_resolutions_from_stats(stats)
+        return res
+
+    @staticmethod
+    def _extract_resolutions_from_stats(stats: Dict[str, Any]):
+        """Return (headline_resolution_A, all_radwn_A) from latest_summary_stats.
+
+        headline = gold-standard FSC@0.143 (final/tight/noisesub preferred).
+        all_radwn_A = every distinct radwn_*_A (FSC=0.143) value found, by key,
+        for transparency (lets the caller/LLM see loose vs tight vs final).
         """
         if not isinstance(stats, dict):
-            return None
-        # Candidate containers, in order of preference.
+            return None, {}
         containers = [stats]
         for key in ("fsc_info_best", "fsc_info", "fsc_info_autotight"):
             sub = stats.get(key)
             if isinstance(sub, dict):
                 containers.append(sub)
-        # Preferred Angstrom keys, best-practice first.
+        # Gold-standard first; loose-mask LAST.
         pref_keys = (
-            "radwn_loosemask_A",
-            "radwn_noisesub_A",
-            "radwn_tightmask_A",
-            "radwn_sphericalmask_A",
             "radwn_final_A",
+            "radwn_tightmask_A",
+            "radwn_noisesub_A",
+            "radwn_sphericalmask_A",
+            "radwn_loosemask_A",
         )
+        all_radwn: Dict[str, float] = {}
         for container in containers:
-            for k in pref_keys:
-                v = container.get(k)
-                if isinstance(v, (int, float)):
-                    return float(v)
-        return None
+            for k, v in container.items():
+                # Only FSC=0.143 Angstrom keys (skip the *_05_A = FSC0.5 variants).
+                if k.startswith("radwn_") and k.endswith("_A") and not k.endswith("_05_A"):
+                    if isinstance(v, (int, float)) and k not in all_radwn:
+                        all_radwn[k] = float(v)
+        headline = None
+        for k in pref_keys:
+            if isinstance(all_radwn.get(k), (int, float)):
+                headline = all_radwn[k]
+                break
+        if headline is None and all_radwn:
+            headline = next(iter(all_radwn.values()))
+        return headline, all_radwn
+
 
     def describe_job_results(
         self,
@@ -2940,10 +2965,11 @@ class CryoSPARCTools:
                 # Single-volume resolution from latest_summary_stats.
                 res = None
                 box = None
+                all_radwn = {}
                 for g in output_groups:
                     if isinstance(g, dict) and g.get("latest_summary_stats"):
                         stats = g["latest_summary_stats"]
-                        res = self._extract_resolution_from_stats(stats)
+                        res, all_radwn = self._extract_resolutions_from_stats(stats)
                         # box size N if present
                         for cont in (stats, stats.get("fsc_info", {}), stats.get("fsc_info_autotight", {})):
                             if isinstance(cont, dict) and cont.get("N"):
@@ -2952,6 +2978,10 @@ class CryoSPARCTools:
                             break
                 if res is not None:
                     result["resolution_angstroms"] = res
+                    # Surface all mask variants for transparency (gold-standard vs
+                    # loose-mask differ; headline above is the gold-standard value).
+                    if all_radwn and len(all_radwn) > 1:
+                        result["resolution_by_mask_A"] = all_radwn
                 if box is not None:
                     result["box_size"] = int(box)
                 # cFAR only if a downstream orientation_diagnostics job already exists.
@@ -5440,6 +5470,36 @@ class CryoSPARCTools:
             [("micrographs", micrographs_job_uid, "exposure"),
              ("denoise_model", denoise_model_job_uid, "ml_model")],
             params=params, passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
+            wait_for_completion=wait_for_completion, timeout=timeout, check_interval=check_interval)
+
+    def create_templates(self, project_uid: str, workspace_uid: str,
+                         volume_job_uid: str, num_projections: Optional[int] = None,
+                         params: Optional[Dict[str, Any]] = None,
+                         lane: Optional[str] = None, hostname: Optional[str] = None,
+                         wait_for_completion: bool = False, timeout: int = 3600,
+                         check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """Project a refined 3D volume into 2D templates covering all viewing directions,
+        for reference-based re-picking.
+
+        USE WHEN too few particles or preferred orientation — volume-projected templates
+        recover under-represented views that 2D-average templates miss. Feed the output
+        (``templates`` slot) into ``template_picker``, then re-extract and re-curate.
+
+        **Caveat:** re-picking from your own map risks model bias (pulling in noise that
+        matches the reference). Verify resolution/cFAR actually improve, not just count.
+
+        Args:
+            volume_job_uid: Refined volume to project (e.g. homogeneous/non-uniform refinement).
+            num_projections: Number of equally-spaced projection directions (default: CryoSPARC decides).
+        """
+        job_params: Dict[str, Any] = {}
+        if num_projections:
+            job_params["n_templates"] = int(num_projections)
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "create_templates",
+            [("volume", volume_job_uid, "volume")],
+            job_params=job_params, params=params, passthrough_kwargs=kwargs,
+            lane=lane, hostname=hostname,
             wait_for_completion=wait_for_completion, timeout=timeout, check_interval=check_interval)
 
     def class_2d_new(self, project_uid: str, workspace_uid: str,

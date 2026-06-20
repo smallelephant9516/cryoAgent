@@ -14,14 +14,14 @@
     "reconstruction_job_uid"
   ],
   "microscope_parameters": {
-    "particle_diameter": 150.0,
-    "symmetry": "C1",
-    "pixel_size": 2.74,
-    "voltage": 100.0,
-    "cs_mm": 2.0,
-    "dose": 33.2,
-    "movies_path": "/home/daoyi/scratch/cryoEM_dataset/10316_ribo/data/*.mrcs",
-    "gain_ref_path": null,
+    "particle_diameter": 180.0,
+    "symmetry": "D2",
+    "pixel_size": 0.88,
+    "voltage": 200.0,
+    "cs_mm": 1.4,
+    "dose": 61.4,
+    "movies_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/*.tiff",
+    "gain_ref_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/gain.mrc",
     "gain_rot": 0,
     "gain_flip": 0
   },
@@ -34,14 +34,14 @@
       "initial_resolution": 20.0,
       "final_resolution": 10.0,
       "max_iterations": 50,
-      "symmetry": "C1",
-      "particle_diameter": 180
+      "symmetry": "D2",
+      "particle_diameter": 216
     },
     "refinement": {
       "type": "homogeneous",
       "resolution": null,
-      "symmetry": "C1",
-      "particle_diameter": 180
+      "symmetry": "D2",
+      "particle_diameter": 216
     }
   },
   "react_workflow": {

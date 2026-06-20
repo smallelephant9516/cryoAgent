@@ -6,15 +6,15 @@
     "version": "1.0.0"
   },
   "microscope_parameters": {
-    "pixel_size": 2.74,
-    "voltage": 100,
-    "cs_mm": 2.0,
-    "dose": 33.2,
-    "particle_diameter": 150,
-    "symmetry": "C1",
-    "movies_path": "/home/daoyi/scratch/cryoEM_dataset/10316_ribo/data/*.mrcs",
+    "pixel_size": 0.88,
+    "voltage": 200,
+    "cs_mm": 1.4,
+    "dose": 61.4,
+    "particle_diameter": 180,
+    "symmetry": "D2",
+    "movies_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/*.tiff",
     "micrographs_path": null,
-    "gain_ref_path": null,
+    "gain_ref_path": "/home/daoyi/cryoEM_dataset/relion_tutorial/relion30_tutorial/Movies/gain.mrc",
     "gain_rot": 0,
     "gain_flip": 0
   },
