@@ -150,19 +150,213 @@ def _flatten_stage_outputs(d: Dict[str, Any]) -> Dict[str, Any]:
     return flat
 
 
-def _parse_conversation_log(path: Path) -> List[Dict[str, Any]]:
-    """Best-effort reconstruct a tool-execution log from an llm_conversation log.
+_FULL_DYNAMIC_LOG_GLOB = "llm_conversation_full_dynamic_*.log"
 
-    Scans `TOOL EXECUTION: <tool>` followed by an `Arguments: { ... }` JSON block
-    (and an optional `Result: {...}`), returning [{tool, params, result?}]. Used to
-    rebuild the `decisions` narrative. Never raises — returns what it can parse.
+# Tools whose job UIDs are candidates for the "best" refinement when parsing logs.
+_REFINEMENT_TOOL_NAMES = frozenset({
+    "nonuniform_refinement", "homogeneous_refinement", "ab_initio_reconstruction",
+    "local_refinement", "ctf_refine_global", "ctf_refine_local",
+    "class_3d", "sharpen", "deepemhancer",
+})
+
+
+def has_full_dynamic_log(outputs_dir: str = "outputs") -> bool:
+    """True when ``outputs_dir`` contains a full_dynamic conversation log."""
+    return find_latest_full_dynamic_log(outputs_dir) is not None
+
+
+def find_latest_full_dynamic_log(outputs_dir: str = "outputs") -> Optional[Path]:
+    """Return the newest ``llm_conversation_full_dynamic_*.log`` under *outputs_dir*."""
+    out = Path(outputs_dir)
+    if not out.exists():
+        return None
+    cands = sorted(out.glob(_FULL_DYNAMIC_LOG_GLOB),
+                   key=lambda p: p.stat().st_mtime, reverse=True)
+    return cands[0] if cands else None
+
+
+def has_guided_result_artifacts(outputs_dir: str = "outputs") -> bool:
+    """True when per-stage guided result JSON files exist under *outputs_dir*."""
+    out = Path(outputs_dir)
+    if not out.exists():
+        return False
+    for _, prefix in _STAGE_RESULT_PREFIXES:
+        if list(out.glob(f"{prefix}_results_cryosparc_*.json")):
+            return True
+    return False
+
+
+def parse_full_dynamic_log(text: str) -> Dict[str, Any]:
+    """Extract pipeline context from a ``full_dynamic`` conversation log.
+
+    Returns a dict with keys: success, goal, decisions, best_job_uid, metrics,
+    reasoning_summary, assessment, log_path (optional, set by caller).
+    Never raises.
     """
+    result: Dict[str, Any] = {
+        "success": False,
+        "goal": None,
+        "decisions": [],
+        "best_job_uid": None,
+        "metrics": {},
+        "reasoning_summary": None,
+        "assessment": None,
+    }
+    if not text:
+        return result
+
+    # Goal from the opening system message.
+    goal_m = re.search(
+        r'SYSTEM MESSAGE:.*?Metadata:\s*\{.*?"workflow_input":\s*"(.+?)"',
+        text, flags=re.S,
+    )
+    if goal_m:
+        try:
+            result["goal"] = json.loads(f'"{goal_m.group(1)}"')
+        except Exception:
+            result["goal"] = goal_m.group(1).replace("\\n", "\n").replace('\\"', '"')
+
+    # Run outcome.
+    ended_m = re.search(r"CONVERSATION ENDED:\s*\nSuccess:\s*(True|False)", text)
+    if ended_m:
+        result["success"] = ended_m.group(1).strip().lower() == "true"
+
+    # Prefer structured TOOL EXECUTION blocks when present.
+    tool_entries = _parse_conversation_log_text(text)
+    decisions_from_tools = summarize_decisions(tool_entries, max_items=32)
+
+    # Pair metadata next_tool with job UIDs mentioned in assistant prose.
+    decisions_from_prose: List[str] = []
+    pending_tool: Optional[str] = None
+    assistant_blocks = re.findall(
+        r"\[[^\]]+\] ASSISTANT RESPONSE:\n(.*?)(?=\n-{50}|\Z)",
+        text, flags=re.S,
+    )
+    for block in assistant_blocks:
+        meta_m = re.search(r'"next_tool":\s*"([^"]+)"', block)
+        job_uids = re.findall(r"\b(J\d+)\b", block)
+        if pending_tool and pending_tool not in _NON_ACTION_TOOLS and job_uids:
+            uid = job_uids[0]
+            label = f"{pending_tool} -> {uid}"
+            if not decisions_from_prose or decisions_from_prose[-1] != label:
+                decisions_from_prose.append(label)
+        if meta_m:
+            pending_tool = meta_m.group(1).strip()
+
+    # Summary table rows: | N | `tool` | **Jxxx** | ...
+    table_decisions: List[str] = []
+    for row_m in re.finditer(
+        r"\|\s*\d+\s*\|\s*`([^`]+)`\s*\|\s*\*\*(J\d+)\*\*",
+        text,
+    ):
+        tool, uid = row_m.group(1).strip(), row_m.group(2).strip()
+        if tool not in _NON_ACTION_TOOLS:
+            table_decisions.append(f"{tool} -> {uid}")
+
+    # Merge: table is most reliable when present, then prose, then TOOL EXECUTION.
+    if table_decisions:
+        result["decisions"] = table_decisions
+    elif decisions_from_prose:
+        result["decisions"] = decisions_from_prose
+    else:
+        result["decisions"] = decisions_from_tools
+
+    # Final-summary fields (successful runs).
+    best_uid_m = re.search(
+        r"(?:refinement|density|volume|map)\s+job\s+UID\*\*:\s*\*\*(J\d+)\*\*",
+        text, flags=re.I,
+    )
+    if best_uid_m:
+        result["best_job_uid"] = best_uid_m.group(1)
+    else:
+        # Table row explicitly marked as best result.
+        best_row = re.search(
+            r"\|\s*\d+\s*\|\s*`([^`]+)`\s*\|\s*\*\*(J\d+)\*\*[^|\n]*best result",
+            text, flags=re.I,
+        )
+        if best_row:
+            result["best_job_uid"] = best_row.group(2)
+
+    if not result["best_job_uid"]:
+        # Prefer the best refinement-like tool in the decision list (not CTF/diagnostics).
+        _density_tools = (
+            "nonuniform_refinement", "homogeneous_refinement",
+            "ab_initio_reconstruction", "local_refinement",
+        )
+        for d in reversed(result["decisions"]):
+            tool_part = d.split("->")[0].strip().split("(")[0].strip()
+            if tool_part in _density_tools:
+                uid_m = re.search(r"(J\d+)\s*$", d)
+                if uid_m:
+                    result["best_job_uid"] = uid_m.group(1)
+                    break
+        if not result["best_job_uid"]:
+            for d in reversed(result["decisions"]):
+                tool_part = d.split("->")[0].strip().split("(")[0].strip()
+                if tool_part in _REFINEMENT_TOOL_NAMES or any(
+                    h in tool_part for h in _REFINEMENT_TOOL_HINTS
+                ):
+                    uid_m = re.search(r"(J\d+)\s*$", d)
+                    if uid_m:
+                        result["best_job_uid"] = uid_m.group(1)
+                        break
+
+    metrics: Dict[str, Any] = {}
+    res_m = re.search(
+        r"Resolution\*\*:\s*\*\*([\d.]+)\s*Å|resolution of \*\*([\d.]+)\s*Å\*\*"
+        r"|improved to \*\*([\d.]+)\s*Å\*\*",
+        text, flags=re.I,
+    )
+    if res_m:
+        val = next(g for g in res_m.groups() if g)
+        metrics["resolution_angstroms"] = float(val)
+
+    cfar_m = re.search(
+        r"cFAR\*\*:\s*([\d.]+)|cFAR\s*(?:=|of)\s*([\d.]+)",
+        text, flags=re.I,
+    )
+    if cfar_m:
+        val = cfar_m.group(1) or cfar_m.group(2)
+        metrics["cfar"] = float(val)
+
+    parts_m = re.search(
+        r"Particles used\*\*:\s*\*\*([\d,]+)\*\*|([\d,]+)\s+clean particles",
+        text, flags=re.I,
+    )
+    if parts_m:
+        raw = (parts_m.group(1) or parts_m.group(2)).replace(",", "")
+        metrics["num_particles"] = int(raw)
+
+    sym_m = re.search(r"Symmetry\*\*:\s*\*\*(\w+)\*\*", text, flags=re.I)
+    if sym_m:
+        metrics["symmetry"] = sym_m.group(1)
+
+    result["metrics"] = metrics
+
+    # Last assistant block before CONVERSATION ENDED (or last block overall).
+    if assistant_blocks:
+        last = assistant_blocks[-1].split("Metadata:")[0].strip()
+        # Drop trailing markdown headers for a compact one-liner.
+        summary_lines = [
+            ln.strip() for ln in last.splitlines()
+            if ln.strip() and not ln.strip().startswith("#")
+        ]
+        if summary_lines:
+            result["reasoning_summary"] = " ".join(summary_lines)[:500]
+
+    assess_m = re.search(
+        r"## Remaining Limitations / Recommended Next Steps\n(.*?)(?=\nMetadata:|\n-{50}|\Z)",
+        text, flags=re.S,
+    )
+    if assess_m:
+        result["assessment"] = assess_m.group(1).strip()[:800]
+
+    return result
+
+
+def _parse_conversation_log_text(text: str) -> List[Dict[str, Any]]:
+    """Like ``_parse_conversation_log`` but accepts raw log text."""
     entries: List[Dict[str, Any]] = []
-    try:
-        text = path.read_text(encoding="utf-8", errors="ignore")
-    except Exception:
-        return entries
-    # Split on the TOOL EXECUTION markers.
     chunks = re.split(r"TOOL EXECUTION:\s*", text)
     for chunk in chunks[1:]:
         tool = chunk.splitlines()[0].strip() if chunk.strip() else ""
@@ -175,13 +369,28 @@ def _parse_conversation_log(path: Path) -> List[Dict[str, Any]]:
                 entry["params"] = json.loads(m.group(1))
             except Exception:
                 entry["params"] = {}
-        # Result lines are Python-repr (single quotes), not strict JSON; capture a
-        # job_uid if one is visible so refinement extraction can use it.
-        rm = re.search(r"Result:\s*\{.*?['\"]job_uid['\"]\s*:\s*['\"](J\d+)['\"]", chunk, flags=re.S)
+        rm = re.search(
+            r"Result:\s*\{.*?['\"]job_uid['\"]\s*:\s*['\"](J\d+)['\"]", chunk, flags=re.S,
+        )
         if rm:
             entry["result"] = {"job_uid": rm.group(1)}
         entries.append(entry)
     return entries
+
+
+def _parse_conversation_log(path: Path) -> List[Dict[str, Any]]:
+    """Best-effort reconstruct a tool-execution log from an llm_conversation log.
+
+    Scans `TOOL EXECUTION: <tool>` followed by an `Arguments: { ... }` JSON block
+    (and an optional `Result: {...}`), returning [{tool, params, result?}]. Used to
+    rebuild the `decisions` narrative. Never raises — returns what it can parse.
+    """
+    entries: List[Dict[str, Any]] = []
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return entries
+    return _parse_conversation_log_text(text)
 
 
 class StageRecord:
@@ -567,5 +776,78 @@ class WorkflowState:
         if found == 0:
             return None
         logger.info("Reconstructed blackboard from %d stage result file(s).", found)
+        return ws
+
+    @classmethod
+    def reconstruct_from_full_dynamic_log(
+        cls,
+        outputs_dir: str = "outputs",
+        cryosparc_tools=None,
+        project_uid: Optional[str] = None,
+        workspace_uid: Optional[str] = None,
+        log_path: Optional[Path] = None,
+    ) -> Optional["WorkflowState"]:
+        """Rebuild the blackboard from a ``full_dynamic`` conversation log ONLY.
+
+        Used by ``--improve`` when the prior run was ``--mode full_dynamic`` and
+        no per-stage result JSON exists. Parses tool usage and final metrics from
+        ``llm_conversation_full_dynamic_*.log`` so the improvement agent can
+        understand what was already tried and reuse prior job UIDs.
+
+        Returns an in-memory WorkflowState (does not require workflow_state.json).
+        """
+        log_file = log_path or find_latest_full_dynamic_log(outputs_dir)
+        if log_file is None:
+            return None
+        try:
+            text = log_file.read_text(encoding="utf-8", errors="ignore")
+        except Exception as e:
+            logger.warning("reconstruct_from_full_dynamic_log: could not read %s: %s",
+                           log_file, e)
+            return None
+
+        parsed = parse_full_dynamic_log(text)
+        ws = cls(outputs_dir=outputs_dir, project_uid=project_uid, workspace_uid=workspace_uid)
+
+        best_uid = parsed.get("best_job_uid")
+        stage_outputs: Dict[str, Any] = {}
+        if best_uid:
+            stage_outputs["final_refinement_job_uid"] = best_uid
+        log_metrics = parsed.get("metrics") or {}
+        if log_metrics.get("resolution_angstroms") is not None:
+            stage_outputs["resolution_angstroms"] = log_metrics["resolution_angstroms"]
+
+        metrics = dict(log_metrics)
+        # Optionally refresh / fill metrics from CryoSPARC when reachable.
+        if best_uid and cryosparc_tools is not None:
+            try:
+                res = cryosparc_tools.describe_job_results(
+                    best_uid, project_uid=ws.project_uid,
+                )
+                if res.get("success"):
+                    for k in ("job_type", "resolution_angstroms", "box_size",
+                              "symmetry", "num_particles", "num_classes", "cfar",
+                              "cfar_label"):
+                        if res.get(k) is not None:
+                            metrics[k] = res[k]
+            except Exception as e:
+                logger.debug("describe_job_results for %s failed: %s", best_uid, e)
+
+        rec = StageRecord(
+            stage="full_dynamic",
+            success=bool(parsed.get("success")),
+            stage_outputs=stage_outputs,
+            primary_job_uid=best_uid,
+            metrics=metrics,
+            assessment=parsed.get("assessment"),
+            goal=parsed.get("goal"),
+            decisions=parsed.get("decisions") or [],
+            reasoning_summary=parsed.get("reasoning_summary"),
+        )
+        ws.records = [rec]
+        logger.info(
+            "Reconstructed blackboard from full_dynamic log %s (%d decisions, best=%s).",
+            log_file.name, len(rec.decisions), best_uid,
+        )
         return ws
 

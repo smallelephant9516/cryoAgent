@@ -3199,42 +3199,77 @@ class MasterOrchestrator:
         self,
         conversation_id: Optional[str] = None,
         goal: Optional[str] = None,
+        prior_mode: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Run the opt-in dynamic improvement agent over a completed run.
 
         Builds an ImprovementAgent with the full atomic toolset (delegating to the
         initialized stage agents) + the blackboard, and lets it reason/act across
-        stage boundaries to better the result. Loads an existing
-        workflow_state.json if the blackboard wasn't populated in-process (e.g.
-        improving a prior run).
+        stage boundaries to better the result.
+
+        For ``prior_mode='full_dynamic'`` (or when only a full_dynamic conversation
+        log exists), the blackboard is rebuilt exclusively from
+        ``llm_conversation_full_dynamic_*.log`` — not from workflow_state.json or
+        per-stage result JSON files.
         """
         from .improvement_agent import ImprovementAgent
-        from .workflow_state import WorkflowState
+        from .workflow_state import (
+            WorkflowState,
+            has_full_dynamic_log,
+            has_guided_result_artifacts,
+        )
 
         cryosparc_tools = self._find_cryosparc_tools()
         if cryosparc_tools is None:
             print("⚠️ Improvement requires CryoSPARC tools; none available.")
             return {"success": False, "error": "no cryosparc tools"}
 
-        # Use in-process blackboard, else load persisted one (resume-and-improve),
-        # else rebuild it from the finished run's artifacts in outputs/.
-        if self.workflow_state is None:
-            self.workflow_state = WorkflowState.load(outputs_dir=self.outputs_dir)
-        if self.workflow_state is None:
+        use_full_dynamic_log = (
+            prior_mode == "full_dynamic"
+            or (
+                has_full_dynamic_log(self.outputs_dir)
+                and not has_guided_result_artifacts(self.outputs_dir)
+            )
+        )
+
+        if use_full_dynamic_log:
             wc = self.workflow_context
-            self.workflow_state = WorkflowState.reconstruct_from_outputs(
+            self.workflow_state = WorkflowState.reconstruct_from_full_dynamic_log(
                 outputs_dir=self.outputs_dir,
                 cryosparc_tools=cryosparc_tools,
                 project_uid=getattr(wc, "project_uid", None) if wc else None,
                 workspace_uid=getattr(wc, "workspace_uid", None) if wc else None,
             )
             if self.workflow_state is not None:
-                print(f"🧩 No workflow_state.json — rebuilt the blackboard from "
-                      f"{len(self.workflow_state.records)} stage result file(s) in {self.outputs_dir}.")
+                log_name = "llm_conversation_full_dynamic_*.log"
+                print(f"📜 Rebuilt blackboard from full_dynamic log ({log_name}) "
+                      f"in {self.outputs_dir}.")
+        else:
+            # Guided/dynamic: in-process blackboard, workflow_state.json, or
+            # per-stage result JSON artifacts.
+            if self.workflow_state is None:
+                self.workflow_state = WorkflowState.load(outputs_dir=self.outputs_dir)
+            if self.workflow_state is None:
+                wc = self.workflow_context
+                self.workflow_state = WorkflowState.reconstruct_from_outputs(
+                    outputs_dir=self.outputs_dir,
+                    cryosparc_tools=cryosparc_tools,
+                    project_uid=getattr(wc, "project_uid", None) if wc else None,
+                    workspace_uid=getattr(wc, "workspace_uid", None) if wc else None,
+                )
+                if self.workflow_state is not None:
+                    print(f"🧩 No workflow_state.json — rebuilt the blackboard from "
+                          f"{len(self.workflow_state.records)} stage result file(s) in "
+                          f"{self.outputs_dir}.")
+
         if self.workflow_state is None:
-            print("⚠️ No workflow_state.json and no result artifacts found in "
-                  f"{self.outputs_dir}; run the guided workflow first.")
+            if use_full_dynamic_log:
+                print("⚠️ No llm_conversation_full_dynamic_*.log found in "
+                      f"{self.outputs_dir}; run full_dynamic first.")
+            else:
+                print("⚠️ No workflow_state.json and no result artifacts found in "
+                      f"{self.outputs_dir}; run the guided workflow first.")
             return {"success": False, "error": "no blackboard"}
 
         # Reuse a stage agent's full config object.

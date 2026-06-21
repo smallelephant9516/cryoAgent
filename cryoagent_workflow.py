@@ -209,10 +209,32 @@ class CryoAgentMasterWorkflow:
             mode: "guided" (configured stage order, LLM re-plans on failure) or
                 "dynamic" (LLM planner picks each next stage from prior JSON outputs)
             goal: Optional high-level goal statement for the planner
+            improve: Run only the improvement agent on prior outputs in outputs_dir
+                (does not re-run the main workflow)
 
         Returns:
             True if workflow completed successfully, False otherwise
         """
+        if improve:
+            if dry_run:
+                print("🔍 DRY RUN: Improvement (would read prior run from outputs_dir)")
+                return True
+            print("🔬 Running improvement on prior run outputs...")
+            try:
+                prior_mode = "full_dynamic" if mode == "full_dynamic" else None
+                imp = self.orchestrator.execute_improvement(
+                    conversation_id=conversation_id, goal=goal, prior_mode=prior_mode,
+                )
+                if imp.get("success"):
+                    print("✅ Improvement phase finished.")
+                    print(imp.get("output", ""))
+                    return True
+                print(f"⚠️ Improvement phase did not run: {imp.get('error')}")
+                return False
+            except Exception as e:
+                print(f"⚠️ Improvement phase error: {e}")
+                return False
+
         if dry_run:
             print("🔍 DRY RUN: Complete Workflow")
             stages = [stage.value.replace('_', ' ').title() for stage in WorkflowStage]
@@ -243,17 +265,6 @@ class CryoAgentMasterWorkflow:
                     self.llm_logger.end_workflow_log(False, "Dynamic workflow failed")
                 if 'final_report_path' in result:
                     print(f"\n📊 Workflow Report: {result['final_report_path']}")
-                if success and improve:
-                    print("\n🔬 Running dynamic improvement on the completed run...")
-                    try:
-                        imp = self.orchestrator.execute_improvement(conversation_id=conversation_id, goal=goal)
-                        if imp.get("success"):
-                            print("✅ Improvement phase finished.")
-                            print(imp.get("output", ""))
-                        else:
-                            print(f"⚠️ Improvement phase did not run: {imp.get('error')}")
-                    except Exception as e:
-                        print(f"⚠️ Improvement phase error: {e}")
                 return success
 
             # Full-dynamic mode: a single from-scratch agent with the full tool
@@ -355,19 +366,6 @@ class CryoAgentMasterWorkflow:
                     print(f"   Markdown: {md_report}")
                 
                 self.llm_logger.end_workflow_log(False, "Workflow failed - one or more stages did not complete")
-
-            # Opt-in dynamic improvement: only after a successful guided run.
-            if success and improve:
-                print("\n🔬 Running dynamic improvement on the completed run...")
-                try:
-                    imp = self.orchestrator.execute_improvement(conversation_id=conversation_id, goal=goal)
-                    if imp.get("success"):
-                        print("✅ Improvement phase finished.")
-                        print(imp.get("output", ""))
-                    else:
-                        print(f"⚠️ Improvement phase did not run: {imp.get('error')}")
-                except Exception as e:
-                    print(f"⚠️ Improvement phase error: {e}")
 
             return success
 
@@ -652,11 +650,10 @@ Examples:
     parser.add_argument(
         "--improve",
         action="store_true",
-        help="After the workflow completes, run the dynamic improvement agent: it "
-             "reads the blackboard (all stages' real metrics), diagnoses the "
-             "limiting factor and root cause across stages, and acts with atomic "
-             "tools to further improve the result (reusing prior good jobs), "
-             "stopping when no significant FSC/cFAR gain remains."
+        help="Run only the dynamic improvement agent on prior outputs in "
+             "--outputs-dir (does not re-run the main workflow). Reads the "
+             "blackboard / stage metrics for guided runs, or "
+             "llm_conversation_full_dynamic_*.log for --mode full_dynamic."
     )
 
     parser.add_argument(
@@ -675,8 +672,10 @@ Examples:
     
     # full_dynamic mode needs every stage agent initialized so the single agent
     # has the full cross-stage tool set, regardless of stage enabled flags.
-    force_all_stages = (getattr(args, "mode", "guided") == "full_dynamic"
-                        and args.workflow == "complete")
+    force_all_stages = (
+        args.workflow == "complete"
+        and getattr(args, "mode", "guided") == "full_dynamic"
+    )
     if not master_workflow.initialize(force_all_stages=force_all_stages):
         print("❌ Failed to initialize CryoAgent master workflow")
         sys.exit(1)
@@ -691,7 +690,10 @@ Examples:
         elif args.workflow == "complete":
             # Use provided conversation ID or generate a unique one to ensure fresh start
             conversation_id = args.conversation_id or f"complete_workflow_{int(time.time())}"
-            success = master_workflow.run_complete_workflow(args.dry_run, conversation_id, mode=args.mode, goal=args.goal, improve=args.improve)
+            success = master_workflow.run_complete_workflow(
+                args.dry_run, conversation_id, mode=args.mode, goal=args.goal,
+                improve=args.improve,
+            )
             
         elif args.workflow == "preprocessing":
             # Use provided conversation ID or generate a unique one to ensure fresh start
