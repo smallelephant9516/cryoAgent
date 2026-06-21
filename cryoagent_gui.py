@@ -343,7 +343,7 @@ def _render_quick_mode() -> None:
             else:
                 edited[key] = st.text_input(key, value="" if current is None else str(current))
         workflow = st.selectbox("Workflow", ["complete", "preprocessing"], index=0)
-        run_mode = st.selectbox("Execution mode", ["guided", "dynamic"], index=0)
+        run_mode = st.selectbox("Execution mode", ["guided", "dynamic", "full_dynamic"], index=0)
         submitted = st.form_submit_button("Save parameters & show run command")
 
     if submitted:

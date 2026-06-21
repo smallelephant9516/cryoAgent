@@ -2440,10 +2440,15 @@ class MasterOrchestrator:
         except Exception as e:
             self.logger.warning(f"Failed to record stage {stage_name} to blackboard: {e}")
 
-    def initialize(self) -> bool:
+    def initialize(self, force_all_stages: bool = False) -> bool:
         """
         Initialize the master orchestrator and all stage agents.
-        
+
+        Args:
+            force_all_stages: When True, every stage entry is initialized
+                regardless of its ``enabled`` flag. Used by ``full_dynamic`` mode
+                so the single agent has the full cross-stage tool set available.
+
         Returns:
             True if initialization successful, False otherwise
         """
@@ -2476,15 +2481,16 @@ class MasterOrchestrator:
             else:
                 self.logger.info(f"Session configuration not found at {session_config_path}, using master config only")
             
-            # Initialize stage agents (only for enabled stages)
+            # Initialize stage agents (only for enabled stages, unless
+            # force_all_stages is set, e.g. full_dynamic mode).
             for stage_info in self.master_config["master_workflow"]["stages"]:
                 stage_name = stage_info["name"]
                 agent_group = stage_info["agent_group"]
                 agent_class = stage_info["agent_class"]
                 enabled = stage_info.get("enabled", False)
                 
-                # Skip disabled stages
-                if not enabled:
+                # Skip disabled stages (unless all stages are forced on)
+                if not enabled and not force_all_stages:
                     self.logger.info(f"Skipping disabled stage: {stage_name}")
                     continue
                 
@@ -2796,9 +2802,12 @@ class MasterOrchestrator:
 
         Args:
             conversation_id: Optional conversation ID for tracking
-            mode: "guided" (configured stage order; LLM re-plans only on failure) or
+            mode: "guided" (configured stage order; LLM re-plans only on failure),
                 "dynamic" (LLM planner chooses each next stage from prior stages' JSON
-                outputs). Defaults to "guided" to preserve historical behavior.
+                outputs), or "full_dynamic" (a single from-scratch agent with the full
+                tool set drives the whole micrograph -> 3D density run, guided only by
+                tool descriptions + the CryoSPARC guide). Defaults to "guided" to
+                preserve historical behavior.
             goal: Optional high-level goal statement passed to the planner.
 
         Returns:
@@ -2806,6 +2815,9 @@ class MasterOrchestrator:
         """
         if mode == "dynamic":
             return self.execute_dynamic_workflow(conversation_id=conversation_id, goal=goal)
+
+        if mode == "full_dynamic":
+            return self.execute_full_dynamic_workflow(conversation_id=conversation_id, goal=goal)
 
         self.start_time = time.time()
         self.stage_results = []
@@ -3108,6 +3120,80 @@ class MasterOrchestrator:
         self._display_workflow_results(summary)
 
         return summary
+
+    def execute_full_dynamic_workflow(
+        self,
+        conversation_id: Optional[str] = None,
+        goal: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Run the full-dynamic, single-agent mode (``--mode full_dynamic``).
+
+        Builds a :class:`FullDynamicAgent` with the FULL cross-stage atomic tool
+        set (delegating to the initialized stage agents) + ``consult_cryosparc_guide``,
+        but with NO blackboard, NO stage configs, and NO predefined stage order.
+        The agent must drive the entire micrograph -> 3D density run itself,
+        guided only by tool descriptions and the CryoSPARC guide.
+
+        Requires the orchestrator to have been initialized with
+        ``force_all_stages=True`` so every stage agent (and thus the full tool
+        set) is available.
+        """
+        from .full_dynamic_agent import FullDynamicAgent
+
+        cryosparc_tools = self._find_cryosparc_tools()
+        if cryosparc_tools is None:
+            print("⚠️ Full-dynamic mode requires CryoSPARC tools; none available.")
+            return {"success": False, "successful_stages": 0, "error": "no cryosparc tools"}
+
+        # Reuse a stage agent's full config object (project/workspace ids,
+        # microscope_config_path, LLM settings).
+        config = None
+        for agent in self.stage_agents.values():
+            if getattr(agent, "config", None) is not None:
+                config = agent.config
+                break
+        if config is None:
+            print("⚠️ No stage config available for full-dynamic agent.")
+            return {"success": False, "successful_stages": 0, "error": "no config"}
+
+        self.start_time = time.time()
+
+        print("🤖 Starting FULL-DYNAMIC CryoEM run (single from-scratch agent)")
+        print("=" * 60)
+        print(f"   Project: {config.workflow.project_uid}  Workspace: {config.workflow.workspace_uid}")
+        print("   Guidance: tool descriptions + CryoSPARC guide ONLY (no pipeline recipe).")
+        print("=" * 60)
+
+        agent = FullDynamicAgent(
+            stage_agents=self.stage_agents,
+            cryosparc_tools=cryosparc_tools,
+            config=config,
+        )
+        if hasattr(agent, "realtime_logger"):
+            agent.realtime_logger.outputs_dir = Path(self.outputs_dir)
+        agent.outputs_dir = self.outputs_dir
+
+        task = (
+            "Starting from the available input data (movies and/or micrographs), "
+            "build a complete single-particle pipeline all the way to a refined 3D "
+            "density map. You have NO predefined steps, NO tuned parameters, and NO "
+            "prior results — decide every action yourself from each tool's description "
+            "and the CryoSPARC guide (consult_cryosparc_guide). Confirm each job "
+            "finishes before chaining the next, and report the final density job UID "
+            "and its resolution when done."
+        )
+        if goal:
+            task += f"\n\nUser goal for this run: {goal}"
+
+        output = agent.run_react_workflow(task, conversation_id=conversation_id)
+
+        return {
+            "success": True,
+            "successful_stages": 1,
+            "total_stages": 1,
+            "output": output,
+        }
 
     def execute_improvement(
         self,

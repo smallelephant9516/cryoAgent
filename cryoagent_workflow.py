@@ -145,10 +145,15 @@ class CryoAgentMasterWorkflow:
         self.start_time = None
         self.llm_logger = GeneralLLMLogger(outputs_dir=outputs_dir)
         
-    def initialize(self) -> bool:
+    def initialize(self, force_all_stages: bool = False) -> bool:
         """
         Initialize all components.
-        
+
+        Args:
+            force_all_stages: When True, initialize every stage agent regardless
+                of its ``enabled`` flag (used by full_dynamic mode so the single
+                agent has the full cross-stage tool set).
+
         Returns:
             True if initialization successful, False otherwise
         """
@@ -160,7 +165,7 @@ class CryoAgentMasterWorkflow:
             print("🎭 Initializing master orchestrator...")
             self.orchestrator = MasterOrchestrator(self.master_config_path, outputs_dir=self.outputs_dir)
             
-            if not self.orchestrator.initialize():
+            if not self.orchestrator.initialize(force_all_stages=force_all_stages):
                 print("❌ Failed to initialize master orchestrator")
                 return False
             
@@ -249,6 +254,26 @@ class CryoAgentMasterWorkflow:
                             print(f"⚠️ Improvement phase did not run: {imp.get('error')}")
                     except Exception as e:
                         print(f"⚠️ Improvement phase error: {e}")
+                return success
+
+            # Full-dynamic mode: a single from-scratch agent with the full tool
+            # set drives the whole run, guided only by tool descriptions + the
+            # CryoSPARC guide. Skip the fixed pre-flight stage-skip checks.
+            if mode == "full_dynamic":
+                print("🤖 Starting FULL-DYNAMIC CryoEM Workflow (single from-scratch agent)")
+                print("=" * 70)
+                self.start_time = time.time()
+                result = self.orchestrator.execute_complete_workflow(
+                    conversation_id, mode="full_dynamic", goal=goal
+                )
+                success = result.get('successful_stages', 0) > 0 and 'error' not in result
+                if success:
+                    print("🎉 Full-dynamic run finished.")
+                    print(result.get("output", ""))
+                    self.llm_logger.end_workflow_log(True, "Full-dynamic run finished")
+                else:
+                    print(f"❌ Full-dynamic run did not complete: {result.get('error', 'unknown error')}")
+                    self.llm_logger.end_workflow_log(False, "Full-dynamic run failed")
                 return success
 
             print("🎯 Starting Complete CryoEM Workflow (guided mode)")
@@ -612,12 +637,16 @@ Examples:
 
     parser.add_argument(
         "--mode",
-        choices=["guided", "dynamic"],
+        choices=["guided", "dynamic", "full_dynamic"],
         default="guided",
         help="Workflow control mode for the complete workflow: 'guided' runs the "
              "configured stage order and lets the LLM re-plan only on failure; "
              "'dynamic' lets the LLM planner choose each next stage from prior "
-             "stages' JSON outputs (default: guided)."
+             "stages' JSON outputs; 'full_dynamic' runs a single from-scratch agent "
+             "with the full tool set that drives the entire micrograph -> 3D density "
+             "run itself, guided only by tool descriptions and the CryoSPARC guide "
+             "(it sees only microscope_config.json params + the session project/"
+             "workspace ids) (default: guided)."
     )
 
     parser.add_argument(
@@ -644,7 +673,11 @@ Examples:
             # Initialize master workflow
     master_workflow = CryoAgentMasterWorkflow(args.config, outputs_dir=args.outputs_dir)
     
-    if not master_workflow.initialize():
+    # full_dynamic mode needs every stage agent initialized so the single agent
+    # has the full cross-stage tool set, regardless of stage enabled flags.
+    force_all_stages = (getattr(args, "mode", "guided") == "full_dynamic"
+                        and args.workflow == "complete")
+    if not master_workflow.initialize(force_all_stages=force_all_stages):
         print("❌ Failed to initialize CryoAgent master workflow")
         sys.exit(1)
     
