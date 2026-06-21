@@ -119,10 +119,12 @@ class ImprovementAgent(BaseReActAgent):
                     "library (worked problem-solving examples: preferred orientation, "
                     "pseudosymmetry, membrane proteins, 3D classification, 3DVA, CTF "
                     "refinement, end-to-end GPCR/ferritin, etc.). Modes: pass "
-                    "question=<problem> to auto-match the best job page + tutorial and "
-                    "get a list of related tutorials; pass slug=<slug> to read a "
-                    "specific tutorial; pass list_tutorials=true to browse the whole "
-                    "library. Advisor only."
+                    "question=<problem> for quick TRIAGE (best job page + matching "
+                    "tutorial snippet + related tutorial list); pass slug=<slug> to "
+                    "DEEP-READ that tutorial — it reads the WHOLE page and returns a "
+                    "condensed, actionable digest (which tools/params/steps to use), "
+                    "grounded in your question and what you've tried; pass "
+                    "list_tutorials=true to browse the whole library. Advisor only."
                 ),
                 guide,
             ))

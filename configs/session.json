@@ -41,7 +41,7 @@
         "description": "Heterogeneity depth analysis stage: Iteratively refine until only one cluster remains using heterogeneous refinement and density comparison",
         "enabled": false,
         "agent_group": "cryosparc",
-        "agent_class": "HeterogeneityDepthAgent"
+        "agent_class": "ReconstructionAgent"
       },
       {
         "name": "optimization",
@@ -53,7 +53,7 @@
       {
         "name": "polish",
         "description": "Polish refinement stage: Final refinement steps with CTF refinement and motion correction to achieve best possible resolution",
-        "enabled": true,
+        "enabled": false,
         "agent_group": "cryosparc",
         "agent_class": "PolishAgent"
       }
@@ -73,7 +73,7 @@
     }
   },
   "workflow": {
-    "project_uid": "P29",
-    "workspace_uid": "W4"
+    "project_uid": "P26",
+    "workspace_uid": "W1"
   }
 }

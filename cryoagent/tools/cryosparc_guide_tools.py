@@ -24,6 +24,9 @@ from typing import Any, Dict, List, Optional
 GUIDE_BASE = "https://guide.cryosparc.com"
 TUTORIALS_BASE = "/processing-data/tutorials-and-case-studies"
 DEFAULT_TIMEOUT = 20
+# Ceiling on the full page body returned for the deep-read/condense path, so a
+# pathologically long case study can't blow up the side-LLM call.
+MAX_FULL_CHARS = 50000
 
 # Curated topic → job-reference page map (what a job does + params).
 _TOPIC_PAGES: Dict[str, str] = {
@@ -281,9 +284,14 @@ def list_cryosparc_tutorials() -> Dict[str, object]:
                        "Fetch one by passing slug=<slug>."}
 
 
-def fetch_guide_page(path_or_slug: str, question: str = "") -> Dict[str, object]:
-    """Fetch a specific guide page by tutorial slug or full guide path and return
-    the excerpt most relevant to `question` (or the page start if no question)."""
+def fetch_guide_page(path_or_slug: str, question: str = "", full: bool = False) -> Dict[str, object]:
+    """Fetch a specific guide page by tutorial slug or full guide path.
+
+    By default returns the excerpt most relevant to `question` (or the page start).
+    When `full=True`, also returns the ENTIRE cleaned page body under `full_text`
+    (capped at MAX_FULL_CHARS) — used by the deep-read/condense path so a separate
+    LLM call can read the whole tutorial without dumping it into the main context.
+    """
     p = path_or_slug.strip()
     if p.startswith("http"):
         path = p[len(GUIDE_BASE):] if p.startswith(GUIDE_BASE) else None
@@ -300,19 +308,23 @@ def fetch_guide_page(path_or_slug: str, question: str = "") -> Dict[str, object]
         return {"success": False, "pages": [], "message": f"Could not fetch {url} (unknown slug or network?)."}
     text = _strip_html(html)
     excerpt = _relevant_excerpt(text, question) if question else text[:1200]
-    return {"success": True, "pages": [{"url": url, "excerpt": excerpt}],
-            "message": f"Fetched {url}"}
+    page: Dict[str, Any] = {"url": url, "excerpt": excerpt}
+    if full:
+        page["full_text"] = text[:MAX_FULL_CHARS]
+    return {"success": True, "pages": [page], "message": f"Fetched {url}"}
 
 
 def consult_cryosparc_guide(question: str = "", max_pages: int = 2, *,
                             slug: Optional[str] = None,
-                            list_tutorials: bool = False) -> Dict[str, object]:
+                            list_tutorials: bool = False,
+                            full: bool = False) -> Dict[str, object]:
     """
     Advisor over the CryoSPARC guide. Three modes:
 
     * list_tutorials=True  -> return the full tutorials/case-studies catalog.
-    * slug="..."           -> fetch that specific tutorial/page (best excerpt for
-                              `question` if given).
+    * slug="..."           -> fetch that specific tutorial/page. With full=True
+                              also returns the WHOLE cleaned body under
+                              pages[0]['full_text'] (deep-read/condense path).
     * question="..."       -> AUTO: fetch the best matching job-reference page
                               and/or tutorial, and also list other relevant
                               tutorials to drill into via slug.
@@ -323,7 +335,7 @@ def consult_cryosparc_guide(question: str = "", max_pages: int = 2, *,
     if list_tutorials:
         return list_cryosparc_tutorials()
     if slug:
-        return fetch_guide_page(slug, question)
+        return fetch_guide_page(slug, question, full=full)
 
     # Empty/whitespace question with no slug: there is nothing to match on.
     # Return the browsable catalog so the agent can pick a slug, rather than a

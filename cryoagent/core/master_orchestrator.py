@@ -3131,11 +3131,24 @@ class MasterOrchestrator:
             print("⚠️ Improvement requires CryoSPARC tools; none available.")
             return {"success": False, "error": "no cryosparc tools"}
 
-        # Use in-process blackboard, else load persisted one (resume-and-improve).
+        # Use in-process blackboard, else load persisted one (resume-and-improve),
+        # else rebuild it from the finished run's artifacts in outputs/.
         if self.workflow_state is None:
             self.workflow_state = WorkflowState.load(outputs_dir=self.outputs_dir)
         if self.workflow_state is None:
-            print("⚠️ No workflow_state.json found; run the guided workflow first.")
+            wc = self.workflow_context
+            self.workflow_state = WorkflowState.reconstruct_from_outputs(
+                outputs_dir=self.outputs_dir,
+                cryosparc_tools=cryosparc_tools,
+                project_uid=getattr(wc, "project_uid", None) if wc else None,
+                workspace_uid=getattr(wc, "workspace_uid", None) if wc else None,
+            )
+            if self.workflow_state is not None:
+                print(f"🧩 No workflow_state.json — rebuilt the blackboard from "
+                      f"{len(self.workflow_state.records)} stage result file(s) in {self.outputs_dir}.")
+        if self.workflow_state is None:
+            print("⚠️ No workflow_state.json and no result artifacts found in "
+                  f"{self.outputs_dir}; run the guided workflow first.")
             return {"success": False, "error": "no blackboard"}
 
         # Reuse a stage agent's full config object.

@@ -26,7 +26,7 @@ except ImportError:
 from langchain.tools import Tool
 from langchain_core.language_models import BaseLanguageModel
 from langchain_core.prompts import ChatPromptTemplate
-from langchain_core.messages import SystemMessage
+from langchain_core.messages import SystemMessage, HumanMessage
 
 from ..tools.cryosparc_tools import CryoSPARCTools
 from ..tools.cryosparc_forum_tools import (
@@ -629,6 +629,66 @@ class BaseReActAgent(ABC):
             self._record_tool_execution("get_orientation_diagnostics", context, error=str(e))
             return f"❌ Error getting orientation diagnostics: {str(e)}"
 
+    def _recent_history_context(self, max_actions: int = 8, max_chars: int = 1500) -> str:
+        """A compact summary of what the agent has tried/observed so far, to ground
+        the tutorial condensation in the actual problem (tool calls + results)."""
+        parts: List[str] = []
+        try:
+            log = self.get_tool_execution_log() if hasattr(self, "get_tool_execution_log") else []
+            for entry in log[-max_actions:]:
+                tool = entry.get("tool")
+                if not tool:
+                    continue
+                params = entry.get("params") or {}
+                pbits = ", ".join(f"{k}={v}" for k, v in list(params.items())[:4]
+                                  if k not in ("project_uid", "workspace_uid"))
+                res = entry.get("result")
+                if isinstance(res, dict):
+                    rbits = res.get("job_uid") or res.get("resolution_angstroms") or res.get("message") or ""
+                elif entry.get("error"):
+                    rbits = f"ERROR {entry['error']}"
+                else:
+                    rbits = ""
+                parts.append(f"- {tool}({pbits}) -> {str(rbits)[:120]}")
+        except Exception:
+            pass
+        text = "\n".join(parts)
+        return text[-max_chars:] if text else "(no prior actions recorded)"
+
+    def _condense_tutorial(self, full_text: str, url: str, question: str) -> Optional[str]:
+        """Read a WHOLE tutorial in a separate LLM call and distill it into
+        actionable tool/parameter guidance for the current problem. Returns the
+        digest, or None if condensation is unavailable/failed (caller falls back).
+        The full text is NOT returned to the main agent — only this digest is."""
+        llm = getattr(self, "llm", None)
+        if llm is None or not full_text:
+            return None
+        system = (
+            "You are condensing an official CryoSPARC tutorial/case-study for a "
+            "cryo-EM processing agent that is trying to improve a 3D reconstruction. "
+            "Read the FULL tutorial text and produce a TIGHT, actionable digest "
+            "(~150-250 words, bullet style) focused on the agent's current problem. "
+            "Cover: (1) which CryoSPARC job(s)/tool(s) the tutorial uses for this "
+            "situation, (2) the key parameters/values it sets, (3) the order of "
+            "steps, (4) the expected effect and how success is judged, (5) any "
+            "caveats (e.g. model bias). Do NOT reproduce the page; output only the "
+            "distilled guidance the agent can act on."
+        )
+        human = (
+            f"CURRENT PROBLEM / QUESTION:\n{question or '(general improvement of the reconstruction)'}\n\n"
+            f"WHAT THE AGENT HAS TRIED/OBSERVED SO FAR:\n{self._recent_history_context()}\n\n"
+            f"TUTORIAL SOURCE: {url}\n\n"
+            f"FULL TUTORIAL TEXT:\n{full_text}"
+        )
+        try:
+            resp = llm.invoke([SystemMessage(content=system), HumanMessage(content=human)])
+            digest = getattr(resp, "content", None) or (resp if isinstance(resp, str) else None)
+            digest = (digest or "").strip()
+            return digest or None
+        except Exception as e:
+            print(f"⚠️ Tutorial condensation failed for {url}: {e}")
+            return None
+
     def _consult_cryosparc_guide_tool(self, input_str: str) -> str:
         """
         Advisor tool: consult the official CryoSPARC guide AND tutorial/case-study
@@ -636,7 +696,9 @@ class BaseReActAgent(ABC):
 
         Input (plain question, or JSON):
           - question: the processing problem (auto-matches job pages + tutorials).
-          - slug: fetch a specific tutorial/case-study by slug (from a prior list).
+          - slug: DEEP READ a specific tutorial/case-study — fetches the WHOLE page
+            and returns a condensed, actionable digest (tools + params + steps),
+            grounded in the current question + what the agent has tried.
           - list_tutorials: true -> browse the whole tutorial/case-study catalog.
         Advisory only.
         """
@@ -651,10 +713,36 @@ class BaseReActAgent(ABC):
                 slug = params.get("slug")
                 want_list = self._parse_bool_param(params.get("list_tutorials"), False) or \
                     self._parse_bool_param(params.get("list"), False)
-            res = consult_cryosparc_guide(question, slug=slug, list_tutorials=want_list)
+
+            # DEEP-READ path: fetch the whole tutorial, condense to a digest, and
+            # return ONLY the digest (the full page never enters the main context).
+            if slug:
+                res = consult_cryosparc_guide(question, slug=slug, full=True)
+                if not res.get("success"):
+                    self._record_tool_execution(
+                        "consult_cryosparc_guide", {"slug": slug}, result={"success": False})
+                    return f"ℹ️ {res.get('message')}"
+                page = (res.get("pages") or [{}])[0]
+                url = page.get("url", "")
+                full_text = page.get("full_text") or page.get("excerpt") or ""
+                digest = None
+                # Only condense when the page is long enough to be worth it.
+                if len(full_text) > 1500:
+                    digest = self._condense_tutorial(full_text, url, question)
+                self._record_tool_execution(
+                    "consult_cryosparc_guide",
+                    {"slug": slug, "condensed": digest is not None, "chars_in": len(full_text)},
+                    result={"success": True, "url": url})
+                if digest:
+                    return (f"📖 CryoSPARC tutorial digest — {url}\n"
+                            f"(condensed from the full page for: {question or 'general improvement'})\n\n{digest}")
+                # Fallback: no/failed condensation -> return the excerpt directly.
+                return f"📖 CryoSPARC guide — {url}\n{page.get('excerpt', full_text[:1200])}"
+
+            res = consult_cryosparc_guide(question, list_tutorials=want_list)
             self._record_tool_execution(
                 "consult_cryosparc_guide",
-                {"question": question, "slug": slug, "list_tutorials": want_list},
+                {"question": question, "list_tutorials": want_list},
                 result=res)
 
             # Browse-catalog response.
@@ -672,7 +760,7 @@ class BaseReActAgent(ABC):
                 lines.append(f"\n— {p['url']}\n{p['excerpt']}")
             related = res.get("related_tutorials") or []
             if related:
-                lines.append("\nRelated tutorials/case-studies (fetch with slug=<slug>):")
+                lines.append("\nRelated tutorials/case-studies (deep-read with slug=<slug>):")
                 for t in related:
                     lines.append(f"- [{t['slug']}] {t['title']} — {t['when']}")
             return "\n".join(lines)

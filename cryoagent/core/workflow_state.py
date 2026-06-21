@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -119,6 +120,68 @@ def refinement_job_uids_from_log(tool_execution_log: Optional[List[Dict[str, Any
             if u not in uids:
                 uids.append(u)
     return uids
+
+
+# Canonical stage name -> result-JSON filename prefix (in pipeline order). Used to
+# rebuild the blackboard from outputs/ artifacts when workflow_state.json is gone.
+_STAGE_RESULT_PREFIXES = [
+    ("preprocessing", "preprocessing"),
+    ("particle_picking", "particle_picking"),
+    ("optimization_2d", "2d_optimization"),
+    ("reconstruction", "reconstruction"),
+    ("optimization", "optimization"),
+    ("polish", "polish"),
+]
+
+
+def _flatten_stage_outputs(d: Dict[str, Any]) -> Dict[str, Any]:
+    """Lift one level of nested dicts (e.g. reconstruction's `outputs.*` and
+    `job_uids.*`) to the top so the primary-job key resolves. Top-level keys win
+    over nested ones; non-conflicting nested string/number values are promoted."""
+    if not isinstance(d, dict):
+        return {}
+    flat = dict(d)
+    for nest_key in ("outputs", "job_uids"):
+        nested = d.get(nest_key)
+        if isinstance(nested, dict):
+            for k, v in nested.items():
+                if k not in flat and isinstance(v, (str, int, float)):
+                    flat[k] = v
+    return flat
+
+
+def _parse_conversation_log(path: Path) -> List[Dict[str, Any]]:
+    """Best-effort reconstruct a tool-execution log from an llm_conversation log.
+
+    Scans `TOOL EXECUTION: <tool>` followed by an `Arguments: { ... }` JSON block
+    (and an optional `Result: {...}`), returning [{tool, params, result?}]. Used to
+    rebuild the `decisions` narrative. Never raises — returns what it can parse.
+    """
+    entries: List[Dict[str, Any]] = []
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return entries
+    # Split on the TOOL EXECUTION markers.
+    chunks = re.split(r"TOOL EXECUTION:\s*", text)
+    for chunk in chunks[1:]:
+        tool = chunk.splitlines()[0].strip() if chunk.strip() else ""
+        if not tool:
+            continue
+        entry: Dict[str, Any] = {"tool": tool}
+        m = re.search(r"Arguments:\s*(\{.*?\})\s*(?:Result:|-{5,}|\Z)", chunk, flags=re.S)
+        if m:
+            try:
+                entry["params"] = json.loads(m.group(1))
+            except Exception:
+                entry["params"] = {}
+        # Result lines are Python-repr (single quotes), not strict JSON; capture a
+        # job_uid if one is visible so refinement extraction can use it.
+        rm = re.search(r"Result:\s*\{.*?['\"]job_uid['\"]\s*:\s*['\"](J\d+)['\"]", chunk, flags=re.S)
+        if rm:
+            entry["result"] = {"job_uid": rm.group(1)}
+        entries.append(entry)
+    return entries
 
 
 class StageRecord:
@@ -420,3 +483,89 @@ class WorkflowState:
         except Exception as e:
             logger.warning("Failed to load workflow_state.json: %s", e)
             return None
+
+    @classmethod
+    def reconstruct_from_outputs(
+        cls,
+        outputs_dir: str = "outputs",
+        cryosparc_tools=None,
+        project_uid: Optional[str] = None,
+        workspace_uid: Optional[str] = None,
+        stage_goals: Optional[Dict[str, str]] = None,
+    ) -> Optional["WorkflowState"]:
+        """Rebuild the blackboard from a finished run's artifacts in outputs/ when
+        workflow_state.json is absent.
+
+        Sources: per-stage ``<prefix>_results_cryosparc_*.json`` (the stage_outputs
+        a run wrote — latest per stage), and the matching
+        ``llm_conversation_<stage>_*.log`` (for the `decisions` narrative).
+        Each stage is fed through ``record_stage`` so it reuses the SAME live
+        metric read (resolution/cFAR) + persistence as a normal recording.
+
+        Returns the populated WorkflowState (already saved), or None if no per-stage
+        result JSON was found at all.
+        """
+        out = Path(outputs_dir)
+        if not out.exists():
+            return None
+        stage_goals = stage_goals or {}
+
+        # Resolve project/workspace from the summary report or any result JSON.
+        if not (project_uid and workspace_uid):
+            for sj in sorted(out.glob("workflow_summary_report_*.json"),
+                             key=lambda p: p.stat().st_mtime, reverse=True):
+                try:
+                    meta = json.loads(sj.read_text(encoding="utf-8")).get("workflow_metadata", {})
+                    project_uid = project_uid or meta.get("project_uid")
+                    workspace_uid = workspace_uid or meta.get("workspace_uid")
+                    break
+                except Exception:
+                    continue
+
+        def _latest(prefix: str) -> Optional[Path]:
+            cands = sorted(out.glob(f"{prefix}_results_cryosparc_*.json"),
+                           key=lambda p: p.stat().st_mtime, reverse=True)
+            return cands[0] if cands else None
+
+        def _latest_log(stage: str) -> Optional[Path]:
+            cands = sorted(out.glob(f"llm_conversation_{stage}_*.log"),
+                           key=lambda p: p.stat().st_mtime, reverse=True)
+            return cands[0] if cands else None
+
+        ws = cls(outputs_dir=outputs_dir, project_uid=project_uid, workspace_uid=workspace_uid)
+        found = 0
+        for stage, prefix in _STAGE_RESULT_PREFIXES:
+            rj = _latest(prefix)
+            if rj is None:
+                continue
+            try:
+                raw = json.loads(rj.read_text(encoding="utf-8"))
+            except Exception as e:
+                logger.warning("reconstruct: could not read %s: %s", rj.name, e)
+                continue
+            found += 1
+            stage_outputs = _flatten_stage_outputs(raw)
+            # Backfill project/workspace from the result file if still unknown.
+            if ws.project_uid is None:
+                ws.project_uid = stage_outputs.get("project_uid")
+            if ws.workspace_uid is None:
+                ws.workspace_uid = stage_outputs.get("workspace_uid")
+            success = str(raw.get("status", "")).lower() in ("completed", "success", "")
+            decisions = None
+            log = _latest_log(stage)
+            if log is not None:
+                decisions = summarize_decisions(_parse_conversation_log(log))
+            ws.record_stage(
+                stage=stage,
+                success=success,
+                stage_outputs=stage_outputs,
+                cryosparc_tools=cryosparc_tools,
+                goal=stage_goals.get(stage),
+                decisions=decisions or None,
+            )
+
+        if found == 0:
+            return None
+        logger.info("Reconstructed blackboard from %d stage result file(s).", found)
+        return ws
+
