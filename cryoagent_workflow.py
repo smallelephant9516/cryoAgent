@@ -221,9 +221,15 @@ class CryoAgentMasterWorkflow:
                 return True
             print("🔬 Running improvement on prior run outputs...")
             try:
+                # Generate a unique conversation_id for each improvement run so it creates
+                # a fresh log file rather than resuming/appending to the old one
+                import random
+                import time
+                improvement_id = f"improvement_{int(time.time())}_{random.randint(1000, 9999)}"
+
                 prior_mode = "full_dynamic" if mode == "full_dynamic" else None
                 imp = self.orchestrator.execute_improvement(
-                    conversation_id=conversation_id, goal=goal, prior_mode=prior_mode,
+                    conversation_id=improvement_id, goal=goal, prior_mode=prior_mode,
                 )
                 if imp.get("success"):
                     print("✅ Improvement phase finished.")

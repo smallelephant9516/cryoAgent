@@ -346,10 +346,10 @@ Begin by executing step 1 ({tool_name}){"and proceed to refinement after complet
                 reasoning=reasoning
             )
         )
-        
-        if success and job_uid:
-            self.current_job_uids[step] = job_uid
-            self._update_dynamic_defaults(step, job_uid)
+
+        if outcome.success and outcome.job_uid:
+            self.current_job_uids[step] = outcome.job_uid
+            self._update_dynamic_defaults(step, outcome.job_uid)
             self._refresh_agent_defaults()
     
     def get_workflow_summary(self) -> Dict[str, Any]:

@@ -1205,7 +1205,12 @@ class ReconstructionAgent(StageAgent):
             "final_volume_job_uid": None,
             "reconstruction_type": "unknown"
         }
-        
+
+        # Debug logging to understand what results are being processed
+        self.logger.info(f"_extract_reconstruction_outputs: Processing {len(results)} results")
+        for idx, result in enumerate(results):
+            self.logger.info(f"  Result {idx}: step={result.step.value}, success={result.success}, job_uid={result.job_uid}")
+
         # Extract job UIDs from results
         for result in results:
             step_name = result.step.value
@@ -1228,7 +1233,10 @@ class ReconstructionAgent(StageAgent):
                     stage_outputs["heterogeneous_refinement_job_uid"] = result.job_uid
                     stage_outputs["final_volume_job_uid"] = result.job_uid
                     stage_outputs["reconstruction_type"] = "heterogeneous_refinement"
-        
+
+        # Debug: log final extraction results
+        self.logger.info(f"_extract_reconstruction_outputs: Final outputs - final_volume_job_uid={stage_outputs['final_volume_job_uid']}, reconstruction_type={stage_outputs['reconstruction_type']}")
+
         # Get volume location from the final volume job
         if stage_outputs["final_volume_job_uid"]:
             try:
@@ -3272,6 +3280,63 @@ class MasterOrchestrator:
                       f"{self.outputs_dir}; run the guided workflow first.")
             return {"success": False, "error": "no blackboard"}
 
+        # Before starting a new improvement run, check if there are old improvement logs
+        # that completed but never got recorded to the blackboard (due to incomplete tool
+        # logging). Parse them now and add to the blackboard as improvement_N records.
+        from pathlib import Path
+        import glob
+        improvement_logs = sorted(
+            glob.glob(f"{self.outputs_dir}/llm_conversation_improvement_*.log")
+        )
+        for log_path in improvement_logs:
+            log_path = Path(log_path)
+            # Check if this log's results are already in the blackboard
+            # (We check by looking for any improvement stage records)
+            existing_improvement_stages = [
+                r.stage for r in self.workflow_state.records
+                if r.stage.startswith("improvement")
+            ]
+
+            # If we already have improvement records, skip (assume they came from this log)
+            # TODO: more sophisticated check - parse log timestamp and match to blackboard records
+            if existing_improvement_stages:
+                continue
+
+            # Try to extract rich context from this old log
+            from .workflow_state import extract_improvement_context_from_log
+            context = extract_improvement_context_from_log(log_path)
+            candidates = context.get("job_uids", [])
+
+            if candidates:
+                strategies = context.get("strategies_tried", [])
+                baseline = context.get("baseline", {})
+
+                print(f"📋 Found old improvement log with {len(candidates)} refinement job(s) "
+                      f"and {len(strategies)} strategy/ies - recording now...")
+
+                # Show what strategies were tried
+                for i, strat in enumerate(strategies[:3], 1):  # Show first 3
+                    success_icon = "✓" if strat.get("success") else "✗"
+                    hyp = strat.get("hypothesis", "Unknown")[:60]
+                    print(f"   {success_icon} {hyp}...")
+                if len(strategies) > 3:
+                    print(f"   ... and {len(strategies) - 3} more")
+
+                try:
+                    rec = self.workflow_state.record_improvement(
+                        cryosparc_tools=cryosparc_tools,
+                        candidate_job_uids=candidates,
+                        assessment=f"retrospective recording from {log_path.name}",
+                        strategies_tried=strategies,
+                        baseline=baseline,
+                    )
+                    if rec is not None:
+                        print(f"   ✅ Recorded as {rec.stage}: {rec.primary_job_uid} "
+                              f"@ {rec.metrics.get('resolution_angstroms')} Å")
+                except Exception as e:
+                    print(f"   ⚠️  Failed to record: {e}")
+
+
         # Reuse a stage agent's full config object.
         config = None
         for agent in self.stage_agents.values():
@@ -3284,7 +3349,8 @@ class MasterOrchestrator:
 
         print("🔬 Starting dynamic improvement (cross-stage, atomic tools)")
         print("=" * 60)
-        print(self.workflow_state.summary_for_planner())
+        workflow_summary = self.workflow_state.summary_for_planner()
+        print(workflow_summary)
         print("=" * 60)
 
         agent = ImprovementAgent(
@@ -3307,6 +3373,11 @@ class MasterOrchestrator:
             "(no meaningful gain, data-limited, or the job cap). Report the final "
             "best result, what you changed, your diagnosis, and a recommendation."
         )
+
+        # Add workflow history so agent can see what was already tried
+        task += f"\n\n## Prior Workflow History\n{workflow_summary}"
+        task += "\n\n**IMPORTANT:** Review the history above. Do NOT repeat approaches that already failed (marked with ✗). If an approach failed because cFAR degraded or resolution gain was below threshold, trying the same approach again will produce the same result."
+
         if goal:
             task += f"\n\nUser goal for this run: {goal}"
 
@@ -3317,14 +3388,36 @@ class MasterOrchestrator:
         # result (e.g. a CTF-refined 2.98 Å map) lives only in the transcript.
         improved_best = None
         try:
-            from .workflow_state import refinement_job_uids_from_log
+            from .workflow_state import (
+                refinement_job_uids_from_log,
+                refinement_job_uids_from_log_file,
+                extract_improvement_context_from_log
+            )
             tool_log = agent.get_tool_execution_log() if hasattr(agent, "get_tool_execution_log") else []
             candidates = refinement_job_uids_from_log(tool_log)
+
+            # Fallback: if structured tool log is empty/incomplete, parse from log file prose
+            # and extract richer context (strategies, hypotheses, outcomes)
+            strategies = None
+            baseline = None
+            if not candidates and hasattr(agent, "realtime_logger"):
+                log_file = agent.realtime_logger.current_log_file
+                if log_file and Path(log_file).exists():
+                    context = extract_improvement_context_from_log(Path(log_file))
+                    candidates = context.get("job_uids", [])
+                    strategies = context.get("strategies_tried", [])
+                    baseline = context.get("baseline", {})
+                    if candidates:
+                        print(f"⚠️  Structured tool log was incomplete; extracted {len(candidates)} "
+                              f"refinement job(s) and {len(strategies)} strategy/ies from conversation prose.")
+
             if candidates:
                 rec = self.workflow_state.record_improvement(
                     cryosparc_tools=cryosparc_tools,
                     candidate_job_uids=candidates,
                     assessment="best refinement produced during --improve",
+                    strategies_tried=strategies,
+                    baseline=baseline,
                 )
                 if rec is not None:
                     improved_best = {

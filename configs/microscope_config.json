@@ -6,17 +6,17 @@
     "version": "1.0.0"
   },
   "microscope_parameters": {
-    "pixel_size": 0.679,
+    "pixel_size": 0.6575,
     "voltage": 300,
     "cs_mm": 2.7,
-    "dose": 43.0,
+    "dose": 53,
     "particle_diameter": 200,
-    "symmetry": "C1",
-    "movies_path": "/home/daoyi/storage_server/EMPIAR/10576/data/*.tif",
+    "symmetry": "D7",
+    "movies_path": "/home/daoyi/cryoEM_dataset/10025_subset/empiar_10025_subset/*.tif",
     "micrographs_path": null,
-    "gain_ref_path": "/home/daoyi/storage_server/cryoPPP/cryoppp/10576/gain/gain.mrc",
+    "gain_ref_path": "/home/daoyi/cryoEM_dataset/10025_subset/empiar_10025_subset/norm-amibox05-0.mrc",
     "gain_rot": 0,
-    "gain_flip": 0
+    "gain_flip": 1
   },
   "parameter_descriptions": {
     "pixel_size": "Physical pixel size in Angstroms",

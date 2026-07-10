@@ -122,6 +122,287 @@ def refinement_job_uids_from_log(tool_execution_log: Optional[List[Dict[str, Any
     return uids
 
 
+def refinement_job_uids_from_log_file(log_path: Path) -> List[str]:
+    """Fallback: extract refinement job UIDs from a conversation log file when
+    structured TOOL EXECUTION blocks are missing or incomplete.
+
+    Scans assistant responses for job UID mentions (J123, J456) in the context of
+    refinement/reconstruction prose (e.g., "After (J94)", "New (J117)", "J125 @ 2.18 Å"),
+    excluding job UIDs that appear only in reasoning about baseline/prior jobs.
+
+    Returns UIDs in appearance order, de-duped. This is a best-effort fallback when
+    tool execution logging was broken — prefer refinement_job_uids_from_log when
+    structured logs are available.
+    """
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return []
+
+    uids: List[str] = []
+    seen = set()
+
+    # Pattern 1: Comparison tables showing "After (J94)" or "New (J117)" or "After local CTF (J125)"
+    # These strongly indicate newly created jobs
+    for match in re.finditer(
+        r'(?:After|New|created|completed|result|refinement)[^()\[]*(?:\(|\[|:\s*)([Jj]\d+)',
+        text, flags=re.IGNORECASE
+    ):
+        uid = match.group(1).upper()
+        if uid not in seen:
+            seen.add(uid)
+            uids.append(uid)
+
+    # Pattern 2: Job UIDs in resolution tables (| J94 | 2.17 Å |)
+    # Captures jobs mentioned in result comparisons
+    for match in re.finditer(
+        r'\|\s*([Jj]\d+)\s*\|\s*[\d.]+\s*Å',
+        text
+    ):
+        uid = match.group(1).upper()
+        if uid not in seen:
+            seen.add(uid)
+            uids.append(uid)
+
+    # Pattern 3: "J125 @ 2.18 Å" style mentions (completed jobs with metrics)
+    for match in re.finditer(
+        r'([Jj]\d+)\s*@\s*[\d.]+\s*Å',
+        text
+    ):
+        uid = match.group(1).upper()
+        if uid not in seen:
+            seen.add(uid)
+            uids.append(uid)
+
+    # Pattern 4: Prose mentioning tool completion ("CTF refine global completed")
+    # followed by job mentions in next ~500 chars
+    blocks = re.findall(
+        r'(?:completed|finished|created|running).*?([Jj]\d+)',
+        text, flags=re.IGNORECASE
+    )
+    for uid_match in blocks:
+        uid = uid_match.upper()
+        if uid not in seen:
+            seen.add(uid)
+            uids.append(uid)
+
+    # Now filter to only refinement-related jobs by checking surrounding context
+    # A job is refinement-related if it appears within ~1000 chars of refinement keywords
+    refinement_keywords = _REFINEMENT_TOOL_HINTS + (
+        "ctf", "local ctf", "global ctf", "polish", "nonuniform",
+    )
+    refinement_uids = []
+    for uid in uids:
+        # Find all occurrences of this UID in text
+        for match in re.finditer(rf'\b{uid}\b', text):
+            pos = match.start()
+            # Check ±1000 char window around this mention
+            window_start = max(0, pos - 1000)
+            window_end = min(len(text), pos + 1000)
+            window = text[window_start:window_end].lower()
+            # If any refinement keyword appears in this window, it's a refinement job
+            if any(kw in window for kw in refinement_keywords):
+                if uid not in refinement_uids:
+                    refinement_uids.append(uid)
+                break
+
+    return refinement_uids
+
+
+def extract_improvement_context_from_log(log_path: Path) -> Dict[str, Any]:
+    """Extract rich context from an improvement log: reasoning, hypotheses, outcomes.
+
+    Parses assistant responses to capture what strategies were tried, why, and what
+    the results were. This allows new improvement runs to see not just which jobs
+    were created, but the full narrative of what was attempted and why it succeeded
+    or failed.
+
+    Returns:
+        {
+            "job_uids": ["J94", "J117", "J125"],
+            "baseline": {"job": "J57", "resolution": 2.18, "cfar": 0.662},
+            "strategies_tried": [
+                {
+                    "hypothesis": "CTF aberrations limiting resolution",
+                    "approach": "Global CTF refinement then re-refine",
+                    "actions": ["ctf_refine_global", "nonuniform_refinement"],
+                    "result_job": "J94",
+                    "outcome": "2.18 → 2.17 Å (0.01 Å gain)",
+                    "conclusion": "Below 0.02 Å threshold - not meaningful",
+                    "success": False
+                },
+                ...
+            ]
+        }
+    """
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="ignore")
+    except Exception:
+        return {"job_uids": [], "strategies_tried": []}
+
+    context: Dict[str, Any] = {
+        "job_uids": [],
+        "baseline": {},
+        "strategies_tried": []
+    }
+
+    # Extract baseline information (usually in "STEP 0" or early in log)
+    baseline_match = re.search(
+        r'\*\*[Bb]aseline[:\s]+([Jj]\d+)[^\d]*([\d.]+)\s*Å.*?cFAR[:\s]*([\d.]+)',
+        text, flags=re.DOTALL
+    )
+    if baseline_match:
+        context["baseline"] = {
+            "job": baseline_match.group(1).upper(),
+            "resolution": float(baseline_match.group(2)),
+            "cfar": float(baseline_match.group(3))
+        }
+
+    # Split into assistant response blocks to parse strategies
+    assistant_blocks = re.findall(
+        r'\[([^\]]+)\] ASSISTANT RESPONSE:\n(.*?)(?=\n-{50}|\Z)',
+        text, flags=re.S
+    )
+
+    current_hypothesis = None
+    current_approach = None
+    current_actions = []
+
+    for timestamp, block in assistant_blocks:
+        # Look for hypothesis statements (markdown bold format)
+        hyp_patterns = [
+            r'\*\*[Hh]ypothesis\*\*[:\s]+(.+?)(?=\n\n|\n[A-Z#*]|\Z)',
+            r'\*\*[Nn]ew hypothesis\*\*[:\s]+(.+?)(?=\n\n|\n[A-Z#*]|\Z)',
+            r'[Rr]ank\s+\d+\s*→\s*([^—]+)—',
+        ]
+        for pattern in hyp_patterns:
+            match = re.search(pattern, block, flags=re.DOTALL)
+            if match:
+                current_hypothesis = match.group(1).strip()[:200]  # Cap at 200 chars
+                break
+
+        # Look for approach/strategy descriptions
+        approach_match = re.search(
+            r'(?:[Aa]pproach|[Ss]trategy|[Pp]lan)[:\s]+(.+?)(?=\n\n|\n[A-Z#*]|\Z)',
+            block, flags=re.DOTALL
+        )
+        if approach_match:
+            current_approach = approach_match.group(1).strip()[:200]
+
+        # Extract actions (tool mentions with backticks)
+        tool_mentions = re.findall(
+            r'`(\w+(?:_\w+)*)`',
+            block
+        )
+        if tool_mentions:
+            current_actions.extend([t for t in tool_mentions if t not in current_actions])
+
+        # Look for comparison/evaluation tables with outcomes
+        # First find the table header row to extract job UIDs
+        table_match = re.search(
+            r'\*\*[Cc]omparison[^:]*:\*\*\s*\n\s*'
+            r'\|\s*[Mm]etric\s*\|([^\|]+)\|([^\|]+)\|',
+            block, flags=re.DOTALL
+        )
+
+        if table_match:
+            # Extract job UIDs from header columns
+            col2_header = table_match.group(1).strip()  # "Baseline (J57)"
+            col3_header = table_match.group(2).strip()  # "New (J117)" or "After local CTF (J125)"
+
+            baseline_job_match = re.search(r'([Jj]\d+)', col2_header)
+            result_job_match = re.search(r'([Jj]\d+)', col3_header)
+
+            if baseline_job_match and result_job_match:
+                baseline_job = baseline_job_match.group(1).upper()
+                result_job = result_job_match.group(1).upper()
+
+                # Now extract resolution values from the Resolution row (comes after header)
+                res_row_match = re.search(
+                    r'\|\s*\*\*[Rr]esolution\*\*\s*\|\s*([\d.]+)\s*Å\s*\|\s*([\d.]+)\s*Å',
+                    block[table_match.end():], flags=re.DOTALL
+                )
+
+                if res_row_match:
+                    baseline_res = float(res_row_match.group(1))
+                    result_res = float(res_row_match.group(2))
+                    delta_res = baseline_res - result_res
+
+                    # Also extract cFAR values if present
+                    cfar_row_match = re.search(
+                        r'\|\s*\*\*cFAR\*\*\s*\|\s*([\d.]+)[^\|]*\|\s*([\d.]+)',
+                        block[table_match.end():], flags=re.DOTALL | re.IGNORECASE
+                    )
+                    baseline_cfar = None
+                    result_cfar = None
+                    delta_cfar = None
+                    if cfar_row_match:
+                        baseline_cfar = float(cfar_row_match.group(1))
+                        result_cfar = float(cfar_row_match.group(2))
+                        delta_cfar = result_cfar - baseline_cfar
+
+                    # Build outcome string with both metrics
+                    outcome_parts = [f"Resolution: {baseline_res:.2f} → {result_res:.2f} Å ({delta_res:+.2f} Å)"]
+                    if baseline_cfar is not None and result_cfar is not None:
+                        outcome_parts.append(f"cFAR: {baseline_cfar:.3f} → {result_cfar:.3f} ({delta_cfar:+.3f})")
+                    outcome = " | ".join(outcome_parts)
+
+                    # Extract conclusion from the text after the table
+                    conclusion_match = re.search(
+                        r'(?:meaningful|significant|improvement|gain|worse|better|no gain|below threshold)[^\n]{0,200}',
+                        block[table_match.end() + res_row_match.end():], flags=re.IGNORECASE
+                    )
+                    conclusion = conclusion_match.group(0).strip() if conclusion_match else ""
+
+                    # Determine success based on BOTH resolution and cFAR
+                    success = False
+                    # Resolution improved significantly
+                    if abs(delta_res) >= 0.02:
+                        success = True
+                    # But cFAR degradation is a dealbreaker
+                    if delta_cfar is not None and delta_cfar < -0.1:  # cFAR dropped >0.1
+                        success = False
+                    # Explicit failure keywords
+                    if any(kw in conclusion.lower() for kw in ['not meaningful', 'below threshold', 'worse', 'no gain', 'meaningfully worse']):
+                        success = False
+
+                    # Record this strategy
+                    if current_hypothesis or current_actions:
+                        strategy = {
+                            "hypothesis": current_hypothesis or "Unknown hypothesis",
+                            "approach": current_approach or "See actions",
+                            "actions": list(set(current_actions[-10:])),  # Last 10 unique actions
+                            "result_job": result_job,
+                            "outcome": outcome,
+                            "conclusion": conclusion[:150] if conclusion else "No explicit conclusion",
+                            "success": success,
+                            "metrics": {
+                                "baseline_resolution": baseline_res,
+                                "result_resolution": result_res,
+                                "delta_resolution": delta_res,
+                                "baseline_cfar": baseline_cfar,
+                                "result_cfar": result_cfar,
+                                "delta_cfar": delta_cfar,
+                            }
+                        }
+                        context["strategies_tried"].append(strategy)
+                        if result_job not in context["job_uids"]:
+                            context["job_uids"].append(result_job)
+
+                        # Reset for next strategy
+                        current_hypothesis = None
+                        current_approach = None
+                        current_actions = []
+
+    # Also extract job UIDs using the existing function for completeness
+    all_job_uids = refinement_job_uids_from_log_file(log_path)
+    for uid in all_job_uids:
+        if uid not in context["job_uids"]:
+            context["job_uids"].append(uid)
+
+    return context
+
+
 # Canonical stage name -> result-JSON filename prefix (in pipeline order). Used to
 # rebuild the blackboard from outputs/ artifacts when workflow_state.json is gone.
 _STAGE_RESULT_PREFIXES = [
@@ -497,6 +778,10 @@ class WorkflowState:
 
         goal/decisions/reasoning_summary capture WHY the stage did what it did, so
         dynamic/improvement mode can reason about intent, not just the numbers.
+
+        Special case: for stage="improvement", this APPENDS a new record (numbered
+        improvement_1, improvement_2, ...) rather than replacing, so multiple
+        --improve rounds accumulate their full history.
         """
         stage_outputs = stage_outputs or {}
         primary = self._pick_primary_job_uid(stage_outputs)
@@ -538,10 +823,23 @@ class WorkflowState:
                     metrics["resolution_angstroms"] = float(v)
                     break
 
-        # Replace any existing record for this stage (latest wins), else append.
+        # For "improvement", append with an auto-incremented suffix (improvement_1, _2, ...)
+        # so multiple --improve rounds accumulate. For all other stages, replace (latest wins).
+        if stage == "improvement":
+            existing_improvement_nums = [
+                int(r.stage.split("_")[-1])
+                for r in self.records
+                if r.stage.startswith("improvement_") and r.stage.split("_")[-1].isdigit()
+            ]
+            next_num = max(existing_improvement_nums, default=0) + 1
+            stage = f"improvement_{next_num}"
+        else:
+            # Replace any existing record for this non-improvement stage.
+            self.records = [r for r in self.records if r.stage != stage]
+
         rec = StageRecord(stage, success, stage_outputs, primary, metrics, assessment,
                           goal=goal, decisions=decisions, reasoning_summary=reasoning_summary)
-        self.records = [r for r in self.records if r.stage != stage] + [rec]
+        self.records.append(rec)
         self.save()
         return rec
 
@@ -551,6 +849,8 @@ class WorkflowState:
         candidate_job_uids: List[str],
         assessment: Optional[str] = None,
         decisions: Optional[List[str]] = None,
+        strategies_tried: Optional[List[Dict[str, Any]]] = None,
+        baseline: Optional[Dict[str, Any]] = None,
     ) -> Optional[StageRecord]:
         """Record the best refinement the improvement agent produced.
 
@@ -560,10 +860,20 @@ class WorkflowState:
         an 'improvement' stage via the normal record_stage path. Returns the
         StageRecord, or None when no candidate yields a resolution (nothing is
         recorded in that case). Never raises.
+
+        Args:
+            cryosparc_tools: CryoSPARC tools instance for querying job results
+            candidate_job_uids: Job UIDs created during this improvement run
+            assessment: Optional one-line summary
+            decisions: Optional list of decision strings (legacy format)
+            strategies_tried: Optional list of strategy dicts with hypothesis/outcome
+            baseline: Optional baseline job info {"job": "J57", "resolution": 2.18}
         """
         best_uid = None
         best_res = None
         best_cfar = None
+        best_score = None
+
         for uid in candidate_job_uids or []:
             if not isinstance(uid, str) or not uid.strip():
                 continue
@@ -578,26 +888,83 @@ class WorkflowState:
             if not isinstance(r, (int, float)):
                 continue
             c = res.get("cfar") if isinstance(res.get("cfar"), (int, float)) else None
+
+            # Composite scoring: lower resolution is better, higher cFAR is better
+            # Normalize both to a 0-1 scale where higher is better
+            # Resolution: invert and scale (assume 1.5-5.0 Å range)
+            res_score = max(0, min(1, (5.0 - r) / (5.0 - 1.5)))  # Lower res → higher score
+
+            # cFAR: already 0-1 scale, higher is better (but can be None)
+            # Use 0.5 as neutral default if cFAR is missing
+            cfar_score = c if c is not None else 0.5
+
+            # Weighted composite: resolution is primary (70%), cFAR is important (30%)
+            # A job with good resolution but terrible cFAR will score poorly
+            composite_score = (0.7 * res_score) + (0.3 * cfar_score)
+
             better = (
-                best_res is None
-                or r < best_res
-                or (r == best_res and c is not None and (best_cfar is None or c > best_cfar))
+                best_score is None
+                or composite_score > best_score
             )
             if better:
-                best_uid, best_res, best_cfar = uid.strip(), r, c
+                best_uid, best_res, best_cfar, best_score = uid.strip(), r, c, composite_score
 
         if best_uid is None:
             logger.info("record_improvement: no candidate job produced a resolution; nothing recorded.")
             return None
 
+        # Build rich decisions narrative from strategies_tried if available
+        if strategies_tried and isinstance(strategies_tried, list):
+            decisions = self._format_strategies_for_decisions(strategies_tried, baseline)
+
         return self.record_stage(
             stage="improvement",
             success=True,
-            stage_outputs={"final_refinement_job_uid": best_uid},
+            stage_outputs={
+                "final_refinement_job_uid": best_uid,
+                "strategies_tried": strategies_tried or [],
+                "baseline": baseline or {}
+            },
             cryosparc_tools=cryosparc_tools,
             assessment=assessment,
             decisions=decisions,
         )
+
+    def _format_strategies_for_decisions(
+        self,
+        strategies: List[Dict[str, Any]],
+        baseline: Optional[Dict[str, Any]]
+    ) -> List[str]:
+        """Format strategy dicts into human-readable decision lines for the blackboard."""
+        lines = []
+        if baseline:
+            lines.append(f"Baseline: {baseline.get('job', '?')} @ {baseline.get('resolution', '?')} Å, cFAR {baseline.get('cfar', '?')}")
+
+        for i, strat in enumerate(strategies, 1):
+            success_icon = "✓" if strat.get("success") else "✗"
+            hypothesis = strat.get("hypothesis", "Unknown")[:80]
+            outcome = strat.get("outcome", "No outcome recorded")
+            conclusion = strat.get("conclusion", "")[:100]
+
+            lines.append(f"{i}. {success_icon} {hypothesis}")
+            lines.append(f"   → {outcome}")
+            if conclusion:
+                lines.append(f"   → {conclusion}")
+
+            # Show why it failed if we have metric details
+            metrics = strat.get("metrics", {})
+            if not strat.get("success") and metrics:
+                reasons = []
+                delta_res = metrics.get("delta_resolution")
+                delta_cfar = metrics.get("delta_cfar")
+                if delta_res is not None and abs(delta_res) < 0.02:
+                    reasons.append(f"Δres {delta_res:+.2f} Å < 0.02 threshold")
+                if delta_cfar is not None and delta_cfar < -0.1:
+                    reasons.append(f"cFAR degraded {delta_cfar:+.3f}")
+                if reasons:
+                    lines.append(f"   → Why failed: {', '.join(reasons)}")
+
+        return lines
 
     def set_assessment(self, stage: str, assessment: str) -> None:
         for r in self.records:
@@ -616,22 +983,39 @@ class WorkflowState:
         return None
 
     def best_resolution(self) -> Optional[Dict[str, Any]]:
-        """Return {stage, job_uid, resolution_angstroms} for the best (lowest) res seen."""
+        """Return {stage, job_uid, resolution_angstroms, cfar} for the best overall result.
+
+        Uses composite scoring (70% resolution, 30% cFAR) to pick the truly best result,
+        not just the lowest resolution. Scans all records including all improvement rounds.
+        """
         best = None
+        best_score = None
         for r in self.records:
             res = r.metrics.get("resolution_angstroms")
+            cfar = r.metrics.get("cfar")
             if isinstance(res, (int, float)):
-                if best is None or res < best["resolution_angstroms"]:
+                # Composite scoring: resolution primary (70%), cFAR important (30%)
+                res_score = max(0, min(1, (5.0 - res) / (5.0 - 1.5)))  # Lower res → higher score
+                cfar_score = cfar if isinstance(cfar, (int, float)) else 0.5  # Default 0.5 if missing
+                composite_score = (0.7 * res_score) + (0.3 * cfar_score)
+
+                if best_score is None or composite_score > best_score:
                     best = {
                         "stage": r.stage,
                         "job_uid": r.primary_job_uid,
                         "resolution_angstroms": res,
-                        "cfar": r.metrics.get("cfar"),
+                        "cfar": cfar,
+                        "composite_score": composite_score,
                     }
+                    best_score = composite_score
         return best
 
     def summary_for_planner(self) -> str:
-        """Compact human/LLM-readable digest of all stage metrics (JSON only)."""
+        """Compact human/LLM-readable digest of all stage metrics (JSON only).
+
+        Shows all improvement rounds (improvement_1, improvement_2, ...) so the agent
+        can see the full improvement history and avoid repeating failed approaches.
+        """
         lines = []
         for r in self.records:
             status = "ok" if r.success else "FAILED"

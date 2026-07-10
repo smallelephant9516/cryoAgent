@@ -149,3 +149,71 @@ class ReasoningLogCallbackHandler(BaseCallbackHandler):
         if text == self._last_logged_text:
             return
         self._log(text.strip(), {"phase": "final"})
+
+    def on_tool_start(
+        self,
+        serialized: Dict[str, Any],
+        input_str: str,
+        **kwargs: Any
+    ) -> None:
+        """Capture tool execution start (name and arguments)."""
+        if not self._enabled():
+            return
+        try:
+            tool_name = serialized.get("name", "unknown_tool")
+            # Parse input_str as JSON if it looks like JSON, else treat as plain string
+            import json
+            try:
+                if input_str.strip().startswith("{"):
+                    arguments = json.loads(input_str)
+                else:
+                    arguments = {"input": input_str}
+            except (json.JSONDecodeError, ValueError):
+                arguments = {"input": input_str}
+
+            # Store for matching with on_tool_end
+            if not hasattr(self, '_pending_tools'):
+                self._pending_tools = {}
+            self._pending_tools[tool_name] = arguments
+        except Exception:
+            pass
+
+    def on_tool_end(self, output: str, **kwargs: Any) -> None:
+        """Capture tool execution end (result)."""
+        if not self._enabled():
+            return
+        try:
+            # Get the tool name from run_id metadata if available, else use last pending
+            tool_name = kwargs.get("name", "unknown_tool")
+            if not hasattr(self, '_pending_tools'):
+                self._pending_tools = {}
+            arguments = self._pending_tools.pop(tool_name, {})
+
+            # Log to the realtime logger in the structured format
+            self.realtime_logger.log_tool_execution(
+                tool_name=tool_name,
+                arguments=arguments,
+                result=output
+            )
+        except Exception:
+            pass
+
+    def on_tool_error(self, error: Union[Exception, KeyboardInterrupt], **kwargs: Any) -> None:
+        """Capture tool execution error."""
+        if not self._enabled():
+            return
+        try:
+            tool_name = kwargs.get("name", "unknown_tool")
+            if not hasattr(self, '_pending_tools'):
+                self._pending_tools = {}
+            arguments = self._pending_tools.pop(tool_name, {})
+
+            # Log error as result
+            error_str = f"ERROR: {str(error)}"
+            self.realtime_logger.log_tool_execution(
+                tool_name=tool_name,
+                arguments=arguments,
+                result=error_str
+            )
+        except Exception:
+            pass
