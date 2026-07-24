@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>API Test</title>
+</head>
+<body>
+    <h1>CryoAgent API Test</h1>
+    <div id="status">Testing...</div>
+    <pre id="result"></pre>
+
+    <script>
+        const API_BASE = 'http://localhost:8000';
+        const workflowPath = '/home/daoyi/Github/cryoagent/outputs/dynamic_mode/10181';
+
+        async function test() {
+            const statusDiv = document.getElementById('status');
+            const resultPre = document.getElementById('result');
+
+            try {
+                statusDiv.textContent = 'Fetching from: ' + `${API_BASE}/api/workflow/${workflowPath}`;
+
+                const response = await fetch(`${API_BASE}/api/workflow/${workflowPath}`);
+
+                statusDiv.textContent = `Response: ${response.status} ${response.statusText}`;
+
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+
+                const data = await response.json();
+                resultPre.textContent = JSON.stringify({
+                    stages: data.workflow_state?.stages?.length || 0,
+                    optimization_iterations: data.workflow_state?.stages?.find(s => s.stage === 'optimization')?.detailed_results?.tested_combinations?.length || 0
+                }, null, 2);
+
+                statusDiv.textContent = '✅ SUCCESS!';
+                statusDiv.style.color = 'green';
+
+            } catch (error) {
+                statusDiv.textContent = '❌ ERROR: ' + error.message;
+                statusDiv.style.color = 'red';
+                resultPre.textContent = error.stack;
+            }
+        }
+
+        test();
+    </script>
+</body>
+</html>

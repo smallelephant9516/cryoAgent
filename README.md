@@ -45,7 +45,7 @@ Set **dataset-specific** acquisition and input paths under `microscope_parameter
 | Field                                    | Role                                                                                   |
 | ---------------------------------------- | -------------------------------------------------------------------------------------- |
 | `pixel_size`, `voltage`, `cs_mm`, `dose` | Microscope / exposure parameters                                                       |
-| `particle_diameter`, `symmetry`          | Defaults for picking and reconstruction                                                |
+| `particle_diameter`, `symmetry`          | For picking and reconstruction                                                |
 | `movies_path`                            | Movies to import (wildcards allowed, e.g. `*.mrc`)                                     |
 | `micrographs_path`                       | Optional: pre-corrected micrographs (skips movie import / motion correction when used) |
 | `gain_ref_path`, `gain_rot`, `gain_flip` | Gain reference and orientation                                                         |

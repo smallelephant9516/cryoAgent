@@ -247,6 +247,7 @@ def extract_improvement_context_from_log(log_path: Path) -> Dict[str, Any]:
     }
 
     # Extract baseline information (usually in "STEP 0" or early in log)
+    # Try format 1: inline "Baseline: J57 2.18 Å ... cFAR: 0.662"
     baseline_match = re.search(
         r'\*\*[Bb]aseline[:\s]+([Jj]\d+)[^\d]*([\d.]+)\s*Å.*?cFAR[:\s]*([\d.]+)',
         text, flags=re.DOTALL
@@ -257,6 +258,28 @@ def extract_improvement_context_from_log(log_path: Path) -> Dict[str, Any]:
             "resolution": float(baseline_match.group(2)),
             "cfar": float(baseline_match.group(3))
         }
+    else:
+        # Try format 2: bullet points with separate lines
+        # **Baseline established:**
+        # - **Job:** J238 ...
+        # - **Resolution:** 2.51 Å
+        # - **cFAR:** 0.687
+        baseline_section = re.search(
+            r'\*\*[Bb]aseline\s+established[:\s]*\*\*\s*(.*?)(?:\n\n|Let me reason)',
+            text, flags=re.DOTALL
+        )
+        if baseline_section:
+            baseline_text = baseline_section.group(1)
+            job_match = re.search(r'[Jj]ob[:\s]*\*\*[:\s]*([Jj]\d+)', baseline_text)
+            res_match = re.search(r'[Rr]esolution[:\s]*\*\*[:\s]*([\d.]+)\s*Å', baseline_text)
+            cfar_match = re.search(r'cFAR[:\s]*\*\*[:\s]*([\d.]+)', baseline_text)
+
+            if job_match and res_match:
+                context["baseline"] = {
+                    "job": job_match.group(1).upper(),
+                    "resolution": float(res_match.group(1)),
+                    "cfar": float(cfar_match.group(1)) if cfar_match else None
+                }
 
     # Split into assistant response blocks to parse strategies
     assistant_blocks = re.findall(
@@ -328,6 +351,14 @@ def extract_improvement_context_from_log(log_path: Path) -> Dict[str, Any]:
                     result_res = float(res_row_match.group(2))
                     delta_res = baseline_res - result_res
 
+                    # Set context baseline from first comparison table if not already set
+                    if not context.get("baseline"):
+                        context["baseline"] = {
+                            "job": baseline_job,
+                            "resolution": baseline_res,
+                            "cfar": None  # Will be filled if cFAR row is found
+                        }
+
                     # Also extract cFAR values if present
                     cfar_row_match = re.search(
                         r'\|\s*\*\*cFAR\*\*\s*\|\s*([\d.]+)[^\|]*\|\s*([\d.]+)',
@@ -340,6 +371,10 @@ def extract_improvement_context_from_log(log_path: Path) -> Dict[str, Any]:
                         baseline_cfar = float(cfar_row_match.group(1))
                         result_cfar = float(cfar_row_match.group(2))
                         delta_cfar = result_cfar - baseline_cfar
+
+                        # Update context baseline cFAR if this is the first table
+                        if context.get("baseline") and context["baseline"].get("cfar") is None:
+                            context["baseline"]["cfar"] = baseline_cfar
 
                     # Build outcome string with both metrics
                     outcome_parts = [f"Resolution: {baseline_res:.2f} → {result_res:.2f} Å ({delta_res:+.2f} Å)"]
@@ -393,6 +428,149 @@ def extract_improvement_context_from_log(log_path: Path) -> Dict[str, Any]:
                         current_hypothesis = None
                         current_approach = None
                         current_actions = []
+
+        # === NEW: Parse "What I Changed and Why" summary table ===
+        # This table has format:
+        # | # | Hypothesis | Action | Result | Verdict |
+        # | 1 | ... | J301: ... | **2.78 Å** | ✗ Worse |
+        summary_table_match = re.search(
+            r'###?\s*What I Changed and Why\s*\n+\s*\|\s*#\s*\|\s*Hypothesis\s*\|\s*Action\s*\|\s*Result\s*\|\s*Verdict\s*\|',
+            block, flags=re.IGNORECASE
+        )
+
+        if summary_table_match:
+            # Find all table rows after the header
+            table_start = summary_table_match.end()
+            # Skip the separator line (|---|---|...)
+            table_text = block[table_start:]
+
+            # Match each data row
+            row_pattern = r'\|\s*(\d+)\s*\|\s*([^|]+?)\s*\|\s*([^|]+?)\s*\|\s*\*\*?([\d.]+)\s*Å\*\*?\s*\|\s*([^|]+?)\s*\|'
+
+            for row_match in re.finditer(row_pattern, table_text):
+                row_num = row_match.group(1)
+                hypothesis = row_match.group(2).strip()
+                action = row_match.group(3).strip()
+                result_res = float(row_match.group(4))
+                verdict = row_match.group(5).strip()
+
+                # Extract job UID from action column (e.g., "J301: nonuniform_refinement...")
+                job_match = re.search(r'([Jj]\d+)', action)
+                result_job = job_match.group(1).upper() if job_match else f"Unknown_{row_num}"
+
+                # Determine success from verdict
+                success = '✓' in verdict or 'gain' in verdict.lower()
+                if '✗' in verdict or 'worse' in verdict.lower() or 'same' in verdict.lower():
+                    success = False
+
+                # Extract baseline resolution if available (from context or assume it's from earlier)
+                baseline_res = context.get("baseline", {}).get("resolution", None)
+
+                # Build outcome string
+                if baseline_res:
+                    delta_res = baseline_res - result_res
+                    outcome = f"Resolution: {baseline_res:.2f} → {result_res:.2f} Å ({delta_res:+.2f} Å)"
+                else:
+                    outcome = f"Resolution: {result_res:.2f} Å"
+
+                # Add strategy to context
+                strategy = {
+                    "hypothesis": hypothesis[:200],
+                    "approach": action[:200],
+                    "actions": [],  # Could parse from action text if needed
+                    "result_job": result_job,
+                    "outcome": outcome,
+                    "conclusion": verdict[:150],
+                    "success": success,
+                    "metrics": {
+                        "baseline_resolution": baseline_res,
+                        "result_resolution": result_res,
+                        "delta_resolution": baseline_res - result_res if baseline_res else None,
+                        "baseline_cfar": None,
+                        "result_cfar": None,
+                        "delta_cfar": None,
+                    }
+                }
+                context["strategies_tried"].append(strategy)
+                if result_job not in context["job_uids"]:
+                    context["job_uids"].append(result_job)
+
+        # === NEW: Parse "Action | Hypothesis | Result" summary table ===
+        # This table has format:
+        # | Action | Hypothesis | Result |
+        # | **1. Strategy** (J508→J509→J510) | reasoning | **2.73→2.67 Å** ✅ ... |
+        action_summary_match = re.search(
+            r'\|\s*Action\s*\|\s*Hypothesis\s*\|\s*Result\s*\|',
+            block, flags=re.IGNORECASE
+        )
+
+        if action_summary_match:
+            table_start = action_summary_match.end()
+            table_text = block[table_start:]
+
+            # Match each data row: | **N. Action** (jobs) | hypothesis | **baseline→result Å** status |
+            row_pattern = r'\|\s*\*\*(\d+)\.\s*([^(]+)\*\*\s*\(([^)]+)\)\s*\|\s*([^|]+?)\s*\|\s*\*\*?([\d.]+)→([\d.]+)\s*Å\*\*?[^|]*?(✅|❌)'
+
+            for row_match in re.finditer(row_pattern, table_text):
+                row_num = row_match.group(1)
+                strategy_name = row_match.group(2).strip()
+                job_chain = row_match.group(3).strip()
+                hypothesis = row_match.group(4).strip()
+                baseline_res = float(row_match.group(5))
+                result_res = float(row_match.group(6))
+                status = row_match.group(7).strip()
+
+                # Extract final job UID from chain (e.g., "J508→J509→J510" → "J510")
+                job_uids = re.findall(r'[Jj]\d+', job_chain)
+                result_job = job_uids[-1].upper() if job_uids else f"Unknown_{row_num}"
+
+                # Determine success from status
+                success = (status == '✅')
+                delta_res = baseline_res - result_res
+
+                # Extract additional metrics from the result cell if present
+                result_cell = table_text[row_match.start():row_match.end() + 200]
+                cfar_match = re.search(r'cFAR\s*([\d.]+)→([\d.]+)', result_cell)
+                baseline_cfar = float(cfar_match.group(1)) if cfar_match else None
+                result_cfar = float(cfar_match.group(2)) if cfar_match else None
+
+                # Build outcome string
+                outcome = f"Resolution: {baseline_res:.2f} → {result_res:.2f} Å ({delta_res:+.2f} Å)"
+                if baseline_cfar and result_cfar:
+                    outcome += f" | cFAR: {baseline_cfar:.3f} → {result_cfar:.3f}"
+
+                # Extract conclusion from result cell
+                conclusion_match = re.search(r'(Meaningful gain|Below.*?threshold|Worse|Failed)[^|]{0,100}', result_cell, re.IGNORECASE)
+                conclusion = conclusion_match.group(0).strip() if conclusion_match else ("Success" if success else "No improvement")
+
+                # Add strategy to context
+                strategy = {
+                    "hypothesis": hypothesis[:200],
+                    "approach": f"{strategy_name} ({job_chain})",
+                    "actions": [],
+                    "result_job": result_job,
+                    "outcome": outcome,
+                    "conclusion": conclusion[:150],
+                    "success": success,
+                    "metrics": {
+                        "baseline_resolution": baseline_res,
+                        "result_resolution": result_res,
+                        "delta_resolution": delta_res,
+                        "baseline_cfar": baseline_cfar,
+                        "result_cfar": result_cfar,
+                        "delta_cfar": (result_cfar - baseline_cfar) if (baseline_cfar and result_cfar) else None,
+                    }
+                }
+                context["strategies_tried"].append(strategy)
+                if result_job not in context["job_uids"]:
+                    context["job_uids"].append(result_job)
+
+                # Set baseline from first row if not already set
+                if not context.get("baseline") and row_num == "1":
+                    context["baseline"] = {
+                        "resolution": baseline_res,
+                        "cfar": baseline_cfar
+                    }
 
     # Also extract job UIDs using the existing function for completeness
     all_job_uids = refinement_job_uids_from_log_file(log_path)
@@ -807,6 +985,13 @@ class WorkflowState:
                             }
                             for c in res["classes"]
                         ]
+
+                    # For preprocessing stages, extract micrograph count from output_groups
+                    if stage == "preprocessing" and res.get("output_groups"):
+                        for group in res["output_groups"]:
+                            if isinstance(group, dict) and group.get("name") == "exposures_accepted":
+                                metrics["num_micrographs"] = group.get("num_items")
+                                break
                 else:
                     metrics["note"] = res.get("error", "metrics unavailable")
             except Exception as e:

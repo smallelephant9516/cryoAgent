@@ -592,9 +592,6 @@ Examples:
 
   # Verbose mode
   python cryoagent_master_workflow.py --verbose
-
-  # Interactive agentic GUI (chat to shape and run the plan):
-  streamlit run cryoagent_gui.py
         """
     )
     
