@@ -363,12 +363,19 @@ def _update_cryosparc_reconstruction(config_data: Dict[str, Any], overrides: Mic
     ]
     updates_made |= _bulk_update(config_data, paths_to_update)
 
+    # Ab initio always stays C1; only propagate known point-group symmetry into
+    # refinement. CryoSPARC recommends C1 for ab initio unless forced otherwise.
+    updates_made |= _bulk_update(
+        config_data,
+        [
+            (["workflow", "ab_initio", "symmetry"], "C1"),
+        ],
+    )
     symmetry = _value_or_none(overrides.symmetry)
     if symmetry is not None:
         updates_made |= _bulk_update(
             config_data,
             [
-                (["workflow", "ab_initio", "symmetry"], symmetry),
                 (["workflow", "refinement", "symmetry"], symmetry),
             ],
         )

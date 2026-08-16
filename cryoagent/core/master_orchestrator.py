@@ -2409,19 +2409,62 @@ class MasterOrchestrator:
                 return ma.cryosparc_tools
         return None
 
+    def _ensure_workflow_state(self):
+        """Lazy-init the persistent blackboard for live progress + stage records."""
+        from .workflow_state import WorkflowState
+        if self.workflow_state is None:
+            wc = self.workflow_context
+            self.workflow_state = WorkflowState(
+                outputs_dir=self.outputs_dir,
+                project_uid=getattr(wc, "project_uid", None) if wc else None,
+                workspace_uid=getattr(wc, "workspace_uid", None) if wc else None,
+            )
+        return self.workflow_state
+
+    def _begin_stage_on_blackboard(self, stage_name: str) -> None:
+        """Write current_stage so the visualizer can show in-progress work."""
+        try:
+            self._ensure_workflow_state().begin_stage(stage_name)
+        except Exception as e:
+            self.logger.warning(f"Failed to begin stage {stage_name} on blackboard: {e}")
+
+    def _finish_run_on_blackboard(self, success: bool = True) -> None:
+        """Clear in-progress marker and set terminal run_status."""
+        try:
+            if self.workflow_state is None:
+                # Nothing was written during the run — still leave a terminal marker
+                # if the outputs dir exists / will be monitored.
+                self._ensure_workflow_state()
+            self.workflow_state.finish_run(success=success)
+        except Exception as e:
+            self.logger.warning(f"Failed to finish run on blackboard: {e}")
+
+    def _workflow_succeeded(self) -> bool:
+        """True if every stage's latest attempt succeeded (retries overwrite earlier fails)."""
+        if not self.stage_results:
+            return True
+        latest: Dict[str, bool] = {}
+        for r in self.stage_results:
+            key = r.stage.value if hasattr(r.stage, "value") else str(r.stage)
+            latest[key] = bool(r.success)
+        return all(latest.values())
+
+    def _clear_current_stage_on_blackboard(self) -> None:
+        """Clear current_stage without ending the overall run (e.g. stage failure)."""
+        try:
+            if self.workflow_state is None:
+                return
+            self.workflow_state.current_stage = None
+            self.workflow_state.save()
+        except Exception as e:
+            self.logger.warning(f"Failed to clear current_stage on blackboard: {e}")
+
     def _record_to_blackboard(self, stage_name: str, success: bool, stage_outputs: dict) -> None:
         """Record a finished stage's outputs + real metrics to the blackboard,
         plus the narrative (goal + the action choices it actually made) so
         dynamic/improvement mode can reason about intent, not just numbers."""
         try:
-            from .workflow_state import WorkflowState, summarize_decisions
-            if self.workflow_state is None:
-                wc = self.workflow_context
-                self.workflow_state = WorkflowState(
-                    outputs_dir=self.outputs_dir,
-                    project_uid=getattr(wc, "project_uid", None) if wc else None,
-                    workspace_uid=getattr(wc, "workspace_uid", None) if wc else None,
-                )
+            self._ensure_workflow_state()
 
             # Narrative context, best-effort (never block recording on it).
             goal = None
@@ -2433,6 +2476,7 @@ class MasterOrchestrator:
                         goal = stage_agent.get_stage_description()
                     modular = getattr(stage_agent, "modular_agent", None) or stage_agent
                     if hasattr(modular, "get_tool_execution_log"):
+                        from .workflow_state import summarize_decisions
                         decisions = summarize_decisions(modular.get_tool_execution_log())
             except Exception as ctx_exc:
                 self.logger.debug(f"Blackboard narrative extraction skipped for {stage_name}: {ctx_exc}")
@@ -3000,6 +3044,7 @@ class MasterOrchestrator:
             print(f"📋 {stage_agent.get_stage_description()}")
             
             # Execute stage
+            self._begin_stage_on_blackboard(stage_name)
             stage_result = stage_agent.execute_stage(self.workflow_context, conversation_id)
             self.stage_results.append(stage_result)
             
@@ -3048,6 +3093,7 @@ class MasterOrchestrator:
                 print(f"   Execution time: {stage_result.execution_time:.2f} seconds")
             else:
                 print(f"❌ Stage {stage_name} failed: {stage_result.error}")
+                self._clear_current_stage_on_blackboard()
 
                 # Guided-mode cross-stage recovery: ask the LLM planner whether to
                 # retry this stage, skip it (never for critical stages, and only
@@ -3072,16 +3118,19 @@ class MasterOrchestrator:
                         if decision.action == "retry":
                             attempt += 1
                             print(f"🔁 Retrying stage {stage_name} (attempt {attempt}/{max_attempts})...")
+                            self._begin_stage_on_blackboard(stage_name)
                             stage_result = stage_agent.execute_stage(self.workflow_context, conversation_id)
                             self.stage_results.append(stage_result)
                             self.summary_agent.add_stage_summary(stage_result, stage_agent)
                             if stage_result.success:
                                 self.workflow_context.stage_outputs[stage] = stage_result.stage_outputs
+                                self._record_to_blackboard(stage_name, True, stage_result.stage_outputs or {})
                                 print(f"✅ Stage {stage_name} succeeded on retry {attempt}")
                                 recovered = True
                                 break
                             else:
                                 print(f"❌ Retry {attempt} of {stage_name} failed: {stage_result.error}")
+                                self._clear_current_stage_on_blackboard()
                                 continue
                         elif decision.action == "skip":
                             # Explicit, logged skip (planner guarantees non-critical).
@@ -3123,6 +3172,8 @@ class MasterOrchestrator:
         
         # Add final report path to summary
         summary['final_report_path'] = final_report_path
+
+        self._finish_run_on_blackboard(success=self._workflow_succeeded())
         
         # Display results
         self._display_workflow_results(summary)
@@ -3517,6 +3568,7 @@ class MasterOrchestrator:
 
             print(f"🎯 Running stage: {stage_name}")
             attempt = 1
+            self._begin_stage_on_blackboard(stage_name)
             stage_result = stage_agent.execute_stage(self.workflow_context, conversation_id)
             self.stage_results.append(stage_result)
             self.summary_agent.add_stage_summary(stage_result, stage_agent)
@@ -3525,6 +3577,7 @@ class MasterOrchestrator:
             while (not stage_result.success) and attempt < max_attempts:
                 attempt += 1
                 print(f"🔁 Stage {stage_name} failed; retry {attempt}/{max_attempts}...")
+                self._begin_stage_on_blackboard(stage_name)
                 stage_result = stage_agent.execute_stage(self.workflow_context, conversation_id)
                 self.stage_results.append(stage_result)
                 self.summary_agent.add_stage_summary(stage_result, stage_agent)
@@ -3540,8 +3593,10 @@ class MasterOrchestrator:
             completed_stage_names.append(stage_name)
 
             if stage_result.success:
+                self._record_to_blackboard(stage_name, True, stage_result.stage_outputs or {})
                 print(f"✅ Stage {stage_name} completed")
             else:
+                self._clear_current_stage_on_blackboard()
                 print(f"❌ Stage {stage_name} failed after {max_attempts} attempts.")
                 # Let the planner see the failure and decide whether to continue,
                 # retry a different way, or finish on the next iteration.
@@ -3561,6 +3616,7 @@ class MasterOrchestrator:
         summary['final_report_path'] = final_report_path
         summary['mode'] = 'dynamic'
         summary['planner_steps'] = steps
+        self._finish_run_on_blackboard(success=self._workflow_succeeded())
         self._display_workflow_results(summary)
         return summary
 
@@ -3775,6 +3831,7 @@ class MasterOrchestrator:
             print(f"📋 {stage_agent.get_stage_description()}")
             
             # Execute stage
+            self._begin_stage_on_blackboard(stage_name)
             stage_result = stage_agent.execute_stage(self.workflow_context, conversation_id)
             self.stage_results.append(stage_result)
             
@@ -3850,6 +3907,7 @@ class MasterOrchestrator:
                 print(f"   Execution time: {stage_result.execution_time:.2f} seconds")
             else:
                 print(f"❌ Stage {stage_name} failed: {stage_result.error}")
+                self._clear_current_stage_on_blackboard()
                 break
         
         # Set workflow end time for summary agent
@@ -3866,6 +3924,8 @@ class MasterOrchestrator:
         
         # Add final report path to summary
         summary['final_report_path'] = final_report_path
+
+        self._finish_run_on_blackboard(success=self._workflow_succeeded())
         
         # Display results
         self._display_workflow_results(summary)

@@ -73,7 +73,7 @@
       "deepseek": {
         "api_key": "${DEEPSEEK_API_KEY}",
         "base_url": "https://api.deepseek.com",
-        "model_name": "deepseek-v4-flash",
+        "model_name": "deepseek-v4-pro",
         "possible_models": [
           "deepseek-chat",
           "deepseek-reasoner",  

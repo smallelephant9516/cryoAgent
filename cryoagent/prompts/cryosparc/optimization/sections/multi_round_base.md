@@ -5,7 +5,7 @@
 **You drive this loop yourself using atomic tools.** There is no single "run multi-round classification" tool — you run each round's steps and track the best result across rounds.
 
 ### Recipe for ONE round, given a `particles_source` job (start with refinement_job_uid) and num_classes:
-1. **ab_initio_reconstruction** with `particles_job_uid=<particles_source>`, `num_classes=<num_classes>`. Then **wait_for_job** until completed.
+1. **ab_initio_reconstruction** with `particles_job_uid=<particles_source>`, `num_classes=<num_classes>`, prefer `symmetry=C1`. Then **wait_for_job** until completed.
 2. **heterogeneous_refinement** with `particles_job_uid=<particles_source>`, `volume_from_job_uid=<ab_initio_job_uid>`, `num_classes=<num_classes>`. Then **wait_for_job** until completed.
 3. **get_hetero_class_resolutions** with `job_uid=<hetero_job_uid>` and select the best class (smallest `resolution_angstroms`). Note its index `<best>`.
 4. **Refine** the best class. Use **nonuniform_refinement** when non-uniform refinement is preferred for this dataset, otherwise **homogeneous_refinement**, with `particles_job_uid=<hetero_job_uid>`, `volume_job_uid=<hetero_job_uid>`, `particles_group_name=particles_class_<best>`, `volume_group_name=volume_class_<best>`. Then **wait_for_job** until completed.

@@ -913,6 +913,12 @@ class StageRecord:
 class WorkflowState:
     """Persistent blackboard of stage records + result metrics."""
 
+    # run_status values for live visualizer monitoring
+    STATUS_IDLE = "idle"
+    STATUS_RUNNING = "running"
+    STATUS_COMPLETED = "completed"
+    STATUS_FAILED = "failed"
+
     def __init__(self, outputs_dir: str = "outputs", project_uid: Optional[str] = None,
                  workspace_uid: Optional[str] = None):
         self.outputs_dir = Path(outputs_dir)
@@ -920,6 +926,23 @@ class WorkflowState:
         self.workspace_uid = workspace_uid
         self.records: List[StageRecord] = []
         self.path = self.outputs_dir / "workflow_state.json"
+        self.current_stage: Optional[str] = None
+        self.run_status: str = self.STATUS_IDLE
+
+    # ------------------------------------------------------------------
+    # Live progress markers (for visualizer Real-time mode)
+    # ------------------------------------------------------------------
+    def begin_stage(self, stage: str) -> None:
+        """Mark a stage as currently running and persist for live monitors."""
+        self.current_stage = stage
+        self.run_status = self.STATUS_RUNNING
+        self.save()
+
+    def finish_run(self, success: bool = True) -> None:
+        """Clear the in-progress marker and set a terminal run_status."""
+        self.current_stage = None
+        self.run_status = self.STATUS_COMPLETED if success else self.STATUS_FAILED
+        self.save()
 
     # ------------------------------------------------------------------
     # Primary-job + metric extraction
@@ -1010,6 +1033,7 @@ class WorkflowState:
 
         # For "improvement", append with an auto-incremented suffix (improvement_1, _2, ...)
         # so multiple --improve rounds accumulate. For all other stages, replace (latest wins).
+        begun_stage = stage
         if stage == "improvement":
             existing_improvement_nums = [
                 int(r.stage.split("_")[-1])
@@ -1025,6 +1049,8 @@ class WorkflowState:
         rec = StageRecord(stage, success, stage_outputs, primary, metrics, assessment,
                           goal=goal, decisions=decisions, reasoning_summary=reasoning_summary)
         self.records.append(rec)
+        if self.current_stage in (begun_stage, stage):
+            self.current_stage = None
         self.save()
         return rec
 
@@ -1234,6 +1260,8 @@ class WorkflowState:
         return {
             "project_uid": self.project_uid,
             "workspace_uid": self.workspace_uid,
+            "current_stage": self.current_stage,
+            "run_status": self.run_status,
             "records": [r.to_dict() for r in self.records],
         }
 
@@ -1257,6 +1285,8 @@ class WorkflowState:
                      project_uid=data.get("project_uid"),
                      workspace_uid=data.get("workspace_uid"))
             st.records = [StageRecord.from_dict(d) for d in data.get("records", [])]
+            st.current_stage = data.get("current_stage")
+            st.run_status = data.get("run_status") or cls.STATUS_IDLE
             return st
         except Exception as e:
             logger.warning("Failed to load workflow_state.json: %s", e)

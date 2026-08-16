@@ -57,6 +57,8 @@ export interface StageRecord {
 export interface WorkflowState {
   stages: StageRecord[];
   metadata: WorkflowMetadata;
+  current_stage?: string | null;
+  run_status?: 'idle' | 'running' | 'completed' | 'failed' | string;
 }
 
 export interface WorkflowTimelineItem {
@@ -80,6 +82,7 @@ export interface WorkflowSummary {
   workflow_timeline: WorkflowTimelineItem[];
   output_files?: string[];
   next_steps?: string[];
+  summary_text?: string;
 }
 
 export interface WorkflowData {
@@ -87,6 +90,7 @@ export interface WorkflowData {
   summary: WorkflowSummary | null;
   output_dir: string;
   last_updated: string;
+  source?: string;
 }
 
 export interface WorkflowListItem {
@@ -94,6 +98,7 @@ export interface WorkflowListItem {
   name: string;
   project: string;
   trial: string;
+  run_status?: string;
 }
 
 export interface WorkflowListResponse {

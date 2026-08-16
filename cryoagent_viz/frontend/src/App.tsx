@@ -22,6 +22,18 @@ export default function App() {
 
   const workflowData = realtimeMode ? realtimeData : staticData;
   const workflowOptions = workflows?.workflows ?? [];
+  const currentStage = workflowData?.workflow_state?.current_stage;
+  const runStatus = workflowData?.workflow_state?.run_status;
+
+  const realtimeStatusLabel = (() => {
+    if (!realtimeMode) return null;
+    if (!connected) return 'Reconnecting…';
+    if (currentStage) return `Running: ${currentStage.replace(/_/g, ' ')}`;
+    if (runStatus === 'completed') return 'Watching (completed)';
+    if (runStatus === 'failed') return 'Watching (failed)';
+    if (runStatus === 'running') return 'Watching…';
+    return 'Watching…';
+  })();
 
   const handleWorkflowChange = (path: string) => {
     setSelectedWorkflowPath(path);
@@ -54,7 +66,8 @@ export default function App() {
           <h1 className="text-2xl font-serif">CryoAgent Workflow Visualizer</h1>
           {workflowData && (
             <div className="text-xs text-gray-300 mt-1 truncate">
-              {workflowData.workflow_state.metadata.project_uid} / {workflowData.workflow_state.metadata.workspace_uid}
+              {workflowData.workflow_state.metadata?.project_uid || '—'} /{' '}
+              {workflowData.workflow_state.metadata?.workspace_uid || '—'}
             </div>
           )}
         </div>
@@ -68,7 +81,9 @@ export default function App() {
             <option value="">Select workflow...</option>
             {workflowOptions.map((workflow) => (
               <option key={workflow.path} value={workflow.path}>
+                {workflow.run_status === 'running' ? '● ' : ''}
                 {workflow.name}
+                {workflow.run_status === 'running' ? ' (running)' : ''}
               </option>
             ))}
           </select>
@@ -99,6 +114,12 @@ export default function App() {
               />
             )}
           </label>
+
+          {realtimeStatusLabel && (
+            <span className="text-xs text-gray-300 max-w-[14rem] truncate" title={realtimeStatusLabel}>
+              {realtimeStatusLabel}
+            </span>
+          )}
 
           {loading && (
             <div className="text-xs text-gray-300">Loading...</div>
@@ -194,9 +215,13 @@ export default function App() {
             {workflowData.workflow_state.stages.length} stages •{' '}
             {workflowData.workflow_state.stages.filter(s => s.success).length} successful •{' '}
             {workflowData.workflow_state.stages.filter(s => !s.success).length} failed
+            {runStatus ? ` • status: ${runStatus}` : ''}
+            {currentStage ? ` • current: ${currentStage}` : ''}
           </div>
           <div>
-            Last updated: {new Date(workflowData.last_updated).toLocaleString()}
+            {workflowData.last_updated
+              ? `Last updated: ${new Date(workflowData.last_updated).toLocaleString()}`
+              : ''}
           </div>
         </div>
       )}

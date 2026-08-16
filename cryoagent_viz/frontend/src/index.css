@@ -28,6 +28,19 @@
       opacity: 1;
     }
   }
+
+  @keyframes stagePulse {
+    0%, 100% {
+      box-shadow: 0 0 0 0 rgba(37, 99, 235, 0.35);
+    }
+    50% {
+      box-shadow: 0 0 0 8px rgba(37, 99, 235, 0);
+    }
+  }
+
+  .stage-node-running {
+    animation: stagePulse 1.6s ease-in-out infinite;
+  }
 }
 
 /* Custom scrollbar */

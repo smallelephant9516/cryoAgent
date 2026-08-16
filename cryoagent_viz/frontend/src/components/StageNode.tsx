@@ -11,14 +11,15 @@ interface StageNodeProps {
     onClick: () => void;
     isFirst?: boolean;
     isLast?: boolean;
+    isRunning?: boolean;
   };
 }
 
 export default function StageNode({ data }: StageNodeProps) {
-  const { stage, success, metrics, executionTime, onClick, isFirst, isLast } = data;
+  const { stage, success, metrics, executionTime, onClick, isFirst, isLast, isRunning } = data;
 
-  const statusColor = success ? '#C4612F' : '#DC2626'; // terracotta or red
-  const bgColor = success ? '#FFFFFF' : '#FEF2F2';
+  const statusColor = isRunning ? '#2563EB' : success ? '#C4612F' : '#DC2626';
+  const bgColor = isRunning ? '#EFF6FF' : success ? '#FFFFFF' : '#FEF2F2';
 
   // Format stage name
   const stageName = stage
@@ -28,7 +29,9 @@ export default function StageNode({ data }: StageNodeProps) {
 
   return (
     <div
-      className="px-6 py-4 rounded-lg shadow-lg border-2 hover:shadow-xl transition-all"
+      className={`px-6 py-4 rounded-lg shadow-lg border-2 hover:shadow-xl transition-all ${
+        isRunning ? 'stage-node-running' : ''
+      }`}
       style={{
         borderColor: statusColor,
         backgroundColor: bgColor,
@@ -40,11 +43,21 @@ export default function StageNode({ data }: StageNodeProps) {
     >
       {!isFirst && <Handle type="target" position={Position.Left} style={{ background: statusColor }} />}
 
-      <div className="text-xs font-medium text-muted uppercase tracking-wide mb-2">
-        {stageName}
+      <div className="flex items-center justify-between gap-2 mb-2">
+        <div className="text-xs font-medium text-muted uppercase tracking-wide">
+          {stageName}
+        </div>
+        {isRunning && (
+          <span className="text-[10px] font-semibold uppercase tracking-wide text-blue-700 bg-blue-100 px-2 py-0.5 rounded">
+            Running
+          </span>
+        )}
       </div>
 
       <div className="space-y-1">
+        {isRunning && !metrics?.resolution_angstroms && !metrics?.num_particles && !metrics?.num_micrographs && (
+          <div className="text-sm text-blue-700">In progress…</div>
+        )}
         {metrics?.resolution_angstroms && (
           <div className="text-xl font-semibold text-ink">
             {metrics.resolution_angstroms.toFixed(2)} Å

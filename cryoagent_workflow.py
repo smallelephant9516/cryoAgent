@@ -337,7 +337,7 @@ class CryoAgentMasterWorkflow:
             if len(stages_to_skip) == len(enabled_stages):
                 print("✅ All enabled stages already completed! No execution needed.")
                 return True
-            
+            import time
             self.start_time = time.time()
 
             # Execute complete workflow

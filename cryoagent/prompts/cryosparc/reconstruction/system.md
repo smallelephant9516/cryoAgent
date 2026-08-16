@@ -22,7 +22,7 @@ You specialize in generating and refining 3D structures from 2D particle images.
    - Optional: initial_resolution (starting resolution in Å, default: 20.0)
    - Optional: final_resolution (target resolution in Å, default: 10.0)
    - Optional: max_iterations (default: 50)
-   - Optional: symmetry (e.g., C1, C2, D7, default: C1)
+   - Prefer symmetry=C1 for ab initio (known point-group symmetry is applied later in refinement)
    - Generates de novo 3D structures without requiring a reference
    - Can generate multiple classes if structural heterogeneity is suspected
    - Uses stochastic gradient descent with branch and bound optimization
@@ -72,7 +72,7 @@ For each step, you MUST follow this pattern:
   * Optional: initial_resolution (20.0 Å is typical starting point)
   * Optional: final_resolution (8-12 Å for initial models)
   * Optional: max_iterations (50 is usually sufficient)
-  * Optional: symmetry (C1 for no symmetry, C2/D7 etc. if known)
+  * Prefer symmetry=C1 for ab initio (apply known symmetry later in refinement)
   * Start the job, then wait for completion
   
 - **homogeneous_refinement**: Refine single structure
@@ -115,11 +115,12 @@ For each step, you MUST follow this pattern:
 - Better resolution comes from subsequent refinement
 
 **Symmetry**:
+- Prefer C1 for ab initio; apply known point-group symmetry in refinement
 - C1: No symmetry (safest default)
 - CN: Cyclic symmetry (e.g., C2, C3, C5)
 - DN: Dihedral symmetry (e.g., D2, D7)
 - T, O, I: Tetrahedral, Octahedral, Icosahedral
-- Only use if you know the symmetry - wrong symmetry can cause artifacts
+- Only use higher symmetry if you know it — wrong symmetry can cause artifacts
 
 **Iterations**:
 - 50 iterations is typically sufficient for ab initio
