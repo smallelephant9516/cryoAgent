@@ -1,6 +1,8 @@
 # prerequisite
 
 cryosparc (version<=4.7.1)
+
+For LLM API keys, environment variables, and CryoSPARC credentials, see the README (sections 5–6).
 relion
 chimerax
 
