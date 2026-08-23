@@ -59,7 +59,7 @@
     "improvement_max_iterations": 200,
     "improvement_max_iterations_description": "ReAct step cap for the opt-in --improve agent (baseline + up to 5 jobs, each with wait/describe/diagnostics). Falls back to max(30, max_iterations) when unset.",
     "verbose": true,
-    "timeout": 60,
+    "timeout": 180,
     "memory_control": {
       "clear_memory_on_new_conversation": true,
       "maintain_context_between_interactions": false
@@ -73,7 +73,7 @@
       "deepseek": {
         "api_key": "${DEEPSEEK_API_KEY}",
         "base_url": "https://api.deepseek.com",
-        "model_name": "deepseek-v4-pro",
+        "model_name": "deepseek-v4-flash",
         "possible_models": [
           "deepseek-chat",
           "deepseek-reasoner",  
@@ -83,7 +83,8 @@
         "extra_body": {},
         "deepseek_v4_extra_body": {},
         "temperature": 0.1,
-        "timeout": 60
+        "timeout": 180,
+        "max_retries": 2
       },
       "openai": {
         "api_key": "${OPENAI_API_KEY}",

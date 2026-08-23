@@ -3331,61 +3331,78 @@ class MasterOrchestrator:
                       f"{self.outputs_dir}; run the guided workflow first.")
             return {"success": False, "error": "no blackboard"}
 
-        # Before starting a new improvement run, check if there are old improvement logs
-        # that completed but never got recorded to the blackboard (due to incomplete tool
-        # logging). Parse them now and add to the blackboard as improvement_N records.
+        # Re-parse every prior improvement log into five-bucket evidence. Update
+        # thin blackboard rows in place rather than skipping once any
+        # improvement_* record exists.
         from pathlib import Path
         import glob
+        from .workflow_state import (
+            extract_improvement_context_from_log,
+            attach_exact_run_params,
+            format_improvement_evidence_brief,
+            merge_improvement_contexts,
+        )
+
         improvement_logs = sorted(
             glob.glob(f"{self.outputs_dir}/llm_conversation_improvement_*.log")
         )
+        parsed_contexts = []
+        project_uid = self.workflow_state.project_uid
         for log_path in improvement_logs:
             log_path = Path(log_path)
-            # Check if this log's results are already in the blackboard
-            # (We check by looking for any improvement stage records)
-            existing_improvement_stages = [
-                r.stage for r in self.workflow_state.records
-                if r.stage.startswith("improvement")
-            ]
+            context = extract_improvement_context_from_log(log_path)
+            attach_exact_run_params(context, cryosparc_tools, project_uid)
+            parsed_contexts.append(context)
 
-            # If we already have improvement records, skip (assume they came from this log)
-            # TODO: more sophisticated check - parse log timestamp and match to blackboard records
-            if existing_improvement_stages:
+            strategies = context.get("strategies_tried") or []
+            baseline = context.get("baseline") or {}
+            candidates = context.get("job_uids") or []
+            preferred = (context.get("best_result") or {}).get("job")
+            if not candidates and not strategies:
                 continue
 
-            # Try to extract rich context from this old log
-            from .workflow_state import extract_improvement_context_from_log
-            context = extract_improvement_context_from_log(log_path)
-            candidates = context.get("job_uids", [])
+            existing = self.workflow_state.find_improvement_record_for_log(log_path.name)
+            n_strat = len(strategies)
+            print(f"📋 {log_path.name}: {len(candidates)} job(s), {n_strat} attempt(s)")
+            for i, strat in enumerate(strategies[:5], 1):
+                cls = strat.get("outcome_class") or ("helped" if strat.get("success") else "no_difference")
+                hyp = (strat.get("hypothesis") or "Unknown")[:60]
+                print(f"   [{cls}] {strat.get('result_job', '?')}: {hyp}")
+            if n_strat > 5:
+                print(f"   ... and {n_strat - 5} more")
 
-            if candidates:
-                strategies = context.get("strategies_tried", [])
-                baseline = context.get("baseline", {})
-
-                print(f"📋 Found old improvement log with {len(candidates)} refinement job(s) "
-                      f"and {len(strategies)} strategy/ies - recording now...")
-
-                # Show what strategies were tried
-                for i, strat in enumerate(strategies[:3], 1):  # Show first 3
-                    success_icon = "✓" if strat.get("success") else "✗"
-                    hyp = strat.get("hypothesis", "Unknown")[:60]
-                    print(f"   {success_icon} {hyp}...")
-                if len(strategies) > 3:
-                    print(f"   ... and {len(strategies) - 3} more")
-
-                try:
+            try:
+                if existing is not None:
+                    rec = self.workflow_state.update_improvement_record(
+                        existing,
+                        cryosparc_tools=cryosparc_tools,
+                        strategies_tried=strategies,
+                        baseline=baseline,
+                        preferred_job_uid=preferred,
+                        source_log=log_path.name,
+                        assessment=f"re-parsed from {log_path.name}",
+                    )
+                    print(f"   ✅ Updated {rec.stage}: {rec.primary_job_uid} "
+                          f"@ {rec.metrics.get('resolution_angstroms')} Å")
+                else:
                     rec = self.workflow_state.record_improvement(
                         cryosparc_tools=cryosparc_tools,
                         candidate_job_uids=candidates,
                         assessment=f"retrospective recording from {log_path.name}",
                         strategies_tried=strategies,
                         baseline=baseline,
+                        preferred_job_uid=preferred,
+                        source_log=log_path.name,
                     )
                     if rec is not None:
                         print(f"   ✅ Recorded as {rec.stage}: {rec.primary_job_uid} "
                               f"@ {rec.metrics.get('resolution_angstroms')} Å")
-                except Exception as e:
-                    print(f"   ⚠️  Failed to record: {e}")
+            except Exception as e:
+                print(f"   ⚠️  Failed to record {log_path.name}: {e}")
+
+        evidence_brief = format_improvement_evidence_brief(
+            merge_improvement_contexts(parsed_contexts)
+        )
 
 
         # Reuse a stage agent's full config object.
@@ -3418,7 +3435,7 @@ class MasterOrchestrator:
             "Improve the current best 3D reconstruction. Follow your instructions "
             "exactly: first establish the baseline (describe_job_results + "
             "get_orientation_diagnostics on the current best refinement), then "
-            "diagnose the single biggest limiting factor using the symptom table, "
+            "diagnose the single biggest limiting factor, "
             "act on ONE hypothesis at a time reusing prior good jobs, verify each "
             "change against the baseline, and STOP per your stop conditions "
             "(no meaningful gain, data-limited, or the job cap). Report the final "
@@ -3427,12 +3444,26 @@ class MasterOrchestrator:
 
         # Add workflow history so agent can see what was already tried
         task += f"\n\n## Prior Workflow History\n{workflow_summary}"
-        task += "\n\n**IMPORTANT:** Review the history above. Do NOT repeat approaches that already failed (marked with ✗). If an approach failed because cFAR degraded or resolution gain was below threshold, trying the same approach again will produce the same result."
+        if evidence_brief:
+            task += f"\n\n{evidence_brief}"
+        else:
+            task += (
+                "\n\n**IMPORTANT:** Review the history above. Do NOT repeat approaches "
+                "that already failed (marked with ✗). If an approach failed because cFAR "
+                "degraded or resolution gain was below threshold, trying the same approach "
+                "again will produce the same result."
+            )
 
         if goal:
             task += f"\n\nUser goal for this run: {goal}"
 
         output = agent.run_react_workflow(task, conversation_id=conversation_id)
+        react_failed = isinstance(output, str) and output.startswith(
+            "❌ ReAct workflow execution failed"
+        )
+        if react_failed:
+            print("⚠️  ReAct failed; not recording a new improvement round from "
+                  "jobs merely mentioned in the prior-evidence brief.")
 
         # Record the improvement agent's best refinement to the blackboard. The
         # agent reads the blackboard but does not write to it; without this its
@@ -3441,34 +3472,49 @@ class MasterOrchestrator:
         try:
             from .workflow_state import (
                 refinement_job_uids_from_log,
-                refinement_job_uids_from_log_file,
-                extract_improvement_context_from_log
+                extract_improvement_context_from_log,
+                attach_exact_run_params,
             )
             tool_log = agent.get_tool_execution_log() if hasattr(agent, "get_tool_execution_log") else []
             candidates = refinement_job_uids_from_log(tool_log)
 
-            # Fallback: if structured tool log is empty/incomplete, parse from log file prose
-            # and extract richer context (strategies, hypotheses, outcomes)
             strategies = None
             baseline = None
-            if not candidates and hasattr(agent, "realtime_logger"):
+            preferred = None
+            source_log = None
+            log_file = None
+            if hasattr(agent, "realtime_logger"):
                 log_file = agent.realtime_logger.current_log_file
-                if log_file and Path(log_file).exists():
-                    context = extract_improvement_context_from_log(Path(log_file))
-                    candidates = context.get("job_uids", [])
-                    strategies = context.get("strategies_tried", [])
-                    baseline = context.get("baseline", {})
+            if log_file and Path(log_file).exists() and not react_failed:
+                context = extract_improvement_context_from_log(Path(log_file))
+                attach_exact_run_params(
+                    context, cryosparc_tools, self.workflow_state.project_uid,
+                )
+                log_uids = context.get("job_uids") or []
+                if not candidates:
+                    candidates = log_uids
                     if candidates:
                         print(f"⚠️  Structured tool log was incomplete; extracted {len(candidates)} "
-                              f"refinement job(s) and {len(strategies)} strategy/ies from conversation prose.")
+                              f"refinement job(s) and {len(context.get('strategies_tried') or [])} "
+                              f"strategy/ies from conversation prose.")
+                else:
+                    for uid in log_uids:
+                        if uid not in candidates:
+                            candidates.append(uid)
+                strategies = context.get("strategies_tried") or []
+                baseline = context.get("baseline") or {}
+                preferred = (context.get("best_result") or {}).get("job")
+                source_log = Path(log_file).name
 
-            if candidates:
+            if candidates and not react_failed:
                 rec = self.workflow_state.record_improvement(
                     cryosparc_tools=cryosparc_tools,
                     candidate_job_uids=candidates,
                     assessment="best refinement produced during --improve",
                     strategies_tried=strategies,
                     baseline=baseline,
+                    preferred_job_uid=preferred,
+                    source_log=source_log,
                 )
                 if rec is not None:
                     improved_best = {
@@ -3482,7 +3528,8 @@ class MasterOrchestrator:
             self.logger.warning(f"Failed to record improvement result to blackboard: {e}")
 
         return {
-            "success": True,
+            "success": not react_failed,
+            "error": output if react_failed else None,
             "output": output,
             "improved_best": improved_best,
             "blackboard": self.workflow_state.to_dict(),

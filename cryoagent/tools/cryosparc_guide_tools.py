@@ -253,6 +253,14 @@ def _relevant_excerpt(text: str, question: str, window: int = 1200) -> str:
     return text[best_pos: best_pos + window]
 
 
+_CTF_EXHAUSTED = re.compile(
+    r"ctf.{0,160}(hurt|exhausted|did nothing|already tried|not the limit)|"
+    r"(hurt|exhausted|already tried|did nothing).{0,160}ctf",
+    re.I,
+)
+_CTF_TAGS = frozenset({"ctf", "defocus", "aberration", "tilt", "trefoil"})
+
+
 def _score_tutorial(entry: Dict[str, Any], question: str) -> int:
     """Keyword-overlap score of a tutorial against the question."""
     q = question.lower()
@@ -267,6 +275,9 @@ def _score_tutorial(entry: Dict[str, Any], question: str) -> int:
     for w in re.findall(r"[a-z0-9]{4,}", entry["title"].lower()):
         if w in qwords:
             score += 1
+    # Listing exhausted CTF levers should not re-rank the CTF tutorial first.
+    if _CTF_EXHAUSTED.search(q) and _CTF_TAGS.intersection(entry["tags"]):
+        score -= 10
     return score
 
 
@@ -350,10 +361,13 @@ def consult_cryosparc_guide(question: str = "", max_pages: int = 2, *,
 
     q = (question or "").lower()
     pages: List[Dict[str, str]] = []
+    skip_ctf_topic = bool(_CTF_EXHAUSTED.search(question or ""))
 
     # 1) Best job-reference page(s) by keyword.
     matched_paths: List[str] = []
     for kw, path in _TOPIC_PAGES.items():
+        if skip_ctf_topic and kw == "ctf":
+            continue
         if kw in q and path not in matched_paths:
             matched_paths.append(path)
 

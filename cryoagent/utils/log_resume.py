@@ -51,13 +51,15 @@ class LogResumeParser:
         # Sort by modification time (most recent first)
         matching_files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
         
-        # If conversation_id is provided, try to match it
+        # If conversation_id is provided, only return a matching file — never
+        # fall back to the latest log (that would resume/append the wrong run).
         if conversation_id:
             for log_file in matching_files:
                 if self._log_file_matches_conversation_id(log_file, conversation_id):
                     return str(log_file)
-        
-        # Return the most recent file
+            return None
+
+        # No conversation_id: return the most recent file
         return str(matching_files[0])
     
     def _log_file_matches_conversation_id(self, log_file: Path, conversation_id: str) -> bool:

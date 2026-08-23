@@ -50,6 +50,7 @@ class LLMFactory:
                 api_key=model_config.api_key,
                 base_url=model_config.base_url,
                 timeout=model_config.timeout,
+                max_retries=getattr(model_config, "max_retries", 2),
                 # Add provider-specific headers if needed
                 default_headers=_get_provider_headers(provider),
                 **model_kwargs

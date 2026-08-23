@@ -1406,6 +1406,58 @@ class CryoSPARCTools:
             "params": params,
         }
 
+    def get_job_run_params(
+        self,
+        job_uid: str,
+        project_uid: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Return the exact parameters and inputs a completed job ran with.
+
+        Reads ``job.doc["params_spec"]`` (and ``params_base`` values when a key
+        is absent from params_spec) plus ``input_slot_groups`` connections.
+        This is the run-time spec CryoSPARC used — not a salient subset and not
+        flags inferred from conversation prose.
+        """
+        cached = self._job_cache.get(job_uid, {})
+        project_uid = project_uid or cached.get("project_uid")
+        if not project_uid:
+            raise ValueError(
+                "project_uid is required to read job run params "
+                "(pass it or ensure the job was queued via CryoSPARCTools)."
+            )
+
+        job = self.cs.find_job(project_uid, job_uid)
+        job.refresh()
+        doc = getattr(job, "doc", {}) or {}
+        from cryoagent.core.workflow_state import params_spec_from_job_doc
+        params = params_spec_from_job_doc(doc)
+
+        inputs: List[Dict[str, Any]] = []
+        for group in doc.get("input_slot_groups") or []:
+            if not isinstance(group, dict):
+                continue
+            slot = group.get("name")
+            slot_type = group.get("type")
+            for conn in group.get("connections") or []:
+                if not isinstance(conn, dict):
+                    continue
+                inputs.append({
+                    "slot": slot,
+                    "type": slot_type,
+                    "job_uid": conn.get("job_uid"),
+                    "group_name": conn.get("group_name"),
+                })
+
+        return {
+            "success": True,
+            "job_uid": job_uid,
+            "job_type": doc.get("type") or doc.get("job_type"),
+            "status": doc.get("status"),
+            "source": "params_spec",
+            "params": params,
+            "inputs": inputs,
+        }
+
     def _fetch_job_specs(self) -> List[Dict[str, Any]]:
         """
         Fetch the instance's job specs (sections -> contains -> JobSpec with

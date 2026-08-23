@@ -208,6 +208,7 @@ class ModelConfig(BaseModel):
     model_name: str = Field(description="Model name")
     temperature: float = Field(default=0.1, description="Model temperature")
     timeout: int = Field(default=60, description="Request timeout in seconds")
+    max_retries: int = Field(default=2, description="HTTP retries on timeout/transient errors")
     extra_body: Dict[str, Any] = Field(
         default_factory=dict,
         description="Optional provider-specific request payload extension"

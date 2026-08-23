@@ -931,13 +931,16 @@ class BaseReActAgent(ABC):
     def _check_and_resume_from_log(self, conversation_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
         """
         Check for existing log file and return resume context if found.
-        Always provides context from log files, even if completed, so agent can recognize existing work.
-        
+
+        For most stages, completed logs are still returned as reference context.
+        For the improvement stage, a completed log is ignored so a new --improve
+        round starts a fresh conversation instead of appending to the last one.
+
         Args:
             conversation_id: Optional conversation identifier
-            
+
         Returns:
-            Resume context dictionary if log file found, None otherwise
+            Resume context dictionary if a resumable log file is found, None otherwise
         """
         try:
             stage_name = getattr(self, 'stage_name', 'unknown')
@@ -961,6 +964,11 @@ class BaseReActAgent(ABC):
             # This allows the agent to recognize existing work
             parsed = log_parser.parse_log_file(log_file)
             is_completed = parsed.get("completed", False)
+
+            # A finished --improve run must start a fresh conversation, not
+            # append to (or re-read as resume context) the completed log.
+            if stage_name == "improvement" and is_completed:
+                return None
             
             # Get resume context
             resume_context = log_parser.get_resume_context(log_file)

@@ -209,6 +209,549 @@ def refinement_job_uids_from_log_file(log_path: Path) -> List[str]:
     return refinement_uids
 
 
+# Outcome classification thresholds (Å / cFAR). Match the improvement-agent prompt.
+_RES_EPS = 0.02
+_CFAR_EPS = 0.02
+_CFAR_WORSE = -0.015
+
+
+def _classify_attempt_outcome(
+    metrics: Optional[Dict[str, Any]],
+    verdict: str = "",
+    invalid: bool = False,
+) -> str:
+    """Classify an attempt as helped / worse / no_difference / invalid."""
+    if invalid:
+        return "invalid"
+    verdict_l = (verdict or "").lower()
+    metrics = metrics or {}
+    delta_res = metrics.get("delta_resolution")
+    delta_cfar = metrics.get("delta_cfar")
+
+    has_check = ("✓" in (verdict or "")) or ("gain" in verdict_l and "no" not in verdict_l)
+    has_cross = ("✗" in (verdict or "")) or ("worse" in verdict_l)
+
+    if isinstance(delta_res, (int, float)):
+        delta_res = round(float(delta_res), 2)
+    if isinstance(delta_cfar, (int, float)):
+        delta_cfar = round(float(delta_cfar), 3)
+
+    if has_check and not has_cross:
+        return "helped"
+    if isinstance(delta_res, (int, float)) and delta_res >= _RES_EPS:
+        if isinstance(delta_cfar, (int, float)) and delta_cfar < -0.1:
+            return "worse"
+        if not has_cross:
+            return "helped"
+    if isinstance(delta_cfar, (int, float)) and delta_cfar >= _CFAR_EPS and not has_cross:
+        if not isinstance(delta_res, (int, float)) or delta_res > -_RES_EPS:
+            return "helped"
+    if isinstance(delta_res, (int, float)) and delta_res < -_RES_EPS:
+        return "worse"
+    if isinstance(delta_cfar, (int, float)) and delta_cfar <= _CFAR_WORSE:
+        return "worse"
+    return "no_difference"
+
+
+def _dedup_append_strategy(strategies: List[Dict[str, Any]], strategy: Dict[str, Any]) -> None:
+    """Append or replace a strategy keyed by result_job (later, richer rows win)."""
+    job = (strategy.get("result_job") or "").upper()
+    if not job:
+        strategies.append(strategy)
+        return
+    for i, existing in enumerate(strategies):
+        if (existing.get("result_job") or "").upper() == job:
+            existing_metrics = existing.get("metrics") or {}
+            new_metrics = strategy.get("metrics") or {}
+            if new_metrics.get("result_resolution") is not None or strategy.get("outcome_class"):
+                merged = dict(existing)
+                merged.update(strategy)
+                if (not strategy.get("hypothesis") or strategy.get("hypothesis") == "Unknown hypothesis") and existing.get("hypothesis"):
+                    merged["hypothesis"] = existing["hypothesis"]
+                if existing_metrics and not new_metrics.get("result_cfar"):
+                    merged["metrics"] = {**existing_metrics, **new_metrics}
+                strategies[i] = merged
+            return
+    strategies.append(strategy)
+
+
+def _parse_job_action_better_table(text: str, context: Dict[str, Any]) -> None:
+    """Parse '| Job | Action | Resolution | cFAR | ... | Better? |' summary tables."""
+    header = re.search(
+        r'\|\s*Job\s*\|\s*Action\s*\|\s*Resolution\s*\|\s*cFAR\s*\|',
+        text, flags=re.IGNORECASE,
+    )
+    if not header:
+        return
+    table_text = text[header.end():]
+    end = re.search(r'\n(?=\n[^|\s]|\nCONVERSATION ENDED)', table_text)
+    if end:
+        table_text = table_text[:end.start()]
+
+    row_re = re.compile(
+        r'\|\s*\*?\*?([Jj]\d+)\*?\*?\s*\|\s*(.*?)\s*\|\s*\*?\*?([\d.]+)\s*Å\*?\*?\s*'
+        r'\|\s*\*?\*?([\d.]+)\*?\*?\s*\|\s*([^|]*?)\s*\|\s*(.*?)\s*\|'
+    )
+    baseline = context.get("baseline") or {}
+    baseline_res = baseline.get("resolution")
+    baseline_cfar = baseline.get("cfar")
+    helped_cfar = baseline_cfar
+
+    for row in row_re.finditer(table_text):
+        job = row.group(1).upper()
+        action = re.sub(r'\*+', '', row.group(2)).strip()
+        result_res = float(row.group(3))
+        result_cfar = float(row.group(4))
+        verdict = re.sub(r'\*+', '', row.group(6)).strip()
+
+        if re.search(r'baseline', action, re.IGNORECASE) or verdict in ("—", "-", "–", ""):
+            if not baseline:
+                context["baseline"] = {"job": job, "resolution": result_res, "cfar": result_cfar}
+                baseline_res = result_res
+                baseline_cfar = result_cfar
+                helped_cfar = result_cfar
+            continue
+
+        delta_res = (baseline_res - result_res) if isinstance(baseline_res, (int, float)) else None
+        metrics = {
+            "baseline_resolution": baseline_res,
+            "result_resolution": result_res,
+            "delta_resolution": delta_res,
+            "baseline_cfar": baseline_cfar,
+            "result_cfar": result_cfar,
+            "delta_cfar": (result_cfar - baseline_cfar) if isinstance(baseline_cfar, (int, float)) else None,
+        }
+        outcome_class = _classify_attempt_outcome(metrics, verdict=verdict)
+        if outcome_class == "no_difference" and isinstance(helped_cfar, (int, float)):
+            if result_cfar - helped_cfar <= _CFAR_WORSE:
+                outcome_class = "worse"
+                metrics["delta_cfar"] = result_cfar - helped_cfar
+
+        if outcome_class == "helped" and isinstance(result_cfar, (int, float)):
+            helped_cfar = result_cfar if helped_cfar is None else max(helped_cfar, result_cfar)
+
+        outcome_parts = []
+        if delta_res is not None:
+            outcome_parts.append(
+                f"Resolution: {baseline_res:.2f} → {result_res:.2f} Å ({delta_res:+.2f} Å)"
+            )
+        else:
+            outcome_parts.append(f"Resolution: {result_res:.2f} Å")
+        if isinstance(baseline_cfar, (int, float)):
+            outcome_parts.append(
+                f"cFAR: {baseline_cfar:.3f} → {result_cfar:.3f} "
+                f"({(result_cfar - baseline_cfar):+.3f})"
+            )
+        else:
+            outcome_parts.append(f"cFAR: {result_cfar:.3f}")
+
+        _dedup_append_strategy(context["strategies_tried"], {
+            "hypothesis": action[:200],
+            "approach": action[:200],
+            "actions": [],
+            "result_job": job,
+            "outcome": " | ".join(outcome_parts),
+            "conclusion": verdict[:150],
+            "success": outcome_class == "helped",
+            "outcome_class": outcome_class,
+            "metrics": metrics,
+        })
+        if job not in context["job_uids"]:
+            context["job_uids"].append(job)
+
+
+def _parse_invalid_experiments(text: str, context: Dict[str, Any]) -> None:
+    """Mark jobs whose hypothesis was never actually tested."""
+    class_collapse = re.search(
+        r'class\s*0[^\n]{0,80}all\s+([\d,]+)\s*particles|'
+        r'all\s+([\d,]+)\s*particles[^\n]{0,80}class\s*0|'
+        r'no effective filtering',
+        text, flags=re.IGNORECASE,
+    )
+    if class_collapse:
+        job_match = re.search(
+            r'([Jj]\d+)[^\n]{0,40}class_3d|class_3d[^\n]{0,80}([Jj]\d+)|'
+            r'3D classification[^\n]{0,40}([Jj]\d+)|([Jj]\d+)[^\n]{0,60}3D class',
+            text, flags=re.IGNORECASE,
+        )
+        result_job = None
+        if job_match:
+            result_job = next((g.upper() for g in job_match.groups() if g), None)
+        if not result_job:
+            nearby = re.search(r'what particle groups\s+([Jj]\d+)', text, flags=re.IGNORECASE)
+            if nearby:
+                result_job = nearby.group(1).upper()
+        result_job = result_job or "class_3d"
+        _dedup_append_strategy(context["strategies_tried"], {
+            "hypothesis": "3D classification to check heterogeneity",
+            "approach": "class_3d",
+            "actions": ["class_3d"],
+            "result_job": result_job,
+            "outcome": "All particles in one class — no effective split",
+            "conclusion": "INVALID: hypothesis not tested (no volume / class collapse)",
+            "success": False,
+            "outcome_class": "invalid",
+            "metrics": {},
+        })
+        if result_job not in context["job_uids"] and str(result_job).startswith("J"):
+            context["job_uids"].append(result_job)
+
+    if re.search(r'template_picker|template picker', text, flags=re.IGNORECASE) and \
+            re.search(r'GPU timeout|gpu issues persist', text, flags=re.IGNORECASE):
+        job_match = re.search(
+            r'template_picker[^\n]{0,80}([Jj]\d+)|([Jj]\d+)[^\n]{0,40}template.pick',
+            text, flags=re.IGNORECASE,
+        )
+        groups = job_match.groups() if job_match else ()
+        result_job = next((g.upper() for g in groups if g), None) or "template_picker"
+        _dedup_append_strategy(context["strategies_tried"], {
+            "hypothesis": "Volume-template re-picking to recover views",
+            "approach": "create_templates + template_picker",
+            "actions": ["create_templates", "template_picker"],
+            "result_job": result_job,
+            "outcome": "Job never completed (GPU timeout)",
+            "conclusion": "INVALID: hypothesis not tested",
+            "success": False,
+            "outcome_class": "invalid",
+            "metrics": {},
+        })
+
+
+def _parse_best_result_prose(text: str, context: Dict[str, Any]) -> None:
+    """Prefer the narrative 'Best result: J223, 2.74 Å, cFAR=0.503'."""
+    match = re.search(
+        r'\*\*[Bb]est result\*\*[:\s]*\*?\*?([Jj]\d+)\*?\*?[^\d]{0,80}'
+        r'([\d.]+)\s*Å[^\d]{0,80}cFAR\s*=\s*([\d.]+)',
+        text, flags=re.IGNORECASE,
+    )
+    if not match:
+        match = re.search(
+            r'###?\s*Best result\s*\n+\s*\*\*([Jj]\d+)\*\*:\s*\*\*([\d.]+)\s*Å'
+            r'[^\n]*cFAR\s*=\s*([\d.]+)',
+            text, flags=re.IGNORECASE,
+        )
+    if match:
+        context["best_result"] = {
+            "job": match.group(1).upper(),
+            "resolution": float(match.group(2)),
+            "cfar": float(match.group(3)),
+        }
+
+
+def _extract_final_report_fallback(text: str, max_chars: int = 4000) -> str:
+    """Slice Summary of all actions / Final Report when structured parse is empty."""
+    start = re.search(r'##\s*Summary of all actions|##\s*Final Report', text, flags=re.IGNORECASE)
+    if not start:
+        return ""
+    chunk = text[start.start():]
+    end = re.search(r'\nCONVERSATION ENDED:', chunk)
+    if end:
+        chunk = chunk[:end.start()]
+    return chunk[:max_chars].strip()
+
+
+def _extract_requested_params_by_job(text: str) -> Dict[str, Dict[str, Any]]:
+    """Map job UID -> full TOOL EXECUTION arguments (agent-requested, possibly incomplete)."""
+    by_job: Dict[str, Dict[str, Any]] = {}
+    blocks = re.split(r'\[[^\]]+\] TOOL EXECUTION: (.+?)\n', text)
+    for i in range(1, len(blocks) - 1, 2):
+        if i + 1 >= len(blocks):
+            break
+        tool_name = blocks[i].strip()
+        body = blocks[i + 1]
+        args_match = re.search(r'Arguments:\s*(.+?)(?=\nResult:|\n-{50}|\Z)', body, re.DOTALL)
+        result_match = re.search(r'Result:\s*(.+?)(?=\n\[|\n-{50}|\Z)', body, re.DOTALL)
+        arguments: Any = {}
+        if args_match:
+            raw = args_match.group(1).strip()
+            try:
+                json_match = re.search(r'\{.*\}', raw, re.DOTALL)
+                arguments = json.loads(json_match.group(0)) if json_match else json.loads(raw)
+            except (json.JSONDecodeError, TypeError):
+                arguments = {"raw": raw}
+        job_uid = None
+        if result_match:
+            uid_m = re.search(r'"job_uid"\s*:\s*"([Jj]\d+)"', result_match.group(1))
+            if uid_m:
+                job_uid = uid_m.group(1).upper()
+        if job_uid:
+            by_job[job_uid] = {"tool": tool_name, "arguments": arguments}
+    return by_job
+
+
+def params_spec_from_job_doc(doc: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract the full key→value params map from a CryoSPARC job document.
+
+    params_spec overrides params_base. Used by get_job_run_params and tests.
+    """
+    params: Dict[str, Any] = {}
+    for source in (doc.get("params_base") or {}, doc.get("params_spec") or {}):
+        if not isinstance(source, dict):
+            continue
+        for key, details in source.items():
+            if isinstance(details, dict) and "value" in details:
+                params[key] = details.get("value")
+            else:
+                params[key] = details
+    return params
+
+
+def attach_exact_run_params(
+    context: Dict[str, Any],
+    cryosparc_tools: Any,
+    project_uid: Optional[str],
+) -> Dict[str, Any]:
+    """Fill each strategy (and baseline) with exact CryoSPARC params_spec + inputs.
+
+    On find_job failure, uses TOOL EXECUTION arguments labeled
+    ``source: agent_request_incomplete``. Never infers flags from prose.
+    """
+    requested = context.get("requested_params_by_job") or {}
+    jobs: List[str] = list(context.get("job_uids") or [])
+    baseline_job = (context.get("baseline") or {}).get("job")
+    best_job = (context.get("best_result") or {}).get("job")
+    for extra in (baseline_job, best_job):
+        if extra and extra not in jobs:
+            jobs.append(extra)
+
+    run_params: Dict[str, Any] = {}
+    for uid in jobs:
+        if not uid or not str(uid).startswith("J"):
+            continue
+        loaded = None
+        if cryosparc_tools is not None and project_uid:
+            try:
+                loaded = cryosparc_tools.get_job_run_params(uid, project_uid=project_uid)
+            except Exception as e:
+                logger.warning("get_job_run_params failed for %s: %s", uid, e)
+                loaded = None
+        if isinstance(loaded, dict) and loaded.get("success"):
+            run_params[uid] = loaded
+        elif uid in requested:
+            run_params[uid] = {
+                "success": False,
+                "job_uid": uid,
+                "source": "agent_request_incomplete",
+                "params": requested[uid].get("arguments") or {},
+                "inputs": [],
+                "tool": requested[uid].get("tool"),
+            }
+        else:
+            run_params[uid] = {
+                "success": False,
+                "job_uid": uid,
+                "source": "unavailable",
+                "params": {},
+                "inputs": [],
+            }
+
+    context["run_params"] = run_params
+    for strat in context.get("strategies_tried") or []:
+        uid = strat.get("result_job")
+        if uid in run_params:
+            strat["params"] = run_params[uid].get("params") or {}
+            strat["inputs"] = run_params[uid].get("inputs") or []
+            strat["params_source"] = run_params[uid].get("source")
+            if run_params[uid].get("job_type"):
+                strat["job_type"] = run_params[uid]["job_type"]
+    return context
+
+
+def _format_inputs_line(inputs: List[Dict[str, Any]]) -> str:
+    if not inputs:
+        return "(no input connections recorded)"
+    parts = []
+    for inp in inputs:
+        slot = inp.get("slot") or inp.get("type") or "input"
+        uid = inp.get("job_uid") or "?"
+        group = inp.get("group_name")
+        parts.append(f"{slot}={uid}" + (f"/{group}" if group else ""))
+    return ", ".join(parts)
+
+
+def _params_diff(reference: Dict[str, Any], other: Dict[str, Any]) -> Dict[str, Any]:
+    """Keys whose value differs from *reference* (exact params_spec, not a salient subset)."""
+    diff: Dict[str, Any] = {}
+    keys = set(reference or {}) | set(other or {})
+    for key in sorted(keys):
+        rv = (reference or {}).get(key, "<absent>")
+        ov = (other or {}).get(key, "<absent>")
+        if rv != ov:
+            diff[key] = ov
+    return diff
+
+
+def _format_params_block(params: Dict[str, Any]) -> List[str]:
+    if not params:
+        return ["  (no params_spec available)"]
+    lines = []
+    for key in sorted(params.keys()):
+        val = params[key]
+        if isinstance(val, (dict, list)):
+            try:
+                val_s = json.dumps(val, default=str)
+            except TypeError:
+                val_s = str(val)
+        else:
+            val_s = str(val)
+        lines.append(f"  {key}: {val_s}")
+    return lines
+
+
+def format_improvement_evidence_brief(context: Dict[str, Any]) -> str:
+    """Five-bucket evidence brief for the next --improve task/prompt."""
+    strategies = context.get("strategies_tried") or []
+    baseline = context.get("baseline") or {}
+    best = context.get("best_result") or {}
+    run_params = context.get("run_params") or {}
+
+    if not strategies and not context.get("fallback_excerpt"):
+        return ""
+
+    buckets = {"helped": [], "worse": [], "no_difference": [], "invalid": []}
+    for strat in strategies:
+        cls = strat.get("outcome_class") or _classify_attempt_outcome(
+            strat.get("metrics"), verdict=strat.get("conclusion") or "",
+        )
+        if cls not in buckets:
+            cls = "no_difference"
+        buckets[cls].append(strat)
+
+    lines: List[str] = []
+    lines.append("## Prior improvement evidence (you must reason from this)")
+    lines.append("")
+    best_job = best.get("job")
+    best_res = best.get("resolution")
+    best_cfar = best.get("cfar")
+    if best_job:
+        from_s = ""
+        if baseline.get("job"):
+            from_s = (
+                f" (from {baseline.get('job')} {baseline.get('resolution')} Å / "
+                f"{baseline.get('cfar')})"
+            )
+        lines.append(f"Best so far: {best_job} @ {best_res} Å, cFAR {best_cfar}{from_s}")
+    elif baseline.get("job"):
+        lines.append(
+            f"Baseline: {baseline.get('job')} @ {baseline.get('resolution')} Å, "
+            f"cFAR {baseline.get('cfar')}"
+        )
+    lines.append("")
+
+    def _bucket_lines(title: str, items: List[Dict[str, Any]]) -> None:
+        lines.append(title)
+        if not items:
+            lines.append("- (none)")
+            return
+        for strat in items:
+            job = strat.get("result_job", "?")
+            approach = strat.get("approach") or strat.get("hypothesis") or ""
+            outcome = strat.get("outcome") or ""
+            lines.append(f"- {job}: {approach} | {outcome}")
+            if strat.get("conclusion"):
+                lines.append(f"  prior conclusion: {strat['conclusion']}")
+            lines.append("  (exact params: see bucket 5)")
+
+    _bucket_lines("1. Helped:", buckets["helped"])
+    lines.append("")
+    _bucket_lines("2. Made worse:", buckets["worse"])
+    lines.append("")
+    _bucket_lines("3. No difference:", buckets["no_difference"])
+    lines.append("")
+    _bucket_lines("4. Invalid / incomplete (hypothesis NOT tested):", buckets["invalid"])
+    lines.append("")
+    lines.append("5. Parameters (exact CryoSPARC params_spec + inputs):")
+    lines.append("   Full dump of the best/helped job; other jobs list only keys that differ.")
+
+    param_jobs = []
+    seen = set()
+    for extra in (best.get("job"), baseline.get("job")):
+        if extra and extra not in seen:
+            param_jobs.append(extra)
+            seen.add(extra)
+    for strat in strategies:
+        uid = strat.get("result_job")
+        if uid and uid not in seen and str(uid).startswith("J"):
+            param_jobs.append(uid)
+            seen.add(uid)
+
+    ref_uid = best.get("job") or (buckets["helped"][0].get("result_job") if buckets["helped"] else None)
+    ref_params = ((run_params.get(ref_uid) or {}).get("params") if ref_uid else None) or {}
+
+    if not param_jobs:
+        lines.append("- (no jobs)")
+    for uid in param_jobs:
+        block = run_params.get(uid) or {}
+        source = block.get("source") or "unavailable"
+        job_type = block.get("job_type") or ""
+        params = block.get("params") or {}
+        header = f"- {uid} ({job_type}, source={source})" if job_type else f"- {uid} (source={source})"
+        lines.append(header)
+        lines.append(f"  inputs: {_format_inputs_line(block.get('inputs') or [])}")
+        dump_full = (uid == ref_uid) or not ref_params
+        if dump_full:
+            for pline in _format_params_block(params):
+                lines.append(pline)
+        else:
+            diff = _params_diff(ref_params, params)
+            lines.append(f"  vs {ref_uid} ({len(diff)} keys differ):")
+            if not diff:
+                lines.append("  (identical params_spec)")
+            else:
+                for pline in _format_params_block(diff):
+                    lines.append(pline)
+
+    if not strategies and context.get("fallback_excerpt"):
+        lines.append("")
+        lines.append("Structured parse was empty; raw Final Report / summary follows:")
+        lines.append(context["fallback_excerpt"])
+
+    lines.append("")
+    lines.append(
+        "Required: write a causal reading of all five buckets (cite exact param "
+        "keys/values, not job-type nicknames), THEN consult_cryosparc_guide with a "
+        "question that states what helped, what hurt, what did nothing, which exact "
+        "params were used, and why. The next action must follow from that reading. "
+        "Same job type + same params_spec = the same experiment; do not rerun it."
+    )
+    return "\n".join(lines)
+
+
+def merge_improvement_contexts(contexts: List[Dict[str, Any]]) -> Dict[str, Any]:
+    """Combine parsed improvement logs into one five-bucket context.
+
+    Later logs overwrite ``best_result``. Strategies with the same ``result_job``
+    are merged (richer later rows win).
+    """
+    merged: Dict[str, Any] = {
+        "job_uids": [],
+        "baseline": {},
+        "best_result": {},
+        "strategies_tried": [],
+        "run_params": {},
+        "requested_params_by_job": {},
+        "fallback_excerpt": "",
+    }
+    for ctx in contexts or []:
+        if not ctx:
+            continue
+        for uid in ctx.get("job_uids") or []:
+            if uid not in merged["job_uids"]:
+                merged["job_uids"].append(uid)
+        if ctx.get("baseline") and not merged["baseline"]:
+            merged["baseline"] = dict(ctx["baseline"])
+        br = ctx.get("best_result") or {}
+        if br.get("job"):
+            merged["best_result"] = dict(br)
+        for strat in ctx.get("strategies_tried") or []:
+            _dedup_append_strategy(merged["strategies_tried"], strat)
+        merged["run_params"].update(ctx.get("run_params") or {})
+        merged["requested_params_by_job"].update(ctx.get("requested_params_by_job") or {})
+        if ctx.get("fallback_excerpt") and not merged["fallback_excerpt"]:
+            merged["fallback_excerpt"] = ctx["fallback_excerpt"]
+    return merged
+
+
 def extract_improvement_context_from_log(log_path: Path) -> Dict[str, Any]:
     """Extract rich context from an improvement log: reasoning, hypotheses, outcomes.
 
@@ -294,7 +837,7 @@ def extract_improvement_context_from_log(log_path: Path) -> Dict[str, Any]:
     for timestamp, block in assistant_blocks:
         # Look for hypothesis statements (markdown bold format)
         hyp_patterns = [
-            r'\*\*[Hh]ypothesis\*\*[:\s]+(.+?)(?=\n\n|\n[A-Z#*]|\Z)',
+            r'\*\*[Hh]ypothesis(?:\s*#?\s*\d+)?\*\*[:\s]+(.+?)(?=\n\n|\n[A-Z#*]|\Z)',
             r'\*\*[Nn]ew hypothesis\*\*[:\s]+(.+?)(?=\n\n|\n[A-Z#*]|\Z)',
             r'[Rr]ank\s+\d+\s*→\s*([^—]+)—',
         ]
@@ -571,6 +1114,23 @@ def extract_improvement_context_from_log(log_path: Path) -> Dict[str, Any]:
                         "resolution": baseline_res,
                         "cfar": baseline_cfar
                     }
+
+    # Whole-log parsers (cover table formats the per-block regexes miss).
+    _parse_job_action_better_table(text, context)
+    _parse_invalid_experiments(text, context)
+    _parse_best_result_prose(text, context)
+
+    for strat in context["strategies_tried"]:
+        if not strat.get("outcome_class"):
+            strat["outcome_class"] = _classify_attempt_outcome(
+                strat.get("metrics"),
+                verdict=strat.get("conclusion") or "",
+            )
+            strat["success"] = strat["outcome_class"] == "helped"
+
+    context["requested_params_by_job"] = _extract_requested_params_by_job(text)
+    if not context["strategies_tried"]:
+        context["fallback_excerpt"] = _extract_final_report_fallback(text)
 
     # Also extract job UIDs using the existing function for completeness
     all_job_uids = refinement_job_uids_from_log_file(log_path)
@@ -1062,6 +1622,8 @@ class WorkflowState:
         decisions: Optional[List[str]] = None,
         strategies_tried: Optional[List[Dict[str, Any]]] = None,
         baseline: Optional[Dict[str, Any]] = None,
+        preferred_job_uid: Optional[str] = None,
+        source_log: Optional[str] = None,
     ) -> Optional[StageRecord]:
         """Record the best refinement the improvement agent produced.
 
@@ -1120,6 +1682,17 @@ class WorkflowState:
             if better:
                 best_uid, best_res, best_cfar, best_score = uid.strip(), r, c, composite_score
 
+        if preferred_job_uid:
+            pref = preferred_job_uid.strip()
+            try:
+                pref_res = cryosparc_tools.describe_job_results(pref, project_uid=self.project_uid)
+                if pref_res.get("success") and isinstance(pref_res.get("resolution_angstroms"), (int, float)):
+                    best_uid = pref
+                    best_res = pref_res.get("resolution_angstroms")
+                    best_cfar = pref_res.get("cfar") if isinstance(pref_res.get("cfar"), (int, float)) else None
+            except Exception as e:
+                logger.warning("record_improvement: preferred job %s failed: %s", pref, e)
+
         if best_uid is None:
             logger.info("record_improvement: no candidate job produced a resolution; nothing recorded.")
             return None
@@ -1128,14 +1701,18 @@ class WorkflowState:
         if strategies_tried and isinstance(strategies_tried, list):
             decisions = self._format_strategies_for_decisions(strategies_tried, baseline)
 
+        outputs = {
+            "final_refinement_job_uid": best_uid,
+            "strategies_tried": strategies_tried or [],
+            "baseline": baseline or {},
+        }
+        if source_log:
+            outputs["source_log"] = source_log
+
         return self.record_stage(
             stage="improvement",
             success=True,
-            stage_outputs={
-                "final_refinement_job_uid": best_uid,
-                "strategies_tried": strategies_tried or [],
-                "baseline": baseline or {}
-            },
+            stage_outputs=outputs,
             cryosparc_tools=cryosparc_tools,
             assessment=assessment,
             decisions=decisions,
@@ -1152,12 +1729,18 @@ class WorkflowState:
             lines.append(f"Baseline: {baseline.get('job', '?')} @ {baseline.get('resolution', '?')} Å, cFAR {baseline.get('cfar', '?')}")
 
         for i, strat in enumerate(strategies, 1):
-            success_icon = "✓" if strat.get("success") else "✗"
+            outcome_class = strat.get("outcome_class") or ("helped" if strat.get("success") else "no_difference")
+            icon = {
+                "helped": "✓",
+                "worse": "✗ worse",
+                "invalid": "✗ invalid",
+                "no_difference": "≈",
+            }.get(outcome_class, "✗")
             hypothesis = strat.get("hypothesis", "Unknown")[:80]
             outcome = strat.get("outcome", "No outcome recorded")
             conclusion = strat.get("conclusion", "")[:100]
 
-            lines.append(f"{i}. {success_icon} {hypothesis}")
+            lines.append(f"{i}. [{outcome_class}] {icon} {hypothesis}")
             lines.append(f"   → {outcome}")
             if conclusion:
                 lines.append(f"   → {conclusion}")
@@ -1176,6 +1759,75 @@ class WorkflowState:
                     lines.append(f"   → Why failed: {', '.join(reasons)}")
 
         return lines
+
+    def find_improvement_record_for_log(self, log_name: str) -> Optional[StageRecord]:
+        """Find an existing improvement record that came from this conversation log."""
+        if not log_name:
+            return None
+        for r in self.records:
+            if not str(r.stage).startswith("improvement"):
+                continue
+            if (r.stage_outputs or {}).get("source_log") == log_name:
+                return r
+            if log_name in (r.assessment or ""):
+                return r
+        return None
+
+    def update_improvement_record(
+        self,
+        rec: StageRecord,
+        cryosparc_tools=None,
+        strategies_tried: Optional[List[Dict[str, Any]]] = None,
+        baseline: Optional[Dict[str, Any]] = None,
+        preferred_job_uid: Optional[str] = None,
+        source_log: Optional[str] = None,
+        assessment: Optional[str] = None,
+    ) -> StageRecord:
+        """Refresh a thin improvement blackboard row from a re-parsed log."""
+        strategies_tried = strategies_tried or []
+        baseline = baseline or {}
+        outputs = dict(rec.stage_outputs or {})
+        outputs["strategies_tried"] = strategies_tried
+        outputs["baseline"] = baseline
+        if source_log:
+            outputs["source_log"] = source_log
+
+        if preferred_job_uid:
+            pref = preferred_job_uid.strip()
+            outputs["final_refinement_job_uid"] = pref
+            rec.primary_job_uid = pref
+            loaded_metrics = False
+            if cryosparc_tools is not None:
+                try:
+                    res = cryosparc_tools.describe_job_results(pref, project_uid=self.project_uid)
+                    if res.get("success"):
+                        for k in ("job_type", "resolution_angstroms", "box_size",
+                                  "symmetry", "num_particles", "cfar", "cfar_label"):
+                            if res.get(k) is not None:
+                                rec.metrics[k] = res[k]
+                        loaded_metrics = True
+                except Exception as e:
+                    logger.warning(
+                        "update_improvement_record: describe_job_results failed for %s: %s",
+                        pref, e,
+                    )
+            if not loaded_metrics:
+                for strat in strategies_tried:
+                    if (strat.get("result_job") or "").upper() == pref.upper():
+                        m = strat.get("metrics") or {}
+                        if m.get("result_resolution") is not None:
+                            rec.metrics["resolution_angstroms"] = m["result_resolution"]
+                        if m.get("result_cfar") is not None:
+                            rec.metrics["cfar"] = m["result_cfar"]
+                        break
+
+        rec.stage_outputs = outputs
+        if strategies_tried:
+            rec.decisions = self._format_strategies_for_decisions(strategies_tried, baseline)
+        if assessment:
+            rec.assessment = assessment
+        self.save()
+        return rec
 
     def set_assessment(self, stage: str, assessment: str) -> None:
         for r in self.records:

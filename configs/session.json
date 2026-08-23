@@ -18,7 +18,7 @@
       {
         "name": "optimization_2d",
         "description": "2D classification optimization stage: Iteratively refine particle selection using 2D classification and CryoSift",
-        "enabled": true,
+        "enabled": false,
         "agent_group": "cryosparc",
         "agent_class": "Optimizer2DAgent"
       },
@@ -73,7 +73,7 @@
     }
   },
   "workflow": {
-    "project_uid": "P22",
-    "workspace_uid": "W2"
+    "project_uid": "P31",
+    "workspace_uid": "W3"
   }
 }
