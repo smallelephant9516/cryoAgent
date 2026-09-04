@@ -282,6 +282,6 @@ This project is licensed under the Apache 2.0 License; see the `LICENSE` file.
 
 If you use CryoAgent in your research, please cite:
 
-- **Paper:** 
+- **Bioarxiv Paper:** https://www.biorxiv.org/content/10.64898/2026.04.16.718662v1
 - **Code:** [https://gitee.com/fei_sun_lab/cryoagent](https://gitee.com/fei_sun_lab/cryoagent)
 
