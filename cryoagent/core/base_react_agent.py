@@ -233,6 +233,9 @@ class BaseReActAgent(ABC):
         """
         Merge stage configuration microscope defaults with overrides from microscope_config.json.
 
+        Explicit ``null`` values in microscope_config.json clear the corresponding stage
+        default so the parameter is unset (e.g. ``gain_ref_path: null`` skips gain correction).
+
         Args:
             stage_defaults: Baseline microscope parameters sourced from the stage config.
             update_cache: When True, update the shared microscope configuration cache so
@@ -250,6 +253,9 @@ class BaseReActAgent(ABC):
             for key, value in overrides.items():
                 if value is not None:
                     effective[key] = value
+                else:
+                    # Explicit null means "do not set" — drop any stage default.
+                    effective.pop(key, None)
 
         if update_cache:
             self._microscope_config_cache = dict(effective)
