@@ -169,3 +169,5 @@ configs/master_config.json
 cryoalign_env.tar.gz
 
 .claude/
+
+config/
