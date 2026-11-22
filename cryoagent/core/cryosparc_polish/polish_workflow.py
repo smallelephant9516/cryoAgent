@@ -139,9 +139,9 @@ class PolishWorkflow:
         # Map steps to tool names
         step_tool_map = {
             PolishStep.VERIFY_INPUTS: "verify_inputs",
-            PolishStep.INITIAL_REFINEMENT: "homogeneous_refinement",
+            PolishStep.INITIAL_REFINEMENT: "nonuniform_refine_new",
             PolishStep.MOTION_CORRECTION: "reference_motion_correction",
-            PolishStep.FINAL_REFINEMENT: "homogeneous_refinement"
+            PolishStep.FINAL_REFINEMENT: "nonuniform_refine_new"
         }
         
         tool_name = step_tool_map.get(step)
@@ -149,35 +149,21 @@ class PolishWorkflow:
             return
         
         records = tool_entries.get(tool_name, [])
+        if step in (PolishStep.INITIAL_REFINEMENT, PolishStep.FINAL_REFINEMENT):
+            # Accept the former tool name in execution logs from older runs.
+            records = records or tool_entries.get("homogeneous_refinement", [])
+            motion_job_uids = {
+                outcome.job_uid
+                for entry in tool_entries.get("reference_motion_correction", [])
+                if (outcome := outcome_for_record(entry, waits)).success
+            }
+            is_final = step == PolishStep.FINAL_REFINEMENT
+            records = [
+                entry for entry in records
+                if (entry.get("params", {}).get("particles_job_uid") in motion_job_uids) == is_final
+            ]
 
-        # Only count records that actually submitted a job (no error and a job_uid).
-        # A homogeneous_refinement call can fail on a first attempt (e.g. a bad
-        # parameter) and then succeed on a retry; the failed attempt must not be
-        # mistaken for the step's outcome. verify_inputs has no job_uid, so it is
-        # matched against all its records.
-        def _succeeded(rec):
-            if rec.get("error"):
-                return False
-            res = rec.get("result")
-            return isinstance(res, dict) and bool(res.get("job_uid"))
-
-        if step == PolishStep.VERIFY_INPUTS:
-            successful = records
-        else:
-            successful = [r for r in records if _succeeded(r)]
-
-        # For FINAL_REFINEMENT, we want the LAST successful homogeneous_refinement
-        # call; for INITIAL_REFINEMENT, the FIRST successful one.
-        if step == PolishStep.FINAL_REFINEMENT and len(successful) >= 2:
-            latest_record = successful[-1]
-        elif step == PolishStep.INITIAL_REFINEMENT and len(successful) >= 1:
-            latest_record = successful[0]
-        elif successful:
-            latest_record = successful[-1]
-        elif records:
-            # All attempts errored — surface the most recent error.
-            latest_record = records[-1]
-        else:
+        if not records:
             self.results.append(
                 PolishResult(
                     step=step,
@@ -189,6 +175,12 @@ class PolishWorkflow:
             )
             return
         
+        latest_record = records[-1]
+        if step != PolishStep.VERIFY_INPUTS:
+            latest_record = next(
+                (entry for entry in reversed(records) if outcome_for_record(entry, waits).success),
+                latest_record,
+            )
         error_message = latest_record.get("error")
         result_payload = latest_record.get("result", {})
 

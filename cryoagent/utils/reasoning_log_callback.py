@@ -45,6 +45,7 @@ class ReasoningLogCallbackHandler(BaseCallbackHandler):
         super().__init__()
         self.realtime_logger = realtime_logger
         self._last_logged_text = None
+        self._pending_tools = {}
 
     def _log(self, text: str, metadata: dict) -> None:
         """Write reasoning to the log, skipping an immediate duplicate."""
@@ -172,9 +173,7 @@ class ReasoningLogCallbackHandler(BaseCallbackHandler):
                 arguments = {"input": input_str}
 
             # Store for matching with on_tool_end
-            if not hasattr(self, '_pending_tools'):
-                self._pending_tools = {}
-            self._pending_tools[tool_name] = arguments
+            self._pending_tools[kwargs.get("run_id")] = (tool_name, arguments)
         except Exception:
             pass
 
@@ -183,11 +182,9 @@ class ReasoningLogCallbackHandler(BaseCallbackHandler):
         if not self._enabled():
             return
         try:
-            # Get the tool name from run_id metadata if available, else use last pending
-            tool_name = kwargs.get("name", "unknown_tool")
-            if not hasattr(self, '_pending_tools'):
-                self._pending_tools = {}
-            arguments = self._pending_tools.pop(tool_name, {})
+            tool_name, arguments = self._pending_tools.pop(
+                kwargs.get("run_id"), (kwargs.get("name") or "unknown_tool", {})
+            )
 
             # Log to the realtime logger in the structured format
             self.realtime_logger.log_tool_execution(
@@ -203,13 +200,14 @@ class ReasoningLogCallbackHandler(BaseCallbackHandler):
         if not self._enabled():
             return
         try:
-            tool_name = kwargs.get("name", "unknown_tool")
-            if not hasattr(self, '_pending_tools'):
-                self._pending_tools = {}
-            arguments = self._pending_tools.pop(tool_name, {})
+            tool_name, arguments = self._pending_tools.pop(
+                kwargs.get("run_id"), (kwargs.get("name") or "unknown_tool", {})
+            )
 
             # Log error as result
-            error_str = f"ERROR: {str(error)}"
+            error_str = f"ERROR: {type(error).__name__}"
+            if str(error):
+                error_str += f": {error}"
             self.realtime_logger.log_tool_execution(
                 tool_name=tool_name,
                 arguments=arguments,

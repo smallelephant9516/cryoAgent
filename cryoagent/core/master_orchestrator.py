@@ -1772,6 +1772,7 @@ class OptimizerAgent(StageAgent):
             # Note: OptimizationResult uses 'job_uid' not 'best_job_uid'
             stage_outputs = {
                 "optimization_job_uid": result.job_uid,
+                "best_job_uid": result.job_uid,
                 "best_box_size": result.best_box_size,
                 "best_resolution_angstroms": result.best_resolution,
                 "tested_combinations": result.tested_combinations or [],
@@ -3404,6 +3405,10 @@ class MasterOrchestrator:
             merge_improvement_contexts(parsed_contexts)
         )
 
+        baseline_result = self.workflow_state.best_resolution()
+        if not baseline_result or not baseline_result.get("job_uid"):
+            print("⚠️ Improvement requires a prior reconstruction with a measured resolution.")
+            return {"success": False, "error": "no baseline reconstruction"}
 
         # Reuse a stage agent's full config object.
         config = None

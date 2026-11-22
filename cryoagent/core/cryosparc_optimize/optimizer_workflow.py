@@ -148,6 +148,7 @@ class OptimizerWorkflow:
         optimization_order = "\n".join(optimization_steps) if optimization_steps else ""
 
         task_context = {
+            "refinement_tool": self.agent._refinement_tool_name(),
             "refinement_job_uid": refinement_job_uid,
             "volume_job_uid": volume_job_uid,
             "particles_job_uid": particles_job_uid,
@@ -254,12 +255,12 @@ class OptimizerWorkflow:
                     best_multi_round_resolution = multi_round_result.get("best_resolution_angstroms")
                     multi_round_rounds = multi_round_result.get("rounds_completed")
                 
-                # Run final homogeneous refinement
-                best_homogeneous_refinement_job_uid = best_result.get("job_uid")
+                # Run the configured refinement on the best measured candidate.
+                best_job_uid = best_result.get("job_uid")
                 final_refinement_job_uid = None
                 final_refinement_resolution = None
                 
-                if best_homogeneous_refinement_job_uid:
+                if best_job_uid:
                     try:
                         # Get symmetry from agent
                         symmetry = self.agent._get_refinement_symmetry()
@@ -269,8 +270,9 @@ class OptimizerWorkflow:
                         workspace_uid = self.config.workflow.workspace_uid
                         
                         # Log the final refinement step
-                        self.agent.logger.info(f"🔧 Running final homogeneous refinement...")
-                        self.agent.logger.info(f"   Source job: {best_homogeneous_refinement_job_uid}")
+                        refinement_tool = self.agent._refinement_tool_name()
+                        self.agent.logger.info(f"Running final {refinement_tool}")
+                        self.agent.logger.info(f"   Source job: {best_job_uid}")
                         self.agent.logger.info(f"   Symmetry: {symmetry}")
                         
                         # Get initial lowpass resolution from optimization config if available
@@ -278,12 +280,16 @@ class OptimizerWorkflow:
                         if hasattr(self.agent, '_get_refinement_res_init'):
                             refine_res_init = self.agent._get_refinement_res_init()
                         
-                        # Run homogeneous refinement
-                        refine_result = self.agent.cryosparc_tools.homogeneous_refinement(
+                        refine = (
+                            self.agent.cryosparc_tools.nonuniform_refine_new
+                            if self.agent._should_use_nonuniform_refinement()
+                            else self.agent.cryosparc_tools.homogeneous_refinement
+                        )
+                        refine_result = refine(
                             project_uid=project_uid,
                             workspace_uid=workspace_uid,
-                            particles_job_uid=best_homogeneous_refinement_job_uid,
-                            volume_job_uid=best_homogeneous_refinement_job_uid,
+                            particles_job_uid=best_job_uid,
+                            volume_job_uid=best_job_uid,
                             symmetry=symmetry,
                             refine_res_init=refine_res_init,  # Initial lowpass resolution if configured
                             wait_for_completion=True,
@@ -292,17 +298,19 @@ class OptimizerWorkflow:
                         )
                         
                         if refine_result.get("success", False):
-                            final_refinement_job_uid = refine_result.get("job_uid")
+                            candidate_job_uid = refine_result.get("job_uid")
                             refine_status = refine_result.get("status", "unknown")
                             
-                            if refine_status == "completed" and final_refinement_job_uid:
+                            if refine_status == "completed" and candidate_job_uid:
                                 # Get FSC resolution for the final refinement
                                 fsc_info = self.agent.cryosparc_tools.get_refinement_fsc_info(
-                                    project_uid, final_refinement_job_uid
+                                    project_uid, candidate_job_uid
                                 )
-                                if fsc_info.get("success"):
-                                    final_refinement_resolution = fsc_info.get("resolution_angstroms")
-                                    self.agent.logger.info(f"✅ Final homogeneous refinement completed successfully")
+                                resolution = fsc_info.get("resolution_angstroms")
+                                if fsc_info.get("success") and isinstance(resolution, (float, int)):
+                                    final_refinement_job_uid = candidate_job_uid
+                                    final_refinement_resolution = resolution
+                                    self.agent.logger.info("Final refinement completed successfully")
                                     self.agent.logger.info(f"   Final refinement job: {final_refinement_job_uid}")
                                     self.agent.logger.info(f"   Final resolution: {final_refinement_resolution:.3f} Å")
                                 else:
@@ -311,9 +319,9 @@ class OptimizerWorkflow:
                                 self.agent.logger.warning(f"⚠️  Final refinement did not complete successfully: status={refine_status}")
                         else:
                             error_msg = refine_result.get("error") or "Unknown error"
-                            self.agent.logger.error(f"❌ Final homogeneous refinement failed: {error_msg}")
+                            self.agent.logger.error(f"❌ Final refinement failed: {error_msg}")
                     except Exception as e:
-                        self.agent.logger.error(f"❌ Error running final homogeneous refinement: {e}", exc_info=True)
+                        self.agent.logger.error(f"❌ Error running final refinement: {e}", exc_info=True)
                         # Continue with optimization result even if final refinement fails
                 
                 return OptimizationResult(

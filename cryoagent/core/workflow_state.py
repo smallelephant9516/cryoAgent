@@ -236,20 +236,20 @@ def _classify_attempt_outcome(
     if isinstance(delta_cfar, (int, float)):
         delta_cfar = round(float(delta_cfar), 3)
 
-    if has_check and not has_cross:
-        return "helped"
-    if isinstance(delta_res, (int, float)) and delta_res >= _RES_EPS:
-        if isinstance(delta_cfar, (int, float)) and delta_cfar < -0.1:
+    if delta_res is None and delta_cfar is None:
+        if has_cross:
             return "worse"
+        return "helped" if has_check else "no_difference"
+    if isinstance(delta_res, (int, float)) and delta_res <= -_RES_EPS:
+        return "worse"
+    if isinstance(delta_cfar, (int, float)) and delta_cfar <= _CFAR_WORSE:
+        return "worse"
+    if isinstance(delta_res, (int, float)) and delta_res >= _RES_EPS:
         if not has_cross:
             return "helped"
     if isinstance(delta_cfar, (int, float)) and delta_cfar >= _CFAR_EPS and not has_cross:
         if not isinstance(delta_res, (int, float)) or delta_res > -_RES_EPS:
             return "helped"
-    if isinstance(delta_res, (int, float)) and delta_res < -_RES_EPS:
-        return "worse"
-    if isinstance(delta_cfar, (int, float)) and delta_cfar <= _CFAR_WORSE:
-        return "worse"
     return "no_difference"
 
 

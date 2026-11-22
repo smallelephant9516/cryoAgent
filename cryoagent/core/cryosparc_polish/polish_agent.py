@@ -71,7 +71,7 @@ class PolishAgent(BaseReActAgent):
             return {}
     
     def _get_refinement_symmetry(self) -> str:
-        """Get symmetry from reconstruction_config.json for homogeneous refinement."""
+        """Get symmetry from reconstruction_config.json for non-uniform refinement."""
         recon_config = self._load_reconstruction_config()
         
         # First try to get from workflow.refinement.symmetry (preferred)
@@ -120,12 +120,12 @@ class PolishAgent(BaseReActAgent):
             self._get_system_prompt_context(),
         )
     
-    def _homogeneous_refinement_tool(self, tool_input: str) -> str:
-        """Execute homogeneous refinement with CTF refinement enabled."""
+    def _nonuniform_refinement_tool(self, tool_input: str) -> str:
+        """Execute non-uniform refinement with CTF refinement enabled."""
         try:
             params = dict(self._parse_tool_input(tool_input))
 
-            print(f"Homogeneous refinement params: {params}")
+            print(f"Non-uniform refinement params: {params}")
             
             particles_job_uid = params.get("particles_job_uid")
             volume_job_uid = params.get("volume_job_uid")
@@ -174,8 +174,8 @@ class PolishAgent(BaseReActAgent):
                 consumed_keys=["particles_job_uid", "volume_job_uid", "refinement_resolution", "symmetry", "refine_do_init_scale_est", "refine_highpass_res", "refine_num_final_iterations", "refine_res_init", "refine_symmetry_do_align", "refine_defocus_refine", "refine_ctf_global_refine", "particles_group_name"],
             )
 
-            # Execute homogeneous refinement with CTF parameters
-            result = self.cryosparc_tools.homogeneous_refinement(
+            # Execute non-uniform refinement with CTF parameters
+            result = self.cryosparc_tools.nonuniform_refine_new(
                 project_uid=project_uid,
                 workspace_uid=workspace_uid,
                 particles_job_uid=particles_job_uid,
@@ -196,12 +196,12 @@ class PolishAgent(BaseReActAgent):
                 params=passthrough
             )
             
-            self._record_tool_execution("homogeneous_refinement", params, result=result)
+            self._record_tool_execution("nonuniform_refine_new", params, result=result)
             return json.dumps(result)
             
         except Exception as e:
             error_result = {"success": False, "error": str(e)}
-            self._record_tool_execution("homogeneous_refinement", params if 'params' in locals() else {}, error=str(e))
+            self._record_tool_execution("nonuniform_refine_new", params if 'params' in locals() else {}, error=str(e))
             return json.dumps(error_result)
     
     def _reference_motion_correction_tool(self, tool_input: str) -> str:

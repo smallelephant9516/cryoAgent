@@ -317,8 +317,8 @@ _spec("run_non_uniform_refinement_hetero", "run_non_uniform_refinement", "_run_n
 # ---------------------------------------------------------------------------
 # Polish tools.
 # ---------------------------------------------------------------------------
-_spec("homogeneous_refinement_polish", "homogeneous_refinement", "_homogeneous_refinement_tool",
-      "Refine a single 3D structure with local and global CTF refinement enabled. "
+_spec("nonuniform_refinement_polish", "nonuniform_refinement", "_nonuniform_refinement_tool",
+      "Run non-uniform 3D refinement with local and global CTF refinement enabled. "
       "Required parameters: particles_job_uid, volume_job_uid. Optional parameters: "
       "refinement_resolution, symmetry, refine_defocus_refine (enable local CTF "
       "refinement, default: True), refine_ctf_global_refine (enable global CTF "
@@ -637,7 +637,7 @@ AGENT_TOOL_SETS: Dict[str, List[str]] = {
         # compare_all_densities appended by the agent
     ],
     "polish": [
-        "homogeneous_refinement_polish", "reference_motion_correction",
+        "nonuniform_refinement_polish", "reference_motion_correction",
         "get_job_status", "wait_for_job", "get_job_log_common", "search_cryosparc_forum",
         "describe_job_params", "describe_job_results", "get_orientation_diagnostics",
         "verify_inputs",

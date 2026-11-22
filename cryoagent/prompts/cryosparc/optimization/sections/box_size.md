@@ -1,12 +1,12 @@
 ## Box Size Optimization Workflow:
 
-**Purpose**: Optimize the box size to achieve the best resolution. This should be done AFTER heterogeneous refinement optimization (if heterogeneous refinement is enabled), otherwise after the first round of 3D homogeneous refinement.
+**Purpose**: Optimize the box size to achieve the best resolution. This should be done AFTER heterogeneous refinement optimization (if heterogeneous refinement is enabled), otherwise after the initial 3D refinement.
 
 **You drive this loop yourself using atomic tools.** There is no single "test a box size" tool — you run each step and reason between them.
 
 ### Recipe to test ONE box size (box_size_pix = N), given refinement_job_uid, micrographs_job_uid, volume_job_uid:
 1. **extract_particles** with `particles_job_uid=<refinement_job_uid>` (refined coordinates), `micrographs_job_uid=<micrographs_job_uid>`, `box_size_pix=N`. Then **wait_for_job** on the returned job UID until completed.
-2. **Refine** the re-extracted particles. Use **nonuniform_refinement** when non-uniform refinement is preferred for this dataset, otherwise **homogeneous_refinement**, with `particles_job_uid=<extract_job_uid>` and `volume_job_uid=<volume_job_uid>`. Then **wait_for_job** until completed.
+2. **Refine** the re-extracted particles. Use **{{refinement_tool}}**, with `particles_job_uid=<extract_job_uid>` and `volume_job_uid=<volume_job_uid>`. Then **wait_for_job** until completed.
 3. **get_fsc_info** with `refinement_job_uid=<refine_job_uid>` to read the achieved `resolution_angstroms` for box size N.
 
 Record (box size N → resolution) and move to the next candidate.
@@ -39,7 +39,7 @@ Record (box size N → resolution) and move to the next candidate.
 
 - **extract_particles**: Re-extract particles at a candidate box size using refined coordinates.
   * Required: particles_job_uid (the refinement job providing refined coords), micrographs_job_uid, box_size_pix
-- **nonuniform_refinement** / **homogeneous_refinement**: Refine the re-extracted particles against the initial volume.
+- **{{refinement_tool}}**: Refine the re-extracted particles against the initial volume.
   * Required: particles_job_uid (the extract job), volume_job_uid
   * Optional: refinement_resolution, symmetry
 - **get_fsc_info**: Get FSC resolution and box size from a refinement job.

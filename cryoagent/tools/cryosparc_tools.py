@@ -3928,6 +3928,8 @@ class CryoSPARCTools:
             )
 
             # Create the job - non-uniform refinement job type
+            particles_slot = particles_group_name or particles_slot
+            volume_slot = volume_group_name or volume_slot
             # Support connecting multiple particle groups (e.g. several particles_class_X
             # outputs of one heterogeneous-refinement job) to the single "particles" input.
             if particles_group_names and len(particles_group_names) > 1:

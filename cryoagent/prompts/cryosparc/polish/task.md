@@ -14,10 +14,10 @@ Execute the polish refinement workflow to achieve the best possible resolution:
    - This will read preprocessing_results_cryosparc_*.json to get final_micrographs_job_uid
    - Wait for verification to complete
 
-═══ STEP 2: Initial Homogeneous Refinement with CTF ═══
+═══ STEP 2: Initial Non-Uniform Refinement with CTF ═══
 
-2. **Initial Homogeneous Refinement** - Refine with CTF refinement enabled
-   - Tool: homogeneous_refinement
+2. **Initial Non-Uniform Refinement** - Refine with CTF refinement enabled
+   - Tool: nonuniform_refinement
    - Parameters:
      * particles_job_uid=[best_job_uid from Step 1]
      * volume_job_uid=[best_job_uid from Step 1]
@@ -37,10 +37,10 @@ Execute the polish refinement workflow to achieve the best possible resolution:
    - Wait for completion and record job UID (J-B)
    - Output particles group name is "particles_0"
 
-═══ STEP 4: Final Homogeneous Refinement with CTF ═══
+═══ STEP 4: Final Non-Uniform Refinement with CTF ═══
 
-4. **Final Homogeneous Refinement** - Final refinement with CTF refinement enabled
-   - Tool: homogeneous_refinement
+4. **Final Non-Uniform Refinement** - Final refinement with CTF refinement enabled
+   - Tool: nonuniform_refinement
    - Parameters:
      * particles_job_uid=[J-B from Step 3]
      * particles_group_name="particles_0" (use particles_0 group from motion correction)

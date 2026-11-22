@@ -7,7 +7,7 @@
    * IMPORTANT: `volume_from_job_uid` should be the SAME consensus refinement job that provides the particles. The tool inspects that job's outputs and connects its single `volume` output K times (for refinement jobs) or its `volume_class_*` outputs (for ab-initio jobs) — you do NOT need to know which; just pass the refinement job UID and K. Do NOT substitute an unrelated ab-initio job's class volumes as the seeds.
 2. **regroup_classes** with `particles_job_uid=<hetero_job_uid>`, `num_superclasses=2`. Then **wait_for_job** until completed.
 3. (Only if K > 2) **get_regroup_superclass_info** with `regroup_job_uid=<regroup_job_uid>` and pick the superclass with the most `num_items`. Note its index `<best>`.
-4. **Refine** the selected superclass. Use **nonuniform_refinement** when non-uniform refinement is preferred for this dataset, otherwise **homogeneous_refinement**, with `particles_job_uid=<regroup_job_uid>`, `volume_job_uid=<hetero_job_uid>`, `particles_group_name=particles_superclass_<best>`, `volume_group_name=volume_class_<best>`. Then **wait_for_job** until completed.
+4. **Refine** the selected superclass. Use **{{refinement_tool}}**, with `particles_job_uid=<regroup_job_uid>`, `volume_job_uid=<hetero_job_uid>`, `particles_group_name=particles_superclass_<best>`, `volume_group_name=volume_class_<best>`. Then **wait_for_job** until completed.
 5. **get_fsc_info** with `refinement_job_uid=<refine_job_uid>` to read the achieved `resolution_angstroms` for K classes.
 
 You may also call **get_hetero_class_resolutions** on the heterogeneous refinement job to inspect per-class resolutions and verify your selection makes sense.
@@ -15,7 +15,7 @@ You may also call **get_hetero_class_resolutions** on the heterogeneous refineme
 Record (K → resolution) and move to the next candidate.
 
 **Agentic Optimization Process**:
-1. **Baseline**: Get FSC resolution from the final refinement job (K=1, which is homogeneous refinement)
+1. **Baseline**: Get FSC resolution from the final refinement job (K=1)
 2. **First Round Testing**: Test K=2 and K=3 by running the recipe above for each
 3. **REASONING REQUIRED**: After EACH test, you MUST actively reason about the results:
    - Analyze the per-class data (from `get_hetero_class_resolutions` and the regroup superclass info) and your class/superclass selection from each test
@@ -49,7 +49,7 @@ Record (K → resolution) and move to the next candidate.
 - **get_regroup_superclass_info**: Inspect superclasses produced by regroup_classes (use when K > 2 to pick the superclass with the most num_items).
   * Required: regroup_job_uid
   * Returns: superclasses with num_items for each
-- **nonuniform_refinement** / **homogeneous_refinement**: Run final refinement on the selected superclass.
+- **{{refinement_tool}}**: Run final refinement on the selected superclass.
   * Required: particles_job_uid (the regroup job), volume_job_uid (the heterogeneous refinement job), particles_group_name (e.g. particles_superclass_<best>), volume_group_name (e.g. volume_class_<best>)
 - **get_hetero_class_resolutions**: Get resolution for each class in a heterogeneous refinement job
   * Required: job_uid (heterogeneous refinement job UID)

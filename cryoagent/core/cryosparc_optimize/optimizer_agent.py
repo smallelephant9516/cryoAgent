@@ -46,7 +46,11 @@ class OptimizerAgent(BaseReActAgent):
     def _create_tools(self) -> List[Tool]:
         """Create optimization-specific tools."""
         from ..cryosparc_tool_registry import build_tools, AGENT_TOOL_SETS
-        return build_tools(self, AGENT_TOOL_SETS["optimization"])
+        excluded = (
+            "opt_homogeneous_refinement" if self._should_use_nonuniform_refinement()
+            else "opt_nonuniform_refinement"
+        )
+        return build_tools(self, [spec for spec in AGENT_TOOL_SETS["optimization"] if spec != excluded])
     
     def _load_stage_config(self) -> Dict[str, Any]:
         """Load optimization stage configuration."""
@@ -94,6 +98,9 @@ class OptimizerAgent(BaseReActAgent):
     def _should_use_nonuniform_refinement(self) -> bool:
         """Check if non-uniform refinement should be used instead of homogeneous refinement."""
         return self.stage_workflow.get("optimization", {}).get("use_nonuniform_refinement", True)
+
+    def _refinement_tool_name(self) -> str:
+        return "nonuniform_refinement" if self._should_use_nonuniform_refinement() else "homogeneous_refinement"
     
     def _get_refinement_res_init(self) -> Optional[float]:
         """Get initial lowpass resolution for refinement from optimization config."""
@@ -158,16 +165,17 @@ class OptimizerAgent(BaseReActAgent):
         elif enable_box_size and not enable_hetero:
             priority_section = "**Heterogeneous refinement is DISABLED**. Proceed with box size optimization only.**"
 
-        box_size_section = self._load_optimization_section("box_size") if enable_box_size else ""
+        refinement_context = {"refinement_tool": self._refinement_tool_name()}
+        box_size_section = self._load_optimization_section("box_size", refinement_context) if enable_box_size else ""
 
         hetero_section = ""
         if enable_hetero:
             hetero_section = self._load_optimization_section(
                 "hetero",
-                {"max_hetero_iterations": flags["max_hetero_iterations"]},
+                {**refinement_context, "max_hetero_iterations": flags["max_hetero_iterations"]},
             )
 
-        multi_round_section = self._load_optimization_section("multi_round_base")
+        multi_round_section = self._load_optimization_section("multi_round_base", refinement_context)
         if enable_multi_round:
             multi_round_section += "\n" + self._load_optimization_section(
                 "multi_round_config",

@@ -1,6 +1,6 @@
 ## Multi-Round 3D Classification Optimization Workflow:
 
-**Purpose**: Iteratively refine 3D structures using multi-round 3D classification to achieve the best resolution. This should be done FIRST, before heterogeneous refinement optimization (if enabled) and box size optimization (if enabled), using the initial homogeneous refinement result.
+**Purpose**: Iteratively refine 3D structures using multi-round 3D classification to achieve the best resolution. This should be done FIRST, before heterogeneous refinement optimization (if enabled) and box size optimization (if enabled), using the initial 3D refinement result.
 
 **You drive this loop yourself using atomic tools.** There is no single "run multi-round classification" tool — you run each round's steps and track the best result across rounds.
 
@@ -8,7 +8,7 @@
 1. **ab_initio_reconstruction** with `particles_job_uid=<particles_source>`, `num_classes=<num_classes>`, prefer `symmetry=C1`. Then **wait_for_job** until completed.
 2. **heterogeneous_refinement** with `particles_job_uid=<particles_source>`, `volume_from_job_uid=<ab_initio_job_uid>`, `num_classes=<num_classes>`. Then **wait_for_job** until completed.
 3. **get_hetero_class_resolutions** with `job_uid=<hetero_job_uid>` and select the best class (smallest `resolution_angstroms`). Note its index `<best>`.
-4. **Refine** the best class. Use **nonuniform_refinement** when non-uniform refinement is preferred for this dataset, otherwise **homogeneous_refinement**, with `particles_job_uid=<hetero_job_uid>`, `volume_job_uid=<hetero_job_uid>`, `particles_group_name=particles_class_<best>`, `volume_group_name=volume_class_<best>`. Then **wait_for_job** until completed.
+4. **Refine** the best class. Use **{{refinement_tool}}**, with `particles_job_uid=<hetero_job_uid>`, `volume_job_uid=<hetero_job_uid>`, `particles_group_name=particles_class_<best>`, `volume_group_name=volume_class_<best>`. Then **wait_for_job** until completed.
 5. **get_fsc_info** with `refinement_job_uid=<refine_job_uid>` to read this round's `resolution_angstroms`.
 
 ### Loop control (you track this yourself):
@@ -19,10 +19,10 @@
 - Also STOP once you reach max_rounds rounds.
 
 **Agentic Optimization Process**:
-1. **Input**: Take volume and particles_job_uid from previous best homogeneous refinement
+1. **Input**: Take volume and particles_job_uid from previous best refinement
 2. **3D Classification**: Run 3D classification (heterogeneous refinement) with 4 classes (default)
 3. **Class Selection**: Select the best class based on resolution metric (lowest resolution is best)
-4. **3D Refinement**: Run 3D refinement (homogeneous refinement) on the selected class using volume and particles from that class
+4. **3D Refinement**: Run `{{refinement_tool}}` on the selected class using volume and particles from that class
 5. **Resolution Check**: Check if resolution improved compared to previous round
 6. **Decision Making**:
    - **If improved**: Continue the process using the refined result as input for the next round
@@ -43,7 +43,7 @@
 - **get_hetero_class_resolutions**: Get per-class resolutions to select the best class.
   * Required: job_uid (the heterogeneous refinement job)
   * Returns: classes (list with class_id, resolution_angstroms); pick the smallest resolution_angstroms
-- **nonuniform_refinement** / **homogeneous_refinement**: Refine the selected best class.
+- **{{refinement_tool}}**: Refine the selected best class.
   * Required: particles_job_uid (the heterogeneous refinement job), volume_job_uid (the heterogeneous refinement job), particles_group_name (e.g. particles_class_<best>), volume_group_name (e.g. volume_class_<best>)
 - **get_fsc_info**: Read the round's resolution from the refinement job.
   * Required: refinement_job_uid
@@ -55,7 +55,7 @@
 **When to Use**:
 - FIRST, before heterogeneous refinement optimization (if enabled)
 - FIRST, before box size optimization (if enabled)
-- After the first round of 3D homogeneous refinement (use the initial refinement_job_uid)
+- After the initial 3D refinement (use the initial refinement_job_uid)
 - When you want to iteratively refine structures through multiple rounds of classification
 
 **Parameters**:

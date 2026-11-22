@@ -171,3 +171,5 @@ cryoalign_env.tar.gz
 .claude/
 
 config/
+
+cryosift_eval

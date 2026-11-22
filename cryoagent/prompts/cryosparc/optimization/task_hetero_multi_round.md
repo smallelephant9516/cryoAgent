@@ -1,6 +1,6 @@
 Optimize multi-round 3D classification and heterogeneous refinement for 3D reconstruction.
 
-I have completed homogeneous refinement with job UID: {{refinement_job_uid}}
+I have completed the initial 3D refinement with job UID: {{refinement_job_uid}}
 
 IMPORTANT: Box size optimization is DISABLED. DO NOT re-extract particles or run box-size optimization.
 
