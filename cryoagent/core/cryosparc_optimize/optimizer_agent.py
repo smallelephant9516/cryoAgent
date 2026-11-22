@@ -933,7 +933,10 @@ class OptimizerAgent(BaseReActAgent):
             self._record_tool_execution("ab_initio_reconstruction", params if 'params' in locals() else {}, error=str(e))
             return json.dumps({"success": False, "error": str(e)})
 
-    def _heterogeneous_refinement_tool(self, tool_input: str) -> str:
+    def _guided_heterogeneous_refinement_tool(self, tool_input: str) -> str:
+        return self._heterogeneous_refinement_tool(tool_input, symmetry_override="C1")
+
+    def _heterogeneous_refinement_tool(self, tool_input: str, *, symmetry_override: Optional[str] = None) -> str:
         """Execute heterogeneous refinement.
 
         Accepts two forms for supplying initial volumes:
@@ -942,7 +945,7 @@ class OptimizerAgent(BaseReActAgent):
         2. volume_job_uids: a list (or comma-separated string) of volume job UIDs.
         """
         try:
-            params = self._parse_tool_input(tool_input)
+            params = dict(self._parse_tool_input(tool_input))
 
             particles_job_uid = params.get("particles_job_uid")
             if not particles_job_uid:
@@ -954,7 +957,7 @@ class OptimizerAgent(BaseReActAgent):
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
 
-            symmetry = params.get("symmetry") or self._get_refinement_symmetry()
+            symmetry = symmetry_override or params.get("symmetry") or self._get_refinement_symmetry()
 
             volume_from_job_uid = params.get("volume_from_job_uid")
             volume_job_uids = params.get("volume_job_uids") or params.get("volume_job_uid")
@@ -968,6 +971,9 @@ class OptimizerAgent(BaseReActAgent):
                 "volume_from_job_uid", "volume_group_names", "particles_group_name",
             ]
             passthrough = self._extract_passthrough_params(params, consumed_keys=consumed)
+            if symmetry_override is not None:
+                passthrough.pop("multirefine_symmetry", None)
+                params.update(symmetry=symmetry, params=passthrough)
 
             if volume_from_job_uid:
                 # Single-job multi-volume form
@@ -1089,7 +1095,12 @@ class OptimizerAgent(BaseReActAgent):
             self._record_tool_execution("get_regroup_superclass_info", params if 'params' in locals() else {}, error=str(e))
             return json.dumps({"success": False, "error": str(e)})
 
-    def _nonuniform_refinement_tool(self, tool_input: str) -> str:
+    def _guided_nonuniform_refinement_tool(self, tool_input: str) -> str:
+        return self._nonuniform_refinement_tool(
+            tool_input, symmetry_override=self._get_refinement_symmetry()
+        )
+
+    def _nonuniform_refinement_tool(self, tool_input: str, *, symmetry_override: Optional[str] = None) -> str:
         """Execute non-uniform refinement on a single 3D structure."""
         try:
             params = self._parse_tool_input(tool_input)
@@ -1109,7 +1120,7 @@ class OptimizerAgent(BaseReActAgent):
 
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
-            symmetry = params.get("symmetry") or self._get_refinement_symmetry()
+            symmetry = symmetry_override or params.get("symmetry") or self._get_refinement_symmetry()
             refinement_resolution = params.get("refinement_resolution")
 
             refine_params = {
@@ -1140,6 +1151,8 @@ class OptimizerAgent(BaseReActAgent):
                     "particles_group_name", "volume_group_name",
                 ],
             )
+            if symmetry_override is not None:
+                passthrough.pop("refine_symmetry", None)
             if passthrough:
                 refine_params["params"] = passthrough
 
@@ -1161,10 +1174,15 @@ class OptimizerAgent(BaseReActAgent):
             self._record_tool_execution("nonuniform_refine_new", params if 'params' in locals() else {}, error=str(e))
             return json.dumps({"success": False, "error": str(e)})
 
-    def _homogeneous_refinement_tool(self, tool_input: str) -> str:
+    def _guided_homogeneous_refinement_tool(self, tool_input: str) -> str:
+        return self._homogeneous_refinement_tool(
+            tool_input, symmetry_override=self._get_refinement_symmetry()
+        )
+
+    def _homogeneous_refinement_tool(self, tool_input: str, *, symmetry_override: Optional[str] = None) -> str:
         """Execute homogeneous refinement on a single 3D structure."""
         try:
-            params = self._parse_tool_input(tool_input)
+            params = dict(self._parse_tool_input(tool_input))
 
             particles_job_uid = params.get("particles_job_uid")
             volume_job_uid = params.get("volume_job_uid") or params.get("job_uid")
@@ -1181,7 +1199,7 @@ class OptimizerAgent(BaseReActAgent):
 
             project_uid = params.get("project_uid", self.config.workflow.project_uid)
             workspace_uid = params.get("workspace_uid", self.config.workflow.workspace_uid)
-            symmetry = params.get("symmetry") or self._get_refinement_symmetry()
+            symmetry = symmetry_override or params.get("symmetry") or self._get_refinement_symmetry()
             refinement_resolution = params.get("refinement_resolution")
 
             wait_for_completion = self._parse_bool_param(params.get("wait_for_completion"), False)
@@ -1193,6 +1211,9 @@ class OptimizerAgent(BaseReActAgent):
                 "symmetry", "particles_group_name", "volume_group_name", "refine_res_init",
             ]
             passthrough = self._extract_passthrough_params(params, consumed_keys=consumed)
+            if symmetry_override is not None:
+                passthrough.pop("refine_symmetry", None)
+                params.update(symmetry=symmetry, params=passthrough)
 
             call_kwargs = {
                 "project_uid": project_uid,

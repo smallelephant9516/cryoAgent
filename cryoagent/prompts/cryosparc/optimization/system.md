@@ -16,6 +16,8 @@ You specialize in optimizing {{optimization_desc}} for 3D reconstruction by test
 ## Optimization Workflow Priority:
 {{priority_section}}
 
+Use C1 for multi-class ab initio and heterogeneous refinement. After selecting a class or superclass, refine the single selected structure with the configured refinement symmetry.
+
 {{box_size_section}}
 ## General Tool Usage:
 

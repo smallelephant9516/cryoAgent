@@ -406,8 +406,8 @@ _spec("opt_ab_initio", "ab_initio_reconstruction", "_ab_initio_tool",
       "(K), initial_resolution, final_resolution, symmetry. In multi-round 3D "
       "classification, run this with K classes to seed heterogeneous refinement.",
       job_tool=True)
-_spec("opt_heterogeneous_refinement", "heterogeneous_refinement", "_heterogeneous_refinement_tool",
-      "Heterogeneous (K-class) refinement. Supply volumes either as volume_job_uids "
+_spec("opt_heterogeneous_refinement", "heterogeneous_refinement", "_guided_heterogeneous_refinement_tool",
+      "Heterogeneous (K-class) refinement with C1 symmetry for every class. Supply volumes either as volume_job_uids "
       "(list/comma-string) OR volume_from_job_uid + num_classes (to use the K "
       "volume_class outputs of one ab-initio/refinement job). Required: "
       "particles_job_uid. Used in hetero-K tests and multi-round classification.",
@@ -419,16 +419,16 @@ _spec("opt_regroup_classes", "regroup_classes", "_regroup_classes_tool",
 _spec("opt_get_regroup_superclass_info", "get_regroup_superclass_info", "_get_regroup_superclass_info_tool",
       "Read per-superclass particle counts (num_items) from a regroup job so you can "
       "pick the largest superclass. Required: regroup_job_uid.")
-_spec("opt_nonuniform_refinement", "nonuniform_refinement", "_nonuniform_refinement_tool",
+_spec("opt_nonuniform_refinement", "nonuniform_refinement", "_guided_nonuniform_refinement_tool",
       "Non-uniform 3D refinement (higher resolution). Required: particles_job_uid, "
       "volume_job_uid. Optional: particles_group_name/volume_group_name (to refine a "
-      "specific class/superclass), refine_res_init, symmetry. Used as the refinement "
-      "step in optimization recipes when non-uniform refinement is preferred.",
+      "specific class/superclass), refine_res_init. Uses the configured refinement "
+      "symmetry for the selected class or consensus map.",
       job_tool=True)
-_spec("opt_homogeneous_refinement", "homogeneous_refinement", "_homogeneous_refinement_tool",
+_spec("opt_homogeneous_refinement", "homogeneous_refinement", "_guided_homogeneous_refinement_tool",
       "Homogeneous 3D refinement. Required: particles_job_uid, volume_job_uid. Optional: "
-      "particles_group_name/volume_group_name, refinement_resolution, symmetry. Used as "
-      "the refinement step in optimization recipes.", job_tool=True)
+      "particles_group_name/volume_group_name, refinement_resolution. Uses the configured "
+      "refinement symmetry for the selected class or consensus map.", job_tool=True)
 
 
 # ---------------------------------------------------------------------------
