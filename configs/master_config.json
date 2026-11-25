@@ -5,7 +5,8 @@
     "username": "lidaoyi16@hotmail.com",
     "password": "Password123",
     "license_id": "${LICENSE_ID}",
-    "lane": "default"
+    "lane": "default",
+    "topaz_exec_path": "/home/daoyi/storage_server/software/topaz-cryosparc/bin/topaz"
   },
   "relion": {
     "relion_exe": "/usr/local/bin/relion",
@@ -56,8 +57,8 @@
     "provider": "deepseek",
     "temperature": 0.1,
     "max_iterations": 50,
-    "improvement_max_iterations": 200,
-    "improvement_max_iterations_description": "ReAct step cap for the opt-in --improve agent (baseline + up to 5 jobs, each with wait/describe/diagnostics). Falls back to max(30, max_iterations) when unset.",
+    "improvement_max_iterations": 1000,
+    "improvement_max_iterations_description": "Runaway safety cap on ReAct steps for the opt-in --improve agent, not an experiment budget. Falls back to max(1000, max_iterations) when unset.",
     "verbose": true,
     "timeout": 180,
     "memory_control": {

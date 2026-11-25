@@ -167,6 +167,68 @@ def search_cryosparc_forum(
     }
 
 
+def fetch_cryosparc_forum_topic(
+    topic_url: str,
+    *,
+    max_posts: int = 20,
+    max_chars: int = 50000,
+    timeout: int = DEFAULT_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
+    """Read a public Discourse thread for deep, source-grounded consultation."""
+    import json
+    from urllib.parse import urlparse
+
+    parsed = urlparse((topic_url or "").strip())
+    if parsed.scheme not in ("http", "https") or parsed.netloc != "discuss.cryosparc.com":
+        return {"success": False, "error": "URL must be on discuss.cryosparc.com."}
+    match = re.search(r"/t/(?:[^/]+/)?(\d+)(?:[/?#]|$)", parsed.path)
+    if not match:
+        return {"success": False, "error": "Could not find a Discourse topic ID in the URL."}
+    topic_id = match.group(1)
+    api_url = f"{FORUM_BASE_URL}/t/{topic_id}.json"
+    try:
+        request = urllib.request.Request(
+            api_url, headers={"User-Agent": "CryoAgent/1.0 (documentation reader)"},
+        )
+        with urllib.request.urlopen(request, timeout=timeout) as response:
+            data = json.loads(response.read().decode("utf-8", errors="replace"))
+    except Exception as exc:
+        return {"success": False, "error": str(exc), "url": topic_url}
+
+    def clean_html(value: str) -> str:
+        value = re.sub(r"<(script|style)[^>]*>.*?</\1>", " ", value or "", flags=re.S | re.I)
+        value = re.sub(r"<[^>]+>", " ", value)
+        # Discourse's cooked HTML uses numeric and named entities. html.unescape
+        # keeps code/error identifiers readable without another dependency.
+        import html
+        return re.sub(r"\s+", " ", html.unescape(value)).strip()
+
+    posts = (data.get("post_stream") or {}).get("posts") or []
+    sections = []
+    for post in posts[:max_posts]:
+        username = post.get("username") or "user"
+        number = post.get("post_number") or "?"
+        text = clean_html(post.get("cooked") or "")
+        if text:
+            sections.append(f"Post {number} by {username}: {text}")
+    full_text = "\n\n".join(sections)[:max_chars]
+    if not full_text:
+        return {"success": False, "error": "The topic contained no readable posts.", "url": topic_url}
+    canonical_url = f"{FORUM_BASE_URL}/t/{data.get('slug') or 'topic'}/{topic_id}"
+    thread = {
+        "title": data.get("title") or f"CryoSPARC forum topic {topic_id}",
+        "url": canonical_url,
+        "full_text": full_text,
+        "excerpt": full_text[:1600],
+        "posts_read": len(sections),
+    }
+    return {
+        "success": True,
+        "forum_thread": thread,
+        "message": f"Read {len(sections)} forum post(s) from {canonical_url}",
+    }
+
+
 def search_cryosparc_forum_multi(
     queries: List[str],
     max_results_per_query: int = 3,

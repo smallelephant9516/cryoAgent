@@ -2499,8 +2499,9 @@ class MasterOrchestrator:
 
         Args:
             force_all_stages: When True, every stage entry is initialized
-                regardless of its ``enabled`` flag. Used by ``full_dynamic`` mode
-                so the single agent has the full cross-stage tool set available.
+                regardless of its ``enabled`` flag. Used by full-dynamic and
+                improvement modes so their cross-stage agent has the full tool
+                set available; this does not itself execute disabled stages.
 
         Returns:
             True if initialization successful, False otherwise
@@ -2534,15 +2535,15 @@ class MasterOrchestrator:
             else:
                 self.logger.info(f"Session configuration not found at {session_config_path}, using master config only")
             
-            # Initialize stage agents (only for enabled stages, unless
-            # force_all_stages is set, e.g. full_dynamic mode).
+            # Initialize stage agents (only enabled stages unless cross-stage
+            # tool providers were explicitly requested for every stage).
             for stage_info in self.master_config["master_workflow"]["stages"]:
                 stage_name = stage_info["name"]
                 agent_group = stage_info["agent_group"]
                 agent_class = stage_info["agent_class"]
                 enabled = stage_info.get("enabled", False)
                 
-                # Skip disabled stages (unless all stages are forced on)
+                # Skip disabled stages unless their tool providers were requested.
                 if not enabled and not force_all_stages:
                     self.logger.info(f"Skipping disabled stage: {stage_name}")
                     continue
@@ -3439,12 +3440,21 @@ class MasterOrchestrator:
         task = (
             "Improve the current best 3D reconstruction. Follow your instructions "
             "exactly: first establish the baseline (describe_job_results + "
-            "get_orientation_diagnostics on the current best refinement), then "
-            "diagnose the single biggest limiting factor, "
-            "act on ONE hypothesis at a time reusing prior good jobs, verify each "
-            "change against the baseline, and STOP per your stop conditions "
-            "(no meaningful gain, data-limited, or the job cap). Report the final "
-            "best result, what you changed, your diagnosis, and a recommendation."
+            "get_orientation_diagnostics + get_job_run_params on the current best "
+            "refinement), then diagnose and rank the limiting factors by expected "
+            "impact, act on ONE controlled, nonduplicate hypothesis at a time as a "
+            "PLAN (a job chain ending in a terminal refinement — intermediate jobs "
+            "are progress, not failures), reusing prior good jobs and running an "
+            "upstream branch when the diagnosis points upstream. Verify each plan "
+            "at its terminal refinement, validate marginal same-set wins before "
+            "ratcheting, and run the subset-scaling test before declaring "
+            "particle-number data-limits. Continue until the goal is achieved, you "
+            "judge no worthwhile testable hypothesis remains, the safety cap is "
+            "reached, or the user stops. An honestly documented pause with an open "
+            "branch_in_progress is a valid outcome. Before the final answer, submit "
+            "the complete report and fenced-json experiment record through "
+            "submit_final_report; correct and resubmit every critical audit finding. "
+            "The audit never requires new experiments."
         )
 
         # Add workflow history so agent can see what was already tried
@@ -3474,6 +3484,7 @@ class MasterOrchestrator:
         # agent reads the blackboard but does not write to it; without this its
         # result (e.g. a CTF-refined 2.98 Å map) lives only in the transcript.
         improved_best = None
+        audit_report = getattr(agent, "last_audit_report", None)
         try:
             from .workflow_state import (
                 refinement_job_uids_from_log,
@@ -3510,12 +3521,39 @@ class MasterOrchestrator:
                 baseline = context.get("baseline") or {}
                 preferred = (context.get("best_result") or {}).get("job")
                 source_log = Path(log_file).name
+                if audit_report is None and getattr(config.agent, "improvement_audit_enabled", True):
+                    from .experiment_auditor import audit_improvement_log
+                    audit_report = audit_improvement_log(
+                        log_file,
+                        cryosparc_tools=cryosparc_tools,
+                        project_uid=self.workflow_state.project_uid,
+                        critic_llm=agent.llm if getattr(
+                            config.agent, "improvement_audit_critic_enabled", True,
+                        ) else None,
+                        outputs_dir=self.outputs_dir,
+                        state_path=Path(self.outputs_dir) / "workflow_state.json",
+                    )
+                    print("⚠️  Agent bypassed the final-report tool; ran a post-hoc scientific audit.")
+                if audit_report is not None:
+                    critical_ids = [
+                        item.get("check_id") for item in audit_report.get("findings", [])
+                        if item.get("severity") == "critical"
+                    ]
+                    print(f"🔎 Scientific audit: {audit_report.get('status')}"
+                          + (f" — {', '.join(critical_ids)}" if critical_ids else ""))
 
             if candidates and not react_failed:
+                audit_note = ""
+                if audit_report is not None:
+                    audit_note = (
+                        f"; scientific audit {audit_report.get('status')} "
+                        f"({audit_report.get('critical_count', 0)} critical, "
+                        f"{audit_report.get('warning_count', 0)} warnings)"
+                    )
                 rec = self.workflow_state.record_improvement(
                     cryosparc_tools=cryosparc_tools,
                     candidate_job_uids=candidates,
-                    assessment="best refinement produced during --improve",
+                    assessment="best refinement produced during --improve" + audit_note,
                     strategies_tried=strategies,
                     baseline=baseline,
                     preferred_job_uid=preferred,
@@ -3537,6 +3575,11 @@ class MasterOrchestrator:
             "error": output if react_failed else None,
             "output": output,
             "improved_best": improved_best,
+            "scientific_audit": audit_report,
+            "scientific_audit_passed": (
+                audit_report.get("status") in ("pass", "pass_with_warnings")
+                if audit_report is not None else None
+            ),
             "blackboard": self.workflow_state.to_dict(),
         }
 

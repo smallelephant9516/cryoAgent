@@ -1,17 +1,17 @@
 """Consult the official CryoSPARC guide (https://guide.cryosparc.com/) as an advisor.
 
-Lightweight, no-RAG retrieval over two corpora:
-  * job-reference pages (what a job does + its params), and
-  * the tutorials & case-studies library (worked, problem-solving examples —
-    preferred orientation, pseudosymmetry, membrane proteins, 3D classification,
-    3DVA, CTF refinement, end-to-end GPCR/ferritin processing, etc.).
+Whole-guide retrieval plus CryoSPARC forum evidence:
+  * BM25 over the complete public guide catalog (cached from GitBook's llms.txt),
+    with curated topic/tutorial boosts for common processing problems;
+  * focused Discourse searches alongside strategic guide consultations;
+  * direct deep-reading of any public guide page or forum discussion.
 
-Used by the dynamic improvement agent to ground decisions in the official guide
-rather than guessing. Two access modes:
-  * AUTO  — pass a `question`; the tool scores it against both corpora, fetches
-    the best match(es), and lists other relevant tutorials to drill into.
-  * BROWSE — pass `slug` to fetch a specific tutorial/page, or `list_tutorials`
-    to see the whole library catalog (title + slug + when-to-use).
+Used by the dynamic improvement agent to ground decisions in official and
+community documentation rather than guessing. Three access modes:
+  * AUTO — pass a `question` (and optionally focused `queries`) to search the whole
+    guide and forum, returning separately labelled evidence.
+  * BROWSE — pass `list_tutorials` to see the curated worked-example catalog.
+  * DEEP READ — pass `slug`/guide path for a guide page, or `forum_url` for a thread.
 """
 
 from __future__ import annotations
@@ -19,7 +19,10 @@ from __future__ import annotations
 import re
 import urllib.parse
 import urllib.request
-from typing import Any, Dict, List, Optional
+from concurrent.futures import ThreadPoolExecutor
+from typing import Any, Callable, Dict, List, Optional
+
+from .cryosparc_guide_index import bm25_rank, load_guide_index, tokenize
 
 GUIDE_BASE = "https://guide.cryosparc.com"
 TUTORIALS_BASE = "/processing-data/tutorials-and-case-studies"
@@ -233,10 +236,10 @@ def _fetch(url: str, timeout: int = DEFAULT_TIMEOUT) -> Optional[str]:
 
 
 def _relevant_excerpt(text: str, question: str, window: int = 1200) -> str:
-    """Return the text window most relevant to the question's keywords."""
+    """Return the text window most relevant to meaningful query terms."""
     if not text:
         return ""
-    words = [w for w in re.findall(r"[a-zA-Z]{4,}", question.lower())]
+    words = tokenize(question)
     if not words:
         return text[:window]
     low = text.lower()
@@ -246,10 +249,16 @@ def _relevant_excerpt(text: str, question: str, window: int = 1200) -> str:
         pos = low.find(w)
         if pos == -1:
             continue
-        seg = low[max(0, pos - 100): pos + window]
+        start = max(0, pos - 100)
+        seg = low[start: pos + window]
         score = sum(seg.count(k) for k in words)
         if score > best_score:
-            best_score, best_pos = score, max(0, pos - 100)
+            best_score, best_pos = score, start
+    # Do not begin excerpts in the middle of a word.
+    if best_pos > 0 and best_pos < len(text) and text[best_pos - 1].isalnum():
+        space = text.find(" ", best_pos)
+        if 0 <= space < best_pos + 100:
+            best_pos = space + 1
     return text[best_pos: best_pos + window]
 
 
@@ -325,89 +334,140 @@ def fetch_guide_page(path_or_slug: str, question: str = "", full: bool = False) 
     return {"success": True, "pages": [page], "message": f"Fetched {url}"}
 
 
-def consult_cryosparc_guide(question: str = "", max_pages: int = 2, *,
+def consult_cryosparc_guide(question: str = "", max_pages: int = 4, *,
                             slug: Optional[str] = None,
+                            forum_url: Optional[str] = None,
                             list_tutorials: bool = False,
-                            full: bool = False) -> Dict[str, object]:
-    """
-    Advisor over the CryoSPARC guide. Three modes:
+                            full: bool = False,
+                            queries: Optional[List[str]] = None,
+                            include_forum: bool = True,
+                            max_forum_results: int = 4) -> Dict[str, object]:
+    """Retrieve guide and community evidence without deciding or executing jobs.
 
-    * list_tutorials=True  -> return the full tutorials/case-studies catalog.
-    * slug="..."           -> fetch that specific tutorial/page. With full=True
-                              also returns the WHOLE cleaned body under
-                              pages[0]['full_text'] (deep-read/condense path).
-    * question="..."       -> AUTO: fetch the best matching job-reference page
-                              and/or tutorial, and also list other relevant
-                              tutorials to drill into via slug.
-
-    Advisor only — does not decide anything. Returns {success, pages, message,
-    and (auto mode) related_tutorials}.
+    * ``list_tutorials=True``: return the curated worked-example catalog.
+    * ``slug=...``: deep-read any public guide path/URL.
+    * ``forum_url=...``: deep-read a public Discourse discussion.
+    * ``question=...``: BM25-search the complete guide catalog and, by default,
+      search the forum too. ``queries`` supplies short focused search strings;
+      the original question remains available for interpreting the evidence.
     """
     if list_tutorials:
         return list_cryosparc_tutorials()
     if slug:
         return fetch_guide_page(slug, question, full=full)
+    if forum_url:
+        from .cryosparc_forum_tools import fetch_cryosparc_forum_topic
+        return fetch_cryosparc_forum_topic(forum_url, max_chars=MAX_FULL_CHARS)
 
-    # Empty/whitespace question with no slug: there is nothing to match on.
-    # Return the browsable catalog so the agent can pick a slug, rather than a
-    # dead "no match" (the agent sometimes calls with question="" expecting the
-    # tool to infer intent).
-    if not (question or "").strip():
+    if not (question or "").strip() and not queries:
         res = list_cryosparc_tutorials()
         res["message"] = ("No question provided. Browse the catalog below and "
                           "re-call with slug=<slug>, or pass a specific question. "
                           + str(res.get("message", "")))
         return res
 
-    q = (question or "").lower()
-    pages: List[Dict[str, str]] = []
+    search_queries: List[str] = []
+    for query in (queries or [question]):
+        query = " ".join(str(query or "").split())
+        if query and query not in search_queries:
+            search_queries.append(query)
+    search_queries = search_queries[:4]
+    if not search_queries:
+        search_queries = [question]
+
+    entries = load_guide_index(_fetch)
+    if not entries:
+        # Offline/minimal fallback: direct curated retrieval still works.
+        entries = [
+            {"title": path.rsplit("/", 1)[-1].replace("-", " "),
+             "url": GUIDE_BASE + path, "description": kw}
+            for kw, path in _TOPIC_PAGES.items()
+        ] + [
+            {"title": e["title"], "url": f"{GUIDE_BASE}{TUTORIALS_BASE}/{e['slug']}",
+             "description": e["when"] + " " + " ".join(e["tags"])}
+            for e in _TUTORIALS
+        ]
+
+    candidates: Dict[str, Dict[str, Any]] = {}
+
+    def add_candidate(entry: Dict[str, str], score: float, query: str) -> None:
+        url = entry["url"]
+        item = candidates.setdefault(url, {"entry": entry, "score": 0.0, "queries": []})
+        item["score"] += score
+        if query not in item["queries"]:
+            item["queries"].append(query)
+
     skip_ctf_topic = bool(_CTF_EXHAUSTED.search(question or ""))
+    for query in search_queries:
+        for rank, hit in enumerate(bm25_rank(entries, query, limit=8)):
+            add_candidate(hit, hit["score"] / (1.0 + 0.15 * rank), query)
 
-    # 1) Best job-reference page(s) by keyword.
-    matched_paths: List[str] = []
-    for kw, path in _TOPIC_PAGES.items():
-        if skip_ctf_topic and kw == "ctf":
-            continue
-        if kw in q and path not in matched_paths:
-            matched_paths.append(path)
+        # Retain curated knowledge as a boost, not a coverage restriction.
+        q = query.lower()
+        for kw, path in _TOPIC_PAGES.items():
+            if kw in q and not (skip_ctf_topic and kw == "ctf"):
+                url = GUIDE_BASE + path
+                entry = next((e for e in entries if e["url"] == url), None)
+                if entry:
+                    add_candidate(entry, 4.0, query)
+        for rank, tutorial in enumerate(_rank_tutorials(query, limit=3)):
+            url = f"{GUIDE_BASE}{TUTORIALS_BASE}/{tutorial['slug']}"
+            entry = next((e for e in entries if e["url"] == url), None)
+            if entry and not (skip_ctf_topic and _CTF_TAGS.intersection(tutorial["tags"])):
+                add_candidate(entry, 2.0 / (rank + 1), query)
 
-    # 2) Best matching tutorials/case-studies.
-    ranked = _rank_tutorials(question)
-    tutorial_paths = [f"{TUTORIALS_BASE}/{e['slug']}" for e in ranked]
+    ranked_candidates = sorted(candidates.values(), key=lambda item: item["score"], reverse=True)
+    selected = ranked_candidates[:max_pages]
+    pages: List[Dict[str, str]] = []
+    related: List[Dict[str, str]] = []
+    for query in search_queries:
+        for entry in _rank_tutorials(query):
+            item = {"slug": entry["slug"], "title": entry["title"], "when": entry["when"]}
+            if item not in related:
+                related.append(item)
 
-    # Interleave: take the top tutorial first (worked examples are high-signal for
-    # problem solving), then a job-reference page, up to max_pages.
-    fetch_order: List[str] = []
-    if tutorial_paths:
-        fetch_order.append(tutorial_paths[0])
-    fetch_order.extend(matched_paths)
-    fetch_order.extend(tutorial_paths[1:])
-    # de-dup preserving order
-    seen = set()
-    fetch_order = [p for p in fetch_order if not (p in seen or seen.add(p))]
-
-    if not fetch_order:
-        return {
-            "success": False, "pages": [], "related_tutorials": [],
-            "message": (
-                "No curated page or tutorial matched. Pass list_tutorials=true to "
-                "browse the case-study library, or rephrase with a topic like "
-                "orientation/cFAR, heterogeneity, membrane protein, CTF refinement, "
-                "symmetry, 3D classification, 3DVA."
-            ),
+    forum_payload: Dict[str, Any] = {"success": False, "results": []}
+    workers = max(2, min(8, len(selected) + 1))
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        page_futures = {
+            pool.submit(_fetch, item["entry"]["url"]): item for item in selected
         }
-
-    for path in fetch_order[:max_pages]:
-        html = _fetch(GUIDE_BASE + path)
-        if html:
-            excerpt = _relevant_excerpt(_strip_html(html), question)
+        forum_future = None
+        if include_forum:
+            from .cryosparc_forum_tools import search_cryosparc_forum_multi
+            forum_future = pool.submit(
+                search_cryosparc_forum_multi, search_queries,
+                max_results_per_query=3, max_total_results=max_forum_results,
+            )
+        for future, item in page_futures.items():
+            html = future.result()
+            if not html:
+                continue
+            excerpt_question = " ".join(item["queries"])
+            excerpt = _relevant_excerpt(_strip_html(html), excerpt_question)
             if excerpt:
-                pages.append({"url": GUIDE_BASE + path, "excerpt": excerpt})
+                pages.append({"url": item["entry"]["url"], "excerpt": excerpt})
+        if forum_future is not None:
+            forum_payload = forum_future.result()
 
-    related = [{"slug": e["slug"], "title": e["title"], "when": e["when"]} for e in ranked]
-    if not pages:
-        return {"success": False, "pages": [], "related_tutorials": related,
-                "message": f"Matched pages but could not fetch them (network?): {fetch_order[:max_pages]}"}
-    return {"success": True, "pages": pages, "related_tutorials": related,
-            "message": f"Fetched {len(pages)} page(s); {len(related)} related tutorial(s) listed."}
+    # Restore relevance order after concurrent fetching.
+    order = {item["entry"]["url"]: i for i, item in enumerate(selected)}
+    pages.sort(key=lambda page: order.get(page["url"], len(order)))
+    forum_results = forum_payload.get("results", [])
+    if not pages and not forum_results:
+        return {
+            "success": False, "pages": [], "related_tutorials": related,
+            "forum_results": [], "queries": search_queries,
+            "message": "No guide or forum evidence could be fetched (network or no match).",
+        }
+    return {
+        "success": True,
+        "pages": pages,
+        "related_tutorials": related,
+        "forum_results": forum_results,
+        "queries": search_queries,
+        "guide_index_size": len(entries),
+        "message": (f"Searched {len(entries)} guide pages; fetched {len(pages)}. "
+                    f"Forum: {len(forum_results)} discussion(s)."),
+    }
 

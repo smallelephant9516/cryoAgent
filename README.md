@@ -54,7 +54,7 @@ Machine-wide settings: software connections, LLM provider, and shared tool paths
 
 | Section          | Key fields                                                                | Purpose                                                                |
 | ---------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
-| `cryosparc`      | `host`, `base_port`, `username`, `password`, `license_id`                 | CryoSPARC server connection. Use `${LICENSE_ID}` for the license.      |
+| `cryosparc`      | `host`, `base_port`, `username`, `password`, `license_id`, `topaz_exec_path` | CryoSPARC server connection. Use `${LICENSE_ID}` for the license; set Topaz to a worker-accessible `bin/topaz` executable. |
 | `agent`          | `provider`, `models.<provider>.model_name`, `models.<provider>.api_key`   | Active LLM provider and model. API keys as `${DEEPSEEK_API_KEY}`, etc. |
 | `cryosift`       | `cryosift_env`, `cryosift_weights_path`, `cryosift_evaluator_script_path` | CryoSift conda env and file paths for 2D class evaluation.             |
 | `job_management` | `default_timeout`, `max_retries`                                          | Job wait and retry defaults.                                           |
@@ -71,7 +71,8 @@ Machine-wide settings: software connections, LLM provider, and shared tool paths
   "base_port": 39000,
   "username": "your_email@example.com",
   "password": "your_password",
-  "license_id": "${LICENSE_ID}"
+  "license_id": "${LICENSE_ID}",
+  "topaz_exec_path": "/path/to/topaz-env/bin/topaz"
 },
 "agent": {
   "provider": "deepseek",

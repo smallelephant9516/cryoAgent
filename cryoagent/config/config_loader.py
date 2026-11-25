@@ -156,6 +156,7 @@ class CryoSPARCSettings(BaseModel):
     password: Optional[str] = Field(default="your-password", description="CryoSPARC password")
     license_id: Optional[str] = Field(default="your-cryosparc-license-id-here", description="CryoSPARC license ID")
     lane: Optional[str] = Field(default="default", description="Default CryoSPARC lane name")
+    topaz_exec_path: Optional[str] = Field(default=None, description="Topaz executable path accessible to CryoSPARC workers")
     
     @classmethod
     def from_env(cls) -> "CryoSPARCSettings":
@@ -166,6 +167,7 @@ class CryoSPARCSettings(BaseModel):
             username=os.getenv("CRYOSPARC_USERNAME"),
             password=os.getenv("CRYOSPARC_PASSWORD"),
             license_id=os.getenv("CRYOSPARC_LICENSE_ID"),
+            topaz_exec_path=os.getenv("CRYOSPARC_TOPAZ_EXEC_PATH"),
         )
 
 class BackendExecutionSettings(BaseModel):
@@ -226,7 +228,10 @@ class AgentSettings(BaseModel):
     model_name: str = Field(default="deepseek-chat", description="LLM model name (legacy)")
     temperature: float = Field(default=0.1, description="LLM temperature (legacy)")
     max_iterations: int = Field(default=10, description="Maximum agent iterations")
-    improvement_max_iterations: Optional[int] = Field(default=None, description="ReAct iteration cap for the opt-in improvement agent; falls back to max(30, max_iterations) when unset")
+    improvement_max_iterations: Optional[int] = Field(default=None, description="Runaway safety cap on ReAct iterations for the opt-in improvement agent, not an experiment budget; falls back to max(1000, max_iterations) when unset")
+    improvement_audit_enabled: bool = Field(default=True, description="Require a deterministic and adversarial scientific audit before improvement-mode completion")
+    improvement_audit_critic_enabled: bool = Field(default=True, description="Run the separate semantic critic during improvement report audits")
+    improvement_audit_max_attempts: int = Field(default=3, description="Maximum final-report audit submissions before unresolved findings are returned")
     verbose: bool = Field(default=True, description="Enable verbose logging")
     timeout: int = Field(default=60, description="Request timeout in seconds")
     api_key: str = Field(default="", description="API key (legacy)")

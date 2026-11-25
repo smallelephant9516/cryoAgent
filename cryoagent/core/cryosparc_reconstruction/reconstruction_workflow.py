@@ -181,16 +181,15 @@ class ReconstructionWorkflow:
         if recon_method == "homogeneous":
             method_name = "Homogeneous Reconstruction"
             tool_name = "homogeneous_reconstruction"
-            initial_res = p["homo_initial_resolution"]
-            final_res = p["homo_final_resolution"]
             symmetry = p["homo_symmetry"]
-            method_description = "This uses an optimized algorithm for single structure reconstruction"
+            method_description = (
+                "This reconstructs a map from particles that already have 3D alignments; "
+                "it does not estimate poses ab initio"
+            )
             num_classes_note = ""
             params_str = (
                 f"     * particles_job_uid={particles_job_uid}\n"
-                f"     * initial_resolution={initial_res}\n"
-                f"     * final_resolution={final_res}\n"
-                f"     * symmetry={symmetry}"
+                f"     * params={{'refine_symmetry': '{symmetry}'}}"
             )
         else:
             method_name = "Ab Initio Reconstruction"

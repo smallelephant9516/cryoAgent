@@ -545,6 +545,43 @@ class BaseReActAgent(ABC):
             self._record_tool_execution("describe_job_params", context, error=str(e))
             return f"❌ Error describing job params: {str(e)}"
 
+    def _describe_job_inputs_tool(self, input_str: str) -> str:
+        """Expose an installed job type's real input-slot schema."""
+        params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            job_type = params.get("job_type") or params.get("input")
+            if not job_type:
+                return json.dumps({"success": False, "error": "job_type is required"})
+            result = self.cryosparc_tools.describe_job_inputs(
+                job_type,
+                project_uid=params.get("project_uid", self.config.workflow.project_uid),
+                workspace_uid=params.get("workspace_uid", self.config.workflow.workspace_uid),
+            )
+            self._record_tool_execution("describe_job_inputs", params, result=result)
+            return json.dumps(result, default=str)
+        except Exception as e:
+            self._record_tool_execution("describe_job_inputs", params, error=str(e))
+            return json.dumps({"success": False, "error": str(e)})
+
+    def _describe_job_outputs_tool(self, input_str: str) -> str:
+        """List the actual output groups available from an existing job."""
+        params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            job_uid = params.get("job_uid") or params.get("input")
+            if not job_uid:
+                return json.dumps({"success": False, "error": "job_uid is required"})
+            result = self.cryosparc_tools.describe_job_outputs(
+                job_uid,
+                project_uid=params.get("project_uid", self.config.workflow.project_uid),
+            )
+            self._record_tool_execution("describe_job_outputs", params, result=result)
+            return json.dumps(result, default=str)
+        except Exception as e:
+            self._record_tool_execution("describe_job_outputs", params, error=str(e))
+            return json.dumps({"success": False, "error": str(e)})
+
     def _describe_job_results_tool(self, input_str: str) -> str:
         """Common tool wrapper: summarize a completed job's real result metrics."""
         params: Dict[str, Any] = {}
@@ -570,6 +607,11 @@ class BaseReActAgent(ABC):
                 lines.append(f"  - particles: {res['num_particles']}")
             if res.get("cfar") is not None:
                 lines.append(f"  - cFAR: {res['cfar']:.3f} ({res.get('cfar_label')}) (higher is better)")
+                if res.get("scf_star") is not None:
+                    lines.append(
+                        f"  - SCF*: {res['scf_star']:.3f} "
+                        "(<0.81 generally indicates orientation sampling bias; alignments only)"
+                    )
             elif res.get("cfar_note"):
                 lines.append(f"  - cFAR: not computed — {res['cfar_note']}")
             if res.get("classes"):
@@ -626,10 +668,20 @@ class BaseReActAgent(ABC):
                 return f"❌ {res.get('error', 'Unknown error')}"
             computed = " (newly computed)" if res.get("computed") else " (from existing job)"
             target = f" {res.get('volume_group_name')}" if res.get("volume_group_name") else ""
-            return (
+            lines = [
                 f"🧭 cFAR for {refinement_job_uid}{target}: {res.get('cfar'):.3f} "
                 f"({res.get('cfar_label')}){computed} [diagnostics job {res.get('job_uid')}]"
+            ]
+            if res.get("scf_star") is not None:
+                lines.append(
+                    f"  - SCF*: {res.get('scf_star'):.3f} "
+                    "(<0.81 generally indicates orientation sampling bias; alignments only)"
+                )
+            lines.append(
+                "  - Interpret cFAR (alignments + image signal) together with SCF* "
+                "(sampling only); neither metric alone establishes the cause."
             )
+            return "\n".join(lines)
         except Exception as e:
             context = params or {"raw_input": input_str}
             self._record_tool_execution("get_orientation_diagnostics", context, error=str(e))
@@ -670,8 +722,9 @@ class BaseReActAgent(ABC):
         if llm is None or not full_text:
             return None
         system = (
-            "You are condensing an official CryoSPARC tutorial/case-study for a "
-            "cryo-EM processing agent that is trying to improve a 3D reconstruction. "
+            "You are condensing an official CryoSPARC guide page or community "
+            "forum discussion for a cryo-EM processing agent that is trying to "
+            "improve a 3D reconstruction. "
             "Read the FULL tutorial text and produce a TIGHT, actionable digest "
             "(~150-250 words, bullet style) focused on the agent's current problem. "
             "Cover: (1) which CryoSPARC job(s)/tool(s) the tutorial uses for this "
@@ -695,32 +748,93 @@ class BaseReActAgent(ABC):
             print(f"⚠️ Tutorial condensation failed for {url}: {e}")
             return None
 
-    def _consult_cryosparc_guide_tool(self, input_str: str) -> str:
+    def _focused_retrieval_queries(self, question: str) -> List[str]:
+        """Turn a long causal reading into 2–4 short guide/forum searches.
+
+        Retrieval should target unresolved information needs, not every approach
+        mentioned in the history. Failure falls back to the original question.
         """
-        Advisor tool: consult the official CryoSPARC guide AND tutorial/case-study
-        library for a processing problem.
+        question = " ".join((question or "").split())
+        if not question:
+            return []
+        llm = getattr(self, "llm", None)
+        if llm is None or len(question) < 240:
+            return [question]
+        system = (
+            "Convert the cryo-EM processing problem into 2 to 4 short documentation "
+            "search queries. Each query must target one UNRESOLVED hypothesis or "
+            "information need. Do not search for approaches explicitly rejected by "
+            "the experiments. Include concrete CryoSPARC job names, parameters, or "
+            "error terms when relevant. Return ONLY a JSON array of strings; each "
+            "string must be a search query, not an answer."
+        )
+        try:
+            resp = llm.invoke([
+                SystemMessage(content=system),
+                HumanMessage(content=f"PROCESSING PROBLEM:\n{question}"),
+            ])
+            content = getattr(resp, "content", None) or (resp if isinstance(resp, str) else "")
+            content = str(content).strip()
+            start, end = content.find("["), content.rfind("]")
+            if start < 0 or end <= start:
+                return [question]
+            values = json.loads(content[start:end + 1])
+            queries = []
+            for value in values if isinstance(values, list) else []:
+                query = " ".join(str(value).split())
+                if query and query not in queries:
+                    queries.append(query)
+            return queries[:4] or [question]
+        except Exception:
+            return [question]
+
+    def _consult_cryosparc_guide_tool(self, input_str: str) -> str:
+        """Search the whole CryoSPARC guide and forum, or deep-read one source.
 
         Input (plain question, or JSON):
-          - question: the processing problem (auto-matches job pages + tutorials).
-          - slug: DEEP READ a specific tutorial/case-study — fetches the WHOLE page
-            and returns a condensed, actionable digest (tools + params + steps),
-            grounded in the current question + what the agent has tried.
-          - list_tutorials: true -> browse the whole tutorial/case-study catalog.
-        Advisory only.
+          - question: focused whole-guide + Discourse retrieval.
+          - slug: deep-read any public guide path/URL and condense it.
+          - forum_url: deep-read a public Discourse thread and condense it.
+          - list_tutorials: browse the curated tutorial/case-study catalog.
+        Advisory only; later action tools perform any execution.
         """
         try:
             from cryoagent.tools.cryosparc_guide_tools import consult_cryosparc_guide
             question = input_str if isinstance(input_str, str) else ""
             slug = None
+            forum_url = None
             want_list = False
             params = self._parse_tool_input(input_str)
             if isinstance(params, dict):
                 question = params.get("question", question if not params else "") or ""
                 slug = params.get("slug")
+                forum_url = params.get("forum_url")
                 want_list = self._parse_bool_param(params.get("list_tutorials"), False) or \
                     self._parse_bool_param(params.get("list"), False)
 
-            # DEEP-READ path: fetch the whole tutorial, condense to a digest, and
+            # Deep-read a public forum discussion through the same condensation
+            # path as a guide page. Only the digest enters the main context.
+            if forum_url:
+                res = consult_cryosparc_guide(question, forum_url=forum_url)
+                if not res.get("success"):
+                    self._record_tool_execution(
+                        "consult_cryosparc_guide", {"forum_url": forum_url}, result=res)
+                    return f"ℹ️ {res.get('error') or res.get('message')}"
+                thread = res.get("forum_thread") or {}
+                url = thread.get("url", forum_url)
+                full_text = thread.get("full_text") or thread.get("excerpt") or ""
+                digest = self._condense_tutorial(full_text, url, question) if len(full_text) > 1500 else None
+                self._record_tool_execution(
+                    "consult_cryosparc_guide",
+                    {"forum_url": forum_url, "condensed": digest is not None,
+                     "chars_in": len(full_text)},
+                    result={"success": True, "url": url})
+                if digest:
+                    return (f"💬 CryoSPARC forum digest — {url}\n"
+                            f"(condensed for: {question or 'current processing problem'})\n\n{digest}")
+                return f"💬 CryoSPARC forum — {url}\n{thread.get('excerpt', full_text[:1200])}"
+
+            # DEEP-READ path: fetch the whole guide page, condense to a digest, and
             # return ONLY the digest (the full page never enters the main context).
             if slug:
                 res = consult_cryosparc_guide(question, slug=slug, full=True)
@@ -732,7 +846,6 @@ class BaseReActAgent(ABC):
                 url = page.get("url", "")
                 full_text = page.get("full_text") or page.get("excerpt") or ""
                 digest = None
-                # Only condense when the page is long enough to be worth it.
                 if len(full_text) > 1500:
                     digest = self._condense_tutorial(full_text, url, question)
                 self._record_tool_execution(
@@ -742,16 +855,18 @@ class BaseReActAgent(ABC):
                 if digest:
                     return (f"📖 CryoSPARC tutorial digest — {url}\n"
                             f"(condensed from the full page for: {question or 'general improvement'})\n\n{digest}")
-                # Fallback: no/failed condensation -> return the excerpt directly.
                 return f"📖 CryoSPARC guide — {url}\n{page.get('excerpt', full_text[:1200])}"
 
-            res = consult_cryosparc_guide(question, list_tutorials=want_list)
+            queries = [] if want_list else self._focused_retrieval_queries(question)
+            res = consult_cryosparc_guide(
+                question, list_tutorials=want_list,
+                queries=queries or None, include_forum=True,
+            )
             self._record_tool_execution(
                 "consult_cryosparc_guide",
-                {"question": question, "list_tutorials": want_list},
+                {"question": question, "queries": queries, "list_tutorials": want_list},
                 result=res)
 
-            # Browse-catalog response.
             if res.get("tutorials"):
                 lines = [f"📚 CryoSPARC tutorial library ({res.get('message')}):"]
                 for t in res["tutorials"]:
@@ -761,9 +876,17 @@ class BaseReActAgent(ABC):
             if not res.get("success"):
                 return f"ℹ️ {res.get('message')}"
 
-            lines = [f"📖 CryoSPARC guide ({res.get('message')}):"]
+            lines = [f"📖 Whole-guide search ({res.get('message')}):"]
             for p in res.get("pages", []):
                 lines.append(f"\n— {p['url']}\n{p['excerpt']}")
+            forum_results = res.get("forum_results") or []
+            if forum_results:
+                lines.append("\n💬 CryoSPARC forum results (separate community evidence):")
+                for result in forum_results:
+                    lines.append(f"\n— {result.get('title', 'Discussion')}\n{result.get('url', '')}")
+                    if result.get("blurb"):
+                        lines.append(result["blurb"])
+                lines.append("Deep-read a thread with forum_url=<URL>.")
             related = res.get("related_tutorials") or []
             if related:
                 lines.append("\nRelated tutorials/case-studies (deep-read with slug=<slug>):")
@@ -783,7 +906,8 @@ class BaseReActAgent(ABC):
     # ------------------------------------------------------------------
     def _invoke_job_tool(self, wrapper_name: str, input_str: str, *,
                          required: Sequence[str],
-                         optional: Optional[Sequence[str]] = None) -> str:
+                         optional: Optional[Sequence[str]] = None,
+                         boolean_args: Sequence[str] = ()) -> str:
         """Generic adapter: parse input, validate, call the named CryoSPARCTools
         wrapper with required+optional args, forward raw `params`, record, return.
 
@@ -804,6 +928,9 @@ class BaseReActAgent(ABC):
         for k in (optional or []):
             if params.get(k) is not None:
                 call[k] = params.get(k)
+        for k in boolean_args:
+            if params.get(k) is not None:
+                call[k] = self._parse_bool_param(params.get(k), False)
         consumed = (["project_uid", "workspace_uid", "wait_for_completion",
                      "timeout", "check_interval"] + list(required) + list(optional or []))
         passthrough = self._extract_passthrough_params(params, consumed_keys=consumed)
@@ -821,6 +948,72 @@ class BaseReActAgent(ABC):
             return json.dumps({"success": False, "error": str(e)})
         self._record_tool_execution(wrapper_name, call, result=result)
         return json.dumps(result)
+
+    def _invoke_provider_tool(self, wrapper_name: str, input_str: str, *,
+                              required: Sequence[str],
+                              optional: Optional[Sequence[str]] = None) -> str:
+        """Adapt providers whose extra arguments are kwargs, not a params dict."""
+        params = self._parse_tool_input(input_str)
+        missing = [k for k in required if not params.get(k)]
+        if missing:
+            return json.dumps({"success": False,
+                               "error": f"Missing required parameters: {', '.join(missing)}"})
+        call: Dict[str, Any] = {
+            "project_uid": params.get("project_uid", self.config.workflow.project_uid),
+            "workspace_uid": params.get("workspace_uid", self.config.workflow.workspace_uid),
+        }
+        for k in required:
+            call[k] = params.get(k)
+        for k in (optional or []):
+            if params.get(k) is not None:
+                call[k] = params.get(k)
+        consumed = (["project_uid", "workspace_uid", "wait_for_completion",
+                     "timeout", "check_interval"] + list(required) + list(optional or []))
+        call.update(self._extract_passthrough_params(params, consumed_keys=consumed))
+        call["wait_for_completion"] = self._parse_bool_param(params.get("wait_for_completion"), False)
+        if params.get("timeout") is not None:
+            call["timeout"] = int(params.get("timeout"))
+        if params.get("check_interval") is not None:
+            call["check_interval"] = int(params.get("check_interval"))
+        try:
+            result = getattr(self.cryosparc_tools, wrapper_name)(**call)
+        except Exception as e:
+            self._record_tool_execution(wrapper_name, call, error=str(e))
+            return json.dumps({"success": False, "error": str(e)})
+        self._record_tool_execution(wrapper_name, call, result=result)
+        return json.dumps(result, default=str)
+
+    def _import_particles_from_star_tool(self, input_str: str) -> str:
+        return self._invoke_provider_tool(
+            "import_particles_from_star", input_str,
+            required=["star_path"], optional=["data_sign"],
+        )
+
+    def _import_volumes_tool(self, input_str: str) -> str:
+        return self._invoke_provider_tool(
+            "import_volumes", input_str,
+            required=["half_map_a_path", "half_map_b_path"], optional=["pixel_size"],
+        )
+
+    def _compute_fsc_validation_tool(self, input_str: str) -> str:
+        return self._invoke_provider_tool(
+            "compute_fsc_validation", input_str,
+            required=["volume_a_job_uid", "volume_b_job_uid"],
+        )
+
+    def _homogeneous_reconstruction_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool(
+            "homogeneous_reconstruction", input_str,
+            required=["particles_job_uid"], optional=["mask_job_uid"],
+        )
+
+    def _run_cryosparc_job_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool(
+            "run_cryosparc_job", input_str,
+            required=["job_type"],
+            optional=["inputs", "dry_run", "lane", "hostname"],
+            boolean_args=["dry_run"],
+        )
 
     def _ctf_refine_global_tool(self, input_str: str) -> str:
         return self._invoke_job_tool("ctf_refine_global", input_str,
@@ -870,6 +1063,37 @@ class BaseReActAgent(ABC):
     def _downsample_particles_tool(self, input_str: str) -> str:
         return self._invoke_job_tool("downsample_particles", input_str,
             required=["particles_job_uid"], optional=["box_size_pix", "bin_size_pix"])
+
+    def _rebalance_orientations_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool(
+            "rebalance_orientations", input_str,
+            required=["particles_job_uid"],
+            optional=[
+                "particles_group_name", "num_orientation_bins",
+                "rebalance_percentile", "exclusion_criterion", "dry_run",
+            ],
+            boolean_args=["dry_run"],
+        )
+
+    def _split_particles_tool(self, input_str: str) -> str:
+        return self._invoke_job_tool("split_particles", input_str,
+            required=["particles_job_uid"], optional=["num_splits", "random_split"])
+
+    def _get_job_run_params_tool(self, input_str: str) -> str:
+        """Introspection: the exact params_spec + input connections of an EXISTING job."""
+        params: Dict[str, Any] = {}
+        try:
+            params = self._parse_tool_input(input_str)
+            job_uid = params.get("job_uid") or params.get("input")
+            if not job_uid:
+                return "❌ Error: job_uid parameter is required."
+            project_uid = params.get("project_uid", getattr(self.config.workflow, "project_uid", None))
+            res = self.cryosparc_tools.get_job_run_params(job_uid, project_uid=project_uid)
+            self._record_tool_execution("get_job_run_params", {"job_uid": job_uid}, result=res)
+            return json.dumps(res, default=str)
+        except Exception as e:
+            self._record_tool_execution("get_job_run_params", params or {"raw_input": input_str}, error=str(e))
+            return json.dumps({"success": False, "error": str(e)})
 
     def _topaz_train_tool(self, input_str: str) -> str:
         return self._invoke_job_tool("topaz_train", input_str,

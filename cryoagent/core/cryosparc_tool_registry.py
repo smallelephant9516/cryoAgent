@@ -8,18 +8,21 @@ intentionally stage-specific (e.g. ``class_2d`` in picking vs 2D-optimization),
 so consolidating into this one module preserves existing behaviour exactly.
 
 ``build_tools(agent, AGENT_TOOL_SETS[stage])`` returns the LangChain ``Tool``
-objects for a stage, bound to the agent's wrapper methods. A tool is only
-realized when the agent implements the bound method, so an agent can be handed
-any spec list and silently skip unsupported tools.
+objects for a stage, bound to the agent's wrapper methods. Missing bindings are
+logged explicitly so a stage or cross-stage agent cannot silently lose a tool.
 """
 
 from __future__ import annotations
 
+import logging
 from typing import Callable, Dict, List, Optional
 
 from langchain.tools import Tool
 
 from ..tools.flexible_tool import make_flexible_tool
+
+
+logger = logging.getLogger(__name__)
 
 
 class ToolSpec:
@@ -85,19 +88,46 @@ _spec("describe_job_params", "describe_job_params", "_describe_job_params_tool",
       "CryoSPARC id like 'patch_motion_correction_multi'). Optional: include_hidden. "
       "Call this before submitting a job when you need a parameter that is not one "
       "of the tool's friendly named arguments.")
+_spec("describe_job_inputs", "describe_job_inputs", "_describe_job_inputs_tool",
+      "Read the installed job type's REAL input-slot schema: connection names, "
+      "data types, required counts, and whether multiple source stacks are accepted. "
+      "Required: job_type. Use with describe_job_params before run_cryosparc_job.")
+_spec("describe_job_outputs", "describe_job_outputs", "_describe_job_outputs_tool",
+      "List the REAL output result groups of an existing job, including each group's "
+      "name and data type. Required: job_uid. Use these exact names as output_group "
+      "connections for run_cryosparc_job; never guess particles/volume slot names.")
+_spec("run_cryosparc_job", "run_cryosparc_job", "_run_cryosparc_job_tool",
+      "ADVANCED generic runner for any regular installed CryoSPARC job type without "
+      "a curated wrapper. Prefer curated tools when available. Required: job_type. "
+      "Optional: inputs (list of {input_slot, job_uid, output_group}), params (raw "
+      "parameter dict), lane, hostname, dry_run, wait_for_completion, timeout, "
+      "check_interval. First call describe_job_inputs + describe_job_params for the "
+      "job type and describe_job_outputs for every source job, then dry_run=true. "
+      "The runner strictly validates types, parameters and output groups; it never "
+      "guesses input connections. Irregular multi-job import/validation operations "
+      "are rejected with the appropriate curated tool named; destructive live-session "
+      "administration is not available.", job_tool=True)
 _spec("describe_job_results", "describe_job_results", "_describe_job_results_tool",
       "Read the real result metrics of a COMPLETED job: resolution (Å, lower is "
       "better), box size, symmetry, particle count, and — for heterogeneous "
       "refinement — per-class resolution and particle distribution. For 3D "
-      "refinements it also reports cFAR (higher is better) if orientation "
-      "diagnostics were already run. Required: job_uid. Use this to evaluate a "
-      "result and decide the next step.")
+      "refinements it also reports cFAR and SCF* if orientation diagnostics were "
+      "already run. Required: job_uid. Use this to evaluate a result and decide the next step.")
 _spec("get_orientation_diagnostics", "get_orientation_diagnostics", "_get_orientation_diagnostics_tool",
-      "Get the cFAR (conical FSC area ratio; higher is better — >0.5 good, "
-      "0.15-0.5 acceptable, <0.1 likely no structure / severe preferred "
-      "orientation) for a 3D refinement. Reads an existing orientation_diagnostics "
-      "job if present, otherwise runs one (run_if_missing defaults true). "
-      "Required: refinement_job_uid.")
+      "Get directional orientation metrics for a 3D refinement: cFAR (min/max "
+      "weighted conical-FSC area; alignments + image signal; below 0.5 generally "
+      "indicates anisotropy/preferred orientation) and SCF* when available "
+      "(angular sampling from alignments only; below 0.81 generally indicates "
+      "orientation bias). Interpret them together; neither alone proves the cause. "
+      "Reads an existing orientation_diagnostics job if present, otherwise runs one "
+      "(run_if_missing defaults true). Required: refinement_job_uid.")
+_spec("get_job_run_params", "get_job_run_params", "_get_job_run_params_tool",
+      "Read the EXACT run-time params_spec + input connections of an EXISTING job "
+      "(not type defaults). USE BEFORE planning to repeat/vary an experiment: same "
+      "job type + same params_spec = the same experiment, forbidden to rerun. Also "
+      "USE ON THE BASELINE before choosing a lever — e.g. if the baseline already "
+      "has refine_ctf_global_refine=true / refine_defocus_refine=true, standalone "
+      "CTF refinement is likely no-gain. Required: job_uid.")
 
 # Per-stage "reason about workflow" tools (intentionally distinct text).
 _spec("reason_preprocessing", "reason_about_workflow", "_reason_about_workflow_tool",
@@ -135,6 +165,11 @@ _spec("import_micrographs", "import_micrographs", "_import_micrographs_tool",
       "automatically loaded from microscope_config.json. Note: When using "
       "import_micrographs, motion correction is NOT needed - proceed directly to CTF "
       "estimation.", job_tool=True)
+_spec("import_particles_from_star", "import_particles_from_star", "_import_particles_from_star_tool",
+      "Import a RELION particle STAR file into CryoSPARC. Required: star_path. "
+      "Optional: data_sign, project_uid, workspace_uid, wait_for_completion, timeout, "
+      "check_interval. Available to cross-stage improvement/full-dynamic agents.",
+      job_tool=True)
 _spec("motion_correction", "motion_correction", "_motion_correction_tool",
       "Perform motion correction on imported movies. Required parameters: "
       "movies_job_uid or movies_job_uids (comma-separated when multiple import jobs "
@@ -236,13 +271,23 @@ _spec("ab_initio_reconstruction", "ab_initio_reconstruction", "_ab_initio_tool",
       "(default: 50), symmetry (default: C1), project_uid, workspace_uid, "
       "wait_for_completion, timeout, check_interval.", job_tool=True)
 _spec("homogeneous_reconstruction", "homogeneous_reconstruction", "_homogeneous_reconstruction_tool",
-      "Generate a 3D model from 2D particles using homogeneous reconstruction. This is "
-      "an alternative to ab initio that's often faster and more robust for homogeneous "
-      "datasets. Required parameters: particles_job_uid (from 2D class selection or "
-      "extraction). Optional parameters: initial_resolution (starting resolution in Å, "
-      "default: 20.0), final_resolution (target resolution in Å, default: 8.0), "
-      "symmetry (default: C1), project_uid, workspace_uid, wait_for_completion, "
-      "timeout, check_interval.", job_tool=True)
+      "Homogeneous Reconstruction Only (homo_reconstruct): reconstruct a single map "
+      "from particles that ALREADY HAVE 3D ALIGNMENTS. This is not ab-initio and does "
+      "not estimate initial poses. Required: particles_job_uid. Optional: mask_job_uid; "
+      "raw params such as refine_symmetry, refine_N_cmp and refine_gs_resplit; "
+      "project_uid, workspace_uid, wait_for_completion, timeout, check_interval.",
+      job_tool=True)
+_spec("import_volumes", "import_volumes", "_import_volumes_tool",
+      "Import two external half maps for validation. Required: half_map_a_path and "
+      "half_map_b_path. Optional: pixel_size, project_uid, workspace_uid, lane, "
+      "hostname, wait_for_completion, timeout, check_interval. This curated tool "
+      "creates the two correctly typed import_volumes jobs.", job_tool=True)
+_spec("compute_fsc_validation", "compute_fsc_validation", "_compute_fsc_validation_tool",
+      "Compute FSC validation between half maps from two imported volume jobs. "
+      "Required: volume_a_job_uid, volume_b_job_uid. Optional: project_uid, "
+      "workspace_uid, lane, hostname, wait_for_completion, timeout, check_interval. "
+      "Use import_volumes first when starting from external half-map files.",
+      job_tool=True)
 _spec("homogeneous_refinement_recon", "homogeneous_refinement", "_homogeneous_refinement_tool",
       "Refine a single 3D structure to high resolution with all particles (consensus "
       "refinement). USE WHEN the dataset is one homogeneous species — this is the default "
@@ -532,6 +577,33 @@ _spec("downsample_particles", "downsample_particles", "_downsample_particles_too
       "(ab-initio, 2D, initial 3D class) are slow and full resolution isn't needed yet — "
       "re-extract full size later. Required: particles_job_uid. Optional: box_size_pix, "
       "bin_size_pix.", job_tool=True)
+_spec("rebalance_orientations", "rebalance_orientations", "_rebalance_orientations_tool",
+      "Rebalance Orientations (rebalance_3D): remove particles from overrepresented "
+      "3D viewing-direction bins, producing rebalanced and excluded stacks. REQUIRES "
+      "particles with alignments3D from a 3D refinement. CONSIDER when orientation "
+      "diagnostics and viewing distributions support dominant views; cFAR alone does "
+      "not prove missing views, so interpret it with SCF* and relative signal. This "
+      "cannot create views absent from the data and discarding good particles can "
+      "degrade the map. Follow with a MATCHED terminal refinement and compare global "
+      "FSC, cFAR and retained particles; a more isotropic map may later guide "
+      "create_templates or Topaz re-picking. Required: particles_job_uid. Optional: "
+      "particles_group_name, num_orientation_bins (default 192), rebalance_percentile "
+      "(default 80; percentile of BINS, not percentage of particles removed), "
+      "exclusion_criterion (random, pick_stats/ncc_score, alignments3D/error, "
+      "alignments3D/alpha, alignments2D/error), dry_run. Use describe_job_outputs "
+      "afterward to identify the rebalanced output rather than guessing its name.",
+      job_tool=True)
+_spec("split_particles", "split_particles", "_split_particles_tool",
+      "Split a particle stack into N groups (particle_sets utility, set_operation=split). "
+      "USE FOR subset-scaling (ResLog) data-ceiling tests: split_particles(random_split=true, "
+      "num_splits=2) on the baseline particles, then re-refine ONE random half with the "
+      "baseline's exact params — if the full set beats the half by ≥~0.15 Å, more particles "
+      "still help (prioritize re-picking); if <~0.05 Å, particle number is not the limit. "
+      "Also useful for independent validation splits. Outputs particle groups named "
+      "split_0, split_1, ... (plus a small 'remainder' group) on one job — pass "
+      "particles_group_name='split_0' to the refinement tool to refine one subset. "
+      "Required: particles_job_uid. Optional: num_splits (default 2), random_split (default "
+      "true).", job_tool=True)
 _spec("topaz_train", "topaz_train", "_topaz_train_tool",
       "Train a Topaz deep-picking model from known-good particles. USE WHEN blob/template "
       "picking misses particles or has high junk and you have a clean particle subset to "
@@ -589,7 +661,8 @@ AGENT_TOOL_SETS: Dict[str, List[str]] = {
         "class_2d_new",
     ],
     "reconstruction": [
-        "ab_initio_reconstruction", "homogeneous_refinement_recon",
+        "ab_initio_reconstruction", "homogeneous_reconstruction",
+        "homogeneous_refinement_recon",
         "heterogeneous_refinement", "get_job_status", "wait_for_job", "get_job_log",
         "search_cryosparc_forum", "describe_job_params", "describe_job_results",
         "get_orientation_diagnostics", "reason_reconstruction",
@@ -648,16 +721,17 @@ AGENT_TOOL_SETS: Dict[str, List[str]] = {
 
 
 def build_tool(agent, spec_id: str) -> Optional[Tool]:
-    """Build one plain Tool from a spec id, bound to the agent's wrapper method.
-
-    Returns None when the spec id is unknown or the agent does not implement the
-    bound method (so an agent can be handed any list and skip what it lacks).
-    """
+    """Build one plain Tool, warning loudly if its implementation is missing."""
     spec = _SPECS.get(spec_id)
     if spec is None:
+        logger.warning("Skipping unknown CryoSPARC tool spec id: %s", spec_id)
         return None
     func: Callable = getattr(agent, spec.method, None)
     if func is None or not callable(func):
+        logger.warning(
+            "Skipping CryoSPARC tool %s (%s): %s is not implemented by %s",
+            spec_id, spec.name, spec.method, type(agent).__name__,
+        )
         return None
     return make_flexible_tool(spec.name, spec.description, func)
 

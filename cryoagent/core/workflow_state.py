@@ -19,6 +19,7 @@ import json
 import logging
 import re
 import time
+import ast
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -45,6 +46,7 @@ _PRIMARY_JOB_KEYS = (
 _NON_ACTION_TOOLS = frozenset({
     "wait_for_job", "get_job_status", "get_job_log", "get_job_log_common",
     "describe_job_params", "describe_job_results", "get_orientation_diagnostics",
+    "get_job_run_params",
     "get_fsc_info", "get_particle_count", "search_cryosparc_forum",
     "reason_about_workflow", "verify_inputs", "read_input_json",
     "get_hetero_class_resolutions", "get_regroup_superclass_info",
@@ -214,6 +216,52 @@ _RES_EPS = 0.02
 _CFAR_EPS = 0.02
 _CFAR_WORSE = -0.015
 
+# Baseline-ratchet thresholds: how much a challenger must improve to REPLACE the
+# incumbent best. Stricter than the reporting epsilon because same-particle-set
+# FSC differences of ±0.02–0.05 Å are mostly noise / overfitting.
+RATCHET_RES_EPS = 0.05    # resolution gain (Å) that replaces the baseline outright
+_RATCHET_CFAR_TRADE = 0.05  # cFAR gain needed to replace when resolution ~unchanged
+_RATCHET_RES_NOISE = 0.005  # resolution slack allowed in a cFAR-driven replacement
+
+
+def challenger_beats_incumbent(
+    ch_res: Optional[float],
+    ch_cfar: Optional[float],
+    inc_res: Optional[float],
+    inc_cfar: Optional[float],
+) -> bool:
+    """Decide whether a challenger refinement replaces the incumbent baseline.
+
+    Rules (matching the improvement-agent prompt):
+    * resolution gain >= RATCHET_RES_EPS (0.05 Å) wins, unless cFAR collapses
+      to no-structure (<0.1) from an acceptable incumbent;
+    * clearly worse resolution (>0.02 Å) loses;
+    * within noise, a cFAR gain >= 0.05 with resolution no worse than 0.005 Å
+      wins (cFAR-driven replacement);
+    * anything else keeps the incumbent.
+    """
+    if not isinstance(ch_res, (int, float)):
+        return False
+    if not isinstance(inc_res, (int, float)):
+        return True
+    d_res = inc_res - ch_res  # positive = challenger better
+    if d_res >= RATCHET_RES_EPS:
+        if isinstance(ch_cfar, (int, float)) and ch_cfar < 0.1 and (
+            not isinstance(inc_cfar, (int, float)) or inc_cfar >= 0.15
+        ):
+            return False
+        return True
+    if d_res <= -_RES_EPS:
+        return False
+    if (
+        d_res >= -_RATCHET_RES_NOISE
+        and isinstance(ch_cfar, (int, float))
+        and isinstance(inc_cfar, (int, float))
+        and (ch_cfar - inc_cfar) >= _RATCHET_CFAR_TRADE
+    ):
+        return True
+    return False
+
 
 def _classify_attempt_outcome(
     metrics: Optional[Dict[str, Any]],
@@ -240,7 +288,7 @@ def _classify_attempt_outcome(
         if has_cross:
             return "worse"
         return "helped" if has_check else "no_difference"
-    if isinstance(delta_res, (int, float)) and delta_res <= -_RES_EPS:
+    if isinstance(delta_res, (int, float)) and delta_res < -_RES_EPS:
         return "worse"
     if isinstance(delta_cfar, (int, float)) and delta_cfar <= _CFAR_WORSE:
         return "worse"
@@ -421,13 +469,20 @@ def _parse_best_result_prose(text: str, context: Dict[str, Any]) -> None:
     """Prefer the narrative 'Best result: J223, 2.74 Å, cFAR=0.503'."""
     match = re.search(
         r'\*\*[Bb]est result\*\*[:\s]*\*?\*?([Jj]\d+)\*?\*?[^\d]{0,80}'
-        r'([\d.]+)\s*Å[^\d]{0,80}cFAR\s*=\s*([\d.]+)',
+        r'([\d.]+)\s*Å[^\d]{0,80}cFAR\s*=?\s*([\d.]+)',
         text, flags=re.IGNORECASE,
     )
     if not match:
+        # '**Best result: J303 — 2.59 Å, cFAR 0.668, ...**' (job inside the bold)
+        match = re.search(
+            r'\*\*[Bb]est result[:\s]+([Jj]\d+)\s*[—–\-:,]\s*([\d.]+)\s*Å'
+            r'[^\d]{0,40}cFAR\s*=?\s*([\d.]+)',
+            text, flags=re.IGNORECASE,
+        )
+    if not match:
         match = re.search(
             r'###?\s*Best result\s*\n+\s*\*\*([Jj]\d+)\*\*:\s*\*\*([\d.]+)\s*Å'
-            r'[^\n]*cFAR\s*=\s*([\d.]+)',
+            r'[^\n]*cFAR\s*=?\s*([\d.]+)',
             text, flags=re.IGNORECASE,
         )
     if match:
@@ -436,6 +491,240 @@ def _parse_best_result_prose(text: str, context: Dict[str, Any]) -> None:
             "resolution": float(match.group(2)),
             "cfar": float(match.group(3)),
         }
+
+
+def _parse_experiment_record_json(text: str, context: Dict[str, Any]) -> None:
+    """Parse the agent-emitted ```json experiment record (the structured,
+    machine-readable summary the improvement prompt requires).
+
+    Expected shape:
+        {"baseline": {"job": "J303", "resolution": 2.59, "cfar": 0.668},
+         "experiments": [{"hypothesis": ..., "plan": [...], "result_job": "J330",
+                          "resolution": 2.55, "cfar": 0.67, "particles": 227745,
+                          "verdict": "helped|worse|no_difference|invalid",
+                          "one_line_reason": ...}],
+         "best_result": {"job": ..., "resolution": ..., "cfar": ...},
+         "branch_in_progress": {...} | null}
+    """
+    for m in re.finditer(r"```json\s*(.*?)```", text, flags=re.DOTALL):
+        try:
+            data = json.loads(m.group(1))
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if not isinstance(data, dict) or not isinstance(data.get("experiments"), list):
+            continue
+
+        baseline = data.get("baseline") or context.get("baseline") or {}
+        if data.get("baseline") and not context.get("baseline"):
+            context["baseline"] = dict(data["baseline"])
+        b_res = baseline.get("resolution")
+        b_cfar = baseline.get("cfar")
+
+        for exp in data["experiments"]:
+            if not isinstance(exp, dict):
+                continue
+            job = (exp.get("result_job") or "").upper()
+            if not job:
+                continue
+            res = exp.get("resolution")
+            cfar = exp.get("cfar")
+            metrics = {
+                "baseline_resolution": b_res,
+                "result_resolution": res,
+                "delta_resolution": (b_res - res) if isinstance(b_res, (int, float)) and isinstance(res, (int, float)) else None,
+                "baseline_cfar": b_cfar,
+                "result_cfar": cfar,
+                "delta_cfar": (cfar - b_cfar) if isinstance(b_cfar, (int, float)) and isinstance(cfar, (int, float)) else None,
+            }
+            verdict = (exp.get("verdict") or "").strip()
+            if verdict not in ("helped", "worse", "no_difference", "invalid"):
+                verdict = _classify_attempt_outcome(metrics, verdict=verdict)
+            plan = exp.get("plan") or exp.get("actions") or []
+            outcome = exp.get("outcome") or ""
+            if not outcome and isinstance(res, (int, float)):
+                outcome = f"Resolution: {b_res} → {res} Å" if isinstance(b_res, (int, float)) else f"Resolution: {res} Å"
+                if isinstance(cfar, (int, float)):
+                    outcome += f" | cFAR: {b_cfar} → {cfar}" if isinstance(b_cfar, (int, float)) else f" | cFAR: {cfar}"
+            _dedup_append_strategy(context["strategies_tried"], {
+                "hypothesis": (exp.get("hypothesis") or "")[:200],
+                "approach": exp.get("approach") or (" → ".join(plan) if plan else ""),
+                "actions": plan,
+                "result_job": job,
+                "outcome": outcome,
+                "conclusion": (exp.get("one_line_reason") or verdict)[:150],
+                "success": verdict == "helped",
+                "outcome_class": verdict,
+                "metrics": metrics,
+            })
+            if job not in context["job_uids"]:
+                context["job_uids"].append(job)
+
+        best = data.get("best_result") or {}
+        if best.get("job"):
+            context["best_result"] = {
+                "job": str(best["job"]).upper(),
+                "resolution": best.get("resolution"),
+                "cfar": best.get("cfar"),
+            }
+        if data.get("branch_in_progress"):
+            context["branch_in_progress"] = data["branch_in_progress"]
+
+
+def _iter_tool_execution_blocks(text: str):
+    """Yield (tool_name, arguments_dict, result_text) for each TOOL EXECUTION
+    block in a conversation log. Blocks are separated by dashed lines; arguments
+    are a JSON object whose 'input' string holds a Python-dict repr."""
+    for block in re.split(r"\n-{50,}\n", text):
+        m = re.search(
+            r"TOOL EXECUTION: (\w+)\nArguments: (.*?)\nResult: (.*)\Z",
+            block, flags=re.DOTALL,
+        )
+        if not m:
+            continue
+        tool, args_text, result = m.group(1), m.group(2), m.group(3)
+        args: Dict[str, Any] = {}
+        try:
+            outer = json.loads(args_text)
+            inner = outer.get("input") if isinstance(outer, dict) else None
+            if isinstance(inner, str):
+                try:
+                    inner = ast.literal_eval(inner)
+                except (ValueError, SyntaxError):
+                    inner = {}
+            if isinstance(inner, dict):
+                args = inner.get("tool_input") if isinstance(inner.get("tool_input"), dict) else inner
+        except (json.JSONDecodeError, ValueError):
+            pass
+        yield tool, args or {}, result
+
+
+def _strategies_from_tool_executions(text: str, context: Dict[str, Any]) -> None:
+    """Deterministic backstop: reconstruct experiments from the structured TOOL
+    EXECUTION log instead of the LLM's prose tables.
+
+    Every action-tool job creation is captured (with its exact requested args);
+    every describe_job_results / get_orientation_diagnostics call provides real
+    measurements. A created job with a measured resolution becomes a strategy
+    whose approach is the action-tool chain since the previous measured
+    refinement (plan-level experiments). Entries are GAP-MERGED into
+    context["strategies_tried"] — prose/JSON rows keep their richer hypotheses,
+    this parser only fills missing jobs, metrics, actions and params.
+    """
+    created: Dict[str, Dict[str, Any]] = {}
+    measurements: Dict[str, Dict[str, Any]] = {}
+    current_chain: List[str] = []
+    terminal_chains: Dict[str, List[str]] = {}
+
+    for tool, args, result in _iter_tool_execution_blocks(text):
+        if tool == "describe_job_results":
+            jm = re.search(r"Results for (J\d+) \(([^,)]+)", result)
+            if not jm:
+                continue
+            uid = jm.group(1).upper()
+            meas = measurements.setdefault(uid, {})
+            meas["job_type"] = jm.group(2)
+            rm = re.search(r"resolution: ([\d.]+) Å", result)
+            pm = re.search(r"particles: (\d+)", result)
+            cm = re.search(r"cFAR: ([\d.]+)", result)
+            if rm:
+                meas["resolution"] = float(rm.group(1))
+            if pm:
+                meas["particles"] = int(pm.group(1))
+            if cm:
+                meas["cfar"] = float(cm.group(1))
+            # A measured refinement of a job created in this log closes one
+            # plan-level experiment: the next action tool starts a new chain.
+            if uid in created and meas.get("resolution") is not None and uid not in terminal_chains:
+                terminal_chains[uid] = list(current_chain)
+                current_chain = []
+            continue
+        if tool == "get_orientation_diagnostics":
+            jm = re.search(r"cFAR for (J\d+)[^:]*: ([\d.]+)", result)
+            if jm:
+                meas = measurements.setdefault(jm.group(1).upper(), {})
+                meas.setdefault("cfar", float(jm.group(2)))
+            continue
+        if tool in _NON_ACTION_TOOLS:
+            continue
+        # Action tool: capture the created job + exact requested arguments.
+        current_chain.append(tool)
+        uid = None
+        try:
+            rj = json.loads(result)
+            if isinstance(rj, dict) and rj.get("success") and rj.get("job_uid"):
+                uid = str(rj["job_uid"]).upper()
+        except (json.JSONDecodeError, ValueError):
+            pass
+        if uid is None and ("✅" in result or '"success": true' in result):
+            jm = re.search(r"\b(J\d+)\b", result)
+            if jm:
+                uid = jm.group(1).upper()
+        if uid:
+            created[uid] = {"tool": tool, "args": args}
+            req = context.setdefault("requested_params_by_job", {})
+            if uid not in req:
+                req[uid] = {"tool": tool, "arguments": args}
+            if uid not in context["job_uids"]:
+                context["job_uids"].append(uid)
+
+    if not created or not measurements:
+        return
+
+    # Baseline: prefer the prose/JSON baseline; else the first measured job NOT
+    # created during this round.
+    baseline = context.get("baseline") or {}
+    if not baseline.get("job"):
+        for uid, meas in measurements.items():
+            if uid not in created and meas.get("resolution") is not None:
+                baseline = {"job": uid, "resolution": meas["resolution"], "cfar": meas.get("cfar")}
+                context["baseline"] = baseline
+                break
+    b_res = baseline.get("resolution")
+    b_cfar = baseline.get("cfar")
+
+    existing = {
+        (s.get("result_job") or "").upper(): s
+        for s in context["strategies_tried"]
+    }
+    for uid, chain in terminal_chains.items():
+        meas = measurements.get(uid) or {}
+        res = meas.get("resolution")
+        if res is None:
+            continue
+        cfar = meas.get("cfar")
+        metrics = {
+            "baseline_resolution": b_res,
+            "result_resolution": res,
+            "delta_resolution": (b_res - res) if isinstance(b_res, (int, float)) else None,
+            "baseline_cfar": b_cfar,
+            "result_cfar": cfar,
+            "delta_cfar": (cfar - b_cfar) if isinstance(b_cfar, (int, float)) and isinstance(cfar, (int, float)) else None,
+        }
+        approach = " → ".join(chain)
+        ex = existing.get(uid)
+        if ex is None:
+            context["strategies_tried"].append({
+                "hypothesis": "",
+                "approach": approach,
+                "actions": chain,
+                "result_job": uid,
+                "outcome": (
+                    f"Resolution: {b_res} → {res} Å" if isinstance(b_res, (int, float))
+                    else f"Resolution: {res} Å"
+                ) + (f" | cFAR: {b_cfar} → {cfar}" if isinstance(b_cfar, (int, float)) and isinstance(cfar, (int, float)) else ""),
+                "conclusion": "",
+                "success": False,
+                "metrics": metrics,
+            })
+        else:
+            if not ex.get("approach"):
+                ex["approach"] = approach
+            if not ex.get("actions"):
+                ex["actions"] = chain
+            em = ex.setdefault("metrics", {})
+            for k, v in metrics.items():
+                if em.get(k) is None and v is not None:
+                    em[k] = v
 
 
 def _extract_final_report_fallback(text: str, max_chars: int = 4000) -> str:
@@ -636,6 +925,11 @@ def format_improvement_evidence_brief(context: Dict[str, Any]) -> str:
             f"Baseline: {baseline.get('job')} @ {baseline.get('resolution')} Å, "
             f"cFAR {baseline.get('cfar')}"
         )
+    if context.get("branch_in_progress"):
+        lines.append(
+            "Branch in progress (resume it; do not restart from scratch): "
+            + json.dumps(context["branch_in_progress"], default=str)
+        )
     lines.append("")
 
     def _bucket_lines(title: str, items: List[Dict[str, Any]]) -> None:
@@ -731,10 +1025,13 @@ def merge_improvement_contexts(contexts: List[Dict[str, Any]]) -> Dict[str, Any]
         "run_params": {},
         "requested_params_by_job": {},
         "fallback_excerpt": "",
+        "branch_in_progress": None,
     }
     for ctx in contexts or []:
         if not ctx:
             continue
+        if ctx.get("branch_in_progress"):
+            merged["branch_in_progress"] = ctx["branch_in_progress"]
         for uid in ctx.get("job_uids") or []:
             if uid not in merged["job_uids"]:
                 merged["job_uids"].append(uid)
@@ -1119,6 +1416,11 @@ def extract_improvement_context_from_log(log_path: Path) -> Dict[str, Any]:
     _parse_job_action_better_table(text, context)
     _parse_invalid_experiments(text, context)
     _parse_best_result_prose(text, context)
+    # Structured experiment record (agent-emitted JSON) + deterministic
+    # reconstruction from the TOOL EXECUTION log as a backstop, so the five
+    # buckets stay populated even when prose-table parsing fails.
+    _parse_experiment_record_json(text, context)
+    _strategies_from_tool_executions(text, context)
 
     for strat in context["strategies_tried"]:
         if not strat.get("outcome_class"):
@@ -1645,7 +1947,6 @@ class WorkflowState:
         best_uid = None
         best_res = None
         best_cfar = None
-        best_score = None
 
         for uid in candidate_job_uids or []:
             if not isinstance(uid, str) or not uid.strip():
@@ -1662,25 +1963,11 @@ class WorkflowState:
                 continue
             c = res.get("cfar") if isinstance(res.get("cfar"), (int, float)) else None
 
-            # Composite scoring: lower resolution is better, higher cFAR is better
-            # Normalize both to a 0-1 scale where higher is better
-            # Resolution: invert and scale (assume 1.5-5.0 Å range)
-            res_score = max(0, min(1, (5.0 - r) / (5.0 - 1.5)))  # Lower res → higher score
-
-            # cFAR: already 0-1 scale, higher is better (but can be None)
-            # Use 0.5 as neutral default if cFAR is missing
-            cfar_score = c if c is not None else 0.5
-
-            # Weighted composite: resolution is primary (70%), cFAR is important (30%)
-            # A job with good resolution but terrible cFAR will score poorly
-            composite_score = (0.7 * res_score) + (0.3 * cfar_score)
-
-            better = (
-                best_score is None
-                or composite_score > best_score
-            )
-            if better:
-                best_uid, best_res, best_cfar, best_score = uid.strip(), r, c, composite_score
+            # Tournament: resolution-primary with cFAR guard (same rule as the
+            # baseline ratchet), so the round's best is picked consistently with
+            # best_resolution().
+            if best_uid is None or challenger_beats_incumbent(r, c, best_res, best_cfar):
+                best_uid, best_res, best_cfar = uid.strip(), r, c
 
         if preferred_job_uid:
             pref = preferred_job_uid.strip()
@@ -1697,6 +1984,29 @@ class WorkflowState:
             logger.info("record_improvement: no candidate job produced a resolution; nothing recorded.")
             return None
 
+        # Ratchet guard: the round's best must BEAT the current global baseline
+        # to displace it. Otherwise record the round with the incumbent as the
+        # primary job (history + strategies preserved, baseline unchanged).
+        incumbent = self.best_resolution()
+        baseline_stands = bool(
+            incumbent and incumbent.get("job_uid") == best_uid
+        )
+        if incumbent and incumbent.get("job_uid") and best_uid != incumbent["job_uid"]:
+            if not challenger_beats_incumbent(
+                best_res, best_cfar,
+                incumbent.get("resolution_angstroms"), incumbent.get("cfar"),
+            ):
+                baseline_stands = True
+                best_uid = incumbent["job_uid"]
+                best_res = incumbent.get("resolution_angstroms")
+                best_cfar = incumbent.get("cfar")
+                assessment = (
+                    f"{assessment} | baseline stands: no candidate beat "
+                    f"{incumbent['job_uid']} ({incumbent.get('resolution_angstroms')} Å)"
+                    if assessment else
+                    f"baseline stands: no candidate beat {incumbent['job_uid']}"
+                )
+
         # Build rich decisions narrative from strategies_tried if available
         if strategies_tried and isinstance(strategies_tried, list):
             decisions = self._format_strategies_for_decisions(strategies_tried, baseline)
@@ -1705,6 +2015,7 @@ class WorkflowState:
             "final_refinement_job_uid": best_uid,
             "strategies_tried": strategies_tried or [],
             "baseline": baseline or {},
+            "baseline_stands": baseline_stands,
         }
         if source_log:
             outputs["source_log"] = source_log
@@ -1793,6 +2104,39 @@ class WorkflowState:
             outputs["source_log"] = source_log
 
         if preferred_job_uid:
+            # Ratchet guard on retrospective refreshes: the log's preferred job
+            # must beat the incumbent (excluding this record) to displace it.
+            incumbent = self.best_resolution(exclude=rec)
+            outputs["baseline_stands"] = bool(
+                incumbent and incumbent.get("job_uid") == preferred_job_uid.strip()
+            )
+            if incumbent and incumbent.get("job_uid") and preferred_job_uid.strip() != incumbent["job_uid"]:
+                pref = preferred_job_uid.strip()
+                ch_res = ch_cfar = None
+                if cryosparc_tools is not None:
+                    try:
+                        r = cryosparc_tools.describe_job_results(pref, project_uid=self.project_uid)
+                        if r.get("success"):
+                            ch_res = r.get("resolution_angstroms")
+                            ch_cfar = r.get("cfar") if isinstance(r.get("cfar"), (int, float)) else None
+                    except Exception:
+                        pass
+                if ch_res is None:
+                    for strat in strategies_tried:
+                        if (strat.get("result_job") or "").upper() == pref.upper():
+                            m = strat.get("metrics") or {}
+                            ch_res = m.get("result_resolution")
+                            ch_cfar = m.get("result_cfar")
+                            break
+                if not challenger_beats_incumbent(
+                    ch_res, ch_cfar,
+                    incumbent.get("resolution_angstroms"), incumbent.get("cfar"),
+                ):
+                    preferred_job_uid = incumbent["job_uid"]
+                    outputs["baseline_stands"] = True
+                    assessment = f"{assessment or ''} | baseline stands (ratchet)".strip(" |")
+
+        if preferred_job_uid:
             pref = preferred_job_uid.strip()
             outputs["final_refinement_job_uid"] = pref
             rec.primary_job_uid = pref
@@ -1845,33 +2189,47 @@ class WorkflowState:
                 return r
         return None
 
-    def best_resolution(self) -> Optional[Dict[str, Any]]:
+    def best_resolution(self, exclude: Optional["StageRecord"] = None) -> Optional[Dict[str, Any]]:
         """Return {stage, job_uid, resolution_angstroms, cfar} for the best overall result.
 
-        Uses composite scoring (70% resolution, 30% cFAR) to pick the truly best result,
-        not just the lowest resolution. Scans all records including all improvement rounds.
+        Resolution-primary with a cFAR sanity floor: among records whose cFAR is
+        acceptable (or unknown), pick the lowest resolution; break near-ties
+        (<0.005 Å) by higher cFAR. Records with cFAR < 0.15 (no real structure /
+        severe preferred orientation) are only considered when nothing better
+        exists. This keeps the baseline a true ratchet — a slightly-worse-
+        resolution job with marginally higher cFAR can no longer displace the
+        incumbent (previously possible with the 70/30 composite score).
         """
-        best = None
-        best_score = None
-        for r in self.records:
-            res = r.metrics.get("resolution_angstroms")
-            cfar = r.metrics.get("cfar")
-            if isinstance(res, (int, float)):
-                # Composite scoring: resolution primary (70%), cFAR important (30%)
-                res_score = max(0, min(1, (5.0 - res) / (5.0 - 1.5)))  # Lower res → higher score
-                cfar_score = cfar if isinstance(cfar, (int, float)) else 0.5  # Default 0.5 if missing
-                composite_score = (0.7 * res_score) + (0.3 * cfar_score)
+        candidates = [
+            r for r in self.records
+            if r is not exclude and isinstance(r.metrics.get("resolution_angstroms"), (int, float))
+        ]
+        if not candidates:
+            return None
 
-                if best_score is None or composite_score > best_score:
-                    best = {
-                        "stage": r.stage,
-                        "job_uid": r.primary_job_uid,
-                        "resolution_angstroms": res,
-                        "cfar": cfar,
-                        "composite_score": composite_score,
-                    }
-                    best_score = composite_score
-        return best
+        def _cfar_ok(r: "StageRecord") -> bool:
+            c = r.metrics.get("cfar")
+            return not isinstance(c, (int, float)) or c >= 0.15
+
+        pool = [r for r in candidates if _cfar_ok(r)] or candidates
+        best_rec = min(
+            pool,
+            key=lambda r: (
+                round(r.metrics["resolution_angstroms"], 3),
+                -(r.metrics.get("cfar") if isinstance(r.metrics.get("cfar"), (int, float)) else 0.0),
+            ),
+        )
+        res = best_rec.metrics["resolution_angstroms"]
+        cfar = best_rec.metrics.get("cfar")
+        res_score = max(0, min(1, (5.0 - res) / (5.0 - 1.5)))
+        cfar_score = cfar if isinstance(cfar, (int, float)) else 0.5
+        return {
+            "stage": best_rec.stage,
+            "job_uid": best_rec.primary_job_uid,
+            "resolution_angstroms": res,
+            "cfar": cfar,
+            "composite_score": (0.7 * res_score) + (0.3 * cfar_score),
+        }
 
     def summary_for_planner(self) -> str:
         """Compact human/LLM-readable digest of all stage metrics (JSON only).

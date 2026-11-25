@@ -368,7 +368,8 @@ class ReconstructionAgent(BaseReActAgent):
 **Workflow Dependencies**:
 1. Initial Model Generation:
    - Ab Initio Reconstruction (requires particles from 2D class selection or extraction)
-   - OR Homogeneous Reconstruction (alternative to ab initio for homogeneous datasets)
+   - Homogeneous Reconstruction Only is a separate later operation for particles that
+     already have 3D alignments; it is not an alternative initial-pose estimator.
 2. Optional: Homogeneous Refinement (requires volume + particles)
 3. Optional: Heterogeneous Refinement (requires multiple volumes + particles)
 
@@ -379,11 +380,12 @@ class ReconstructionAgent(BaseReActAgent):
 - **symmetry**: C1 (no symmetry) is safest default
 - **max_iterations**: 50 is typical, 100 for difficult cases
 
-**Homogeneous Reconstruction Parameters**:
-- **initial_resolution**: Start at 20-30 Å for stability
-- **final_resolution**: Target 8.0 Å (can be more aggressive than ab initio)
-- **symmetry**: C1 (no symmetry) is safest default
-- Often faster and more robust than ab initio for single structure datasets
+**Homogeneous Reconstruction Only Parameters**:
+- **particles_job_uid**: Particles with existing 3D alignments (required)
+- **mask_job_uid**: Optional static mask
+- **refine_symmetry**: Pass via params; C1 is safest unless symmetry is established
+- Use describe_job_params('homo_reconstruct') for reconstruction-specific options; do
+  not pass ab-initio parameters such as initial_resolution or final_resolution.
 
 **Homogeneous Refinement Parameters**:
 - **particles_job_uid**: From ORIGINAL input - Select 2D job or import particle job (the SAME particles_job_uid that was used for ab initio reconstruction)
@@ -395,9 +397,9 @@ class ReconstructionAgent(BaseReActAgent):
   * DO NOT use the same job UID for both parameters
 
 **Next Steps Analysis**:
-- If no reconstruction jobs are running: Choose between:
-  * ab_initio_reconstruction (standard approach, supports multiple classes)
-  * homogeneous_refinement (faster alternative for single structure)
+- If no reconstruction jobs are running: use ab_initio_reconstruction when initial
+  poses/model are needed; use homogeneous_reconstruction only when aligned particles
+  already exist and the goal is reconstruction without further pose refinement.
 - If reconstruction is running: Wait for completion, then assess results
 - If initial model completed successfully: Decide on refinement strategy
   * Single good class → homogeneous refinement

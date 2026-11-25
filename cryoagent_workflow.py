@@ -151,8 +151,8 @@ class CryoAgentMasterWorkflow:
 
         Args:
             force_all_stages: When True, initialize every stage agent regardless
-                of its ``enabled`` flag (used by full_dynamic mode so the single
-                agent has the full cross-stage tool set).
+                of its ``enabled`` flag (used by full-dynamic and improvement
+                modes so their cross-stage agent has the full tool set).
 
         Returns:
             True if initialization successful, False otherwise
@@ -673,11 +673,14 @@ Examples:
             # Initialize master workflow
     master_workflow = CryoAgentMasterWorkflow(args.config, outputs_dir=args.outputs_dir)
     
-    # full_dynamic mode needs every stage agent initialized so the single agent
-    # has the full cross-stage tool set, regardless of stage enabled flags.
+    # full_dynamic and improvement modes need every stage-agent tool provider,
+    # regardless of stage enabled flags. --improve does not re-run those stages.
     force_all_stages = (
         args.workflow == "complete"
-        and getattr(args, "mode", "guided") == "full_dynamic"
+        and (
+            getattr(args, "mode", "guided") == "full_dynamic"
+            or getattr(args, "improve", False)
+        )
     )
     if not master_workflow.initialize(force_all_stages=force_all_stages):
         print("❌ Failed to initialize CryoAgent master workflow")

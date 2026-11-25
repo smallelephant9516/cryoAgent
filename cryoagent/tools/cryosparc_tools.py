@@ -1359,18 +1359,22 @@ class CryoSPARCTools:
 
         Returns:
             Dictionary with the resolved job_type and a "params" mapping of
-            {param_key: {title, type, default}}.
+            {param_key: {title, type, default, description?, choices?}}
+            (description/choices are present only when the spec provides them),
+            plus an "input_slot_groups" summary of the job's input schema.
         """
         resolved = self._resolve_job_type(job_type)
         specs = self._fetch_job_specs()
 
         params_base = None
         spec_title = None
+        spec_inputs: List[Dict[str, Any]] = []
         for section in specs:
             for job_spec in (section.get("contains", []) or []):
                 if job_spec.get("name") == resolved:
                     params_base = job_spec.get("params_base", {}) or {}
                     spec_title = job_spec.get("title")
+                    spec_inputs = self._summarize_input_slot_groups(job_spec)
                     break
             if params_base is not None:
                 break
@@ -1392,11 +1396,22 @@ class CryoSPARCTools:
         for key, details in params_base.items():
             if details.get("hidden") and not include_hidden:
                 continue
-            params[key] = {
+            entry: Dict[str, Any] = {
                 "title": details.get("title"),
                 "type": details.get("type"),
                 "default": details.get("value"),
             }
+            # Additive metadata: human description and enum choices, when present.
+            description = details.get("desc") or details.get("description")
+            if description:
+                entry["description"] = description
+            if details.get("type") == "enum":
+                choices = details.get("enum_keys")
+                if choices is None and isinstance(details.get("enum_dict"), dict):
+                    choices = list(details["enum_dict"].keys())
+                if choices:
+                    entry["choices"] = list(choices)
+            params[key] = entry
 
         return {
             "job_type": resolved,
@@ -1404,6 +1419,7 @@ class CryoSPARCTools:
             "title": spec_title,
             "param_count": len(params),
             "params": params,
+            "input_slot_groups": spec_inputs,
         }
 
     def get_job_run_params(
@@ -1494,6 +1510,542 @@ class CryoSPARCTools:
             "This CryoSPARC client exposes neither get_job_specs nor "
             "cli.get_config_var; cannot introspect job parameters."
         )
+
+    @staticmethod
+    def _find_job_spec(specs: List[Dict[str, Any]], resolved_job_type: str) -> Optional[Dict[str, Any]]:
+        """Return the JobSpec dict for a resolved job type, or None when absent."""
+        for section in specs:
+            for job_spec in (section.get("contains", []) or []):
+                if job_spec.get("name") == resolved_job_type:
+                    return job_spec
+        return None
+
+    @staticmethod
+    def _available_job_types(specs: List[Dict[str, Any]]) -> List[str]:
+        """Sorted list of every job-type id present in the fetched specs."""
+        return sorted(
+            js.get("name")
+            for section in specs
+            for js in (section.get("contains", []) or [])
+            if js.get("name")
+        )
+
+    @staticmethod
+    def _is_unlimited_count(value: Any) -> bool:
+        """True when a spec count bound is Infinity (JSON 'Infinity')."""
+        try:
+            return value is not None and float(value) == float("inf")
+        except (TypeError, ValueError):
+            return False
+
+    def _summarize_input_slot_groups(self, job_spec: Dict[str, Any]) -> List[Dict[str, Any]]:
+        """Summarize a JobSpec's input_slot_groups into JSON-safe metadata.
+
+        Count bounds of Infinity are reported as count_max=None with
+        count_max_unlimited=True (float('inf') is not JSON-serializable).
+        """
+        groups: List[Dict[str, Any]] = []
+        for group in (job_spec.get("input_slot_groups") or []):
+            if not isinstance(group, dict):
+                continue
+            count_min = group.get("count_min") or 0
+            count_max = group.get("count_max")
+            unlimited = self._is_unlimited_count(count_max)
+            slots: List[Dict[str, Any]] = []
+            for slot in (group.get("slots") or []):
+                if not isinstance(slot, dict):
+                    continue
+                slots.append({
+                    "name": slot.get("name"),
+                    "type": slot.get("type"),
+                    "title": slot.get("title"),
+                    "description": slot.get("description"),
+                    "optional": bool(slot.get("optional", False)),
+                })
+            groups.append({
+                "name": group.get("name"),
+                "type": group.get("type"),
+                "title": group.get("title"),
+                "description": group.get("description"),
+                "count_min": count_min,
+                "count_max": None if unlimited else count_max,
+                "count_max_unlimited": unlimited,
+                "repeat_allowed": bool(group.get("repeat_allowed", False)),
+                "required": count_min >= 1,
+                "slots": slots,
+            })
+        return groups
+
+    def describe_job_inputs(
+        self,
+        job_type: str,
+        project_uid: Optional[str] = None,
+        workspace_uid: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Return the validated input-slot specification for a CryoSPARC job type.
+
+        Reads the connected instance's job specs (no job is created) so the
+        caller can discover which input slots a job type exposes, what data type
+        each expects, and how many connections each requires/accepts, before
+        wiring connections via run_cryosparc_job.
+
+        Args:
+            job_type: A friendly name (e.g. "class_2d") or a raw CryoSPARC
+                job-type id (e.g. "downsample_particles").
+            project_uid, workspace_uid: Accepted for API compatibility; not
+                needed (no job is created).
+
+        Returns:
+            Dictionary with the resolved job_type/title and an
+            "input_slot_groups" list describing each input group (name, type,
+            title, description, count_min/count_max, repeat_allowed, required,
+            and the accepted result slots).
+        """
+        resolved = self._resolve_job_type(job_type)
+        specs = self._fetch_job_specs()
+        job_spec = self._find_job_spec(specs, resolved)
+        if job_spec is None:
+            available = self._available_job_types(specs)
+            raise ValueError(
+                f"Unknown job type '{job_type}' (resolved to '{resolved}'). "
+                f"Available job types include: {', '.join(available[:60])}"
+                + (" ..." if len(available) > 60 else "")
+            )
+        return {
+            "job_type": resolved,
+            "requested_job_type": job_type,
+            "title": job_spec.get("title"),
+            "description": job_spec.get("description"),
+            "input_slot_groups": self._summarize_input_slot_groups(job_spec),
+        }
+
+    def describe_job_outputs(self, job_uid: str, project_uid: str) -> Dict[str, Any]:
+        """
+        Return the actual output result groups of an existing job.
+
+        Inspects the job's document (``output_result_groups``) after a refresh,
+        so the caller can pick the exact group names to connect FROM this job —
+        e.g. as ``output_group`` entries in run_cryosparc_job inputs. No job is
+        created.
+
+        Args:
+            job_uid: UID of the job to inspect.
+            project_uid: Project UID containing the job.
+
+        Returns:
+            Dictionary with job_uid plus the job's output groups (name/type and
+            useful metadata such as title, num_items and result slots).
+        """
+        try:
+            job = self.cs.find_job(project_uid, job_uid)
+            job.refresh()
+            doc = getattr(job, "doc", {}) or {}
+
+            outputs: List[Dict[str, Any]] = []
+            for group in doc.get("output_result_groups", []) or []:
+                if not isinstance(group, dict):
+                    continue
+                entry: Dict[str, Any] = {
+                    "name": group.get("name"),
+                    "type": group.get("type"),
+                    "title": group.get("title"),
+                    "num_items": group.get("num_items"),
+                }
+                contains = group.get("contains")
+                if isinstance(contains, list):
+                    entry["slots"] = [
+                        c.get("name") for c in contains
+                        if isinstance(c, dict) and c.get("name")
+                    ]
+                outputs.append(entry)
+
+            return {
+                "job_uid": job_uid,
+                "project_uid": project_uid,
+                "job_type": doc.get("type") or doc.get("job_type"),
+                "status": doc.get("status"),
+                "title": doc.get("title"),
+                "output_count": len(outputs),
+                "output_result_groups": outputs,
+            }
+        except Exception as e:
+            raise RuntimeError(f"Failed to describe outputs for job {job_uid}: {e}")
+
+    # ------------------------------------------------------------------
+    # Generic guarded job runner
+    # ------------------------------------------------------------------
+
+    # Irregular job types whose connection handling does not fit the generic
+    # runner; each maps to the curated tool that should be used instead.
+    _RUN_JOB_EXCLUDED: Dict[str, str] = {
+        "import_volumes": "import_volumes",
+        "validation": "compute_fsc_validation",
+        "import_particles": "import_particles_from_star",
+    }
+    _RUN_JOB_DESTRUCTIVE_EXCLUDED = {
+        "delete_live_datatype",
+    }
+
+    @staticmethod
+    def _normalize_run_inputs(inputs: Any) -> Tuple[Optional[Dict[str, List[Tuple[str, str]]]], Optional[str]]:
+        """
+        Normalize the flexible ``inputs`` argument of run_cryosparc_job into
+        {input_slot: [(job_uid, output_group), ...]}.
+
+        Accepted forms:
+          * Preferred: a list of {"input_slot", "job_uid", "output_group"}
+            dicts; repeated input_slot entries accumulate (multi-connection).
+          * A mapping {input_slot: connection} or {input_slot: [connection, ...]}
+            where each connection is a {"job_uid", "output_group"} dict or a
+            (job_uid, output_group) tuple.
+
+        Returns (connections, error_message); exactly one of the two is None.
+        """
+        if inputs is None:
+            return {}, None
+
+        def _coerce_connection(obj: Any) -> Tuple[Optional[Tuple[str, str]], Optional[str]]:
+            if isinstance(obj, dict):
+                job_uid = obj.get("job_uid") or obj.get("source_job_uid")
+                output_group = (
+                    obj.get("output_group") or obj.get("group_name") or obj.get("output")
+                )
+                if not job_uid or not output_group:
+                    return None, (
+                        "connection dict needs 'job_uid' and 'output_group' "
+                        f"(got keys {sorted(obj.keys())})"
+                    )
+                return (str(job_uid), str(output_group)), None
+            if (isinstance(obj, (list, tuple)) and len(obj) == 2
+                    and all(isinstance(x, str) for x in obj)):
+                return (obj[0], obj[1]), None
+            return None, (
+                "connection must be a {'job_uid', 'output_group'} dict or a "
+                f"(job_uid, output_group) tuple, got {obj!r}"
+            )
+
+        if isinstance(inputs, dict):
+            items: List[Tuple[str, Any]] = []
+            for slot, conns in inputs.items():
+                if isinstance(conns, list):
+                    for conn in conns:
+                        items.append((slot, conn))
+                else:
+                    items.append((slot, conns))
+        elif isinstance(inputs, (list, tuple)):
+            items = []
+            for entry in inputs:
+                if not isinstance(entry, dict):
+                    return None, (
+                        "list-form inputs must be dicts with "
+                        f"input_slot/job_uid/output_group, got {entry!r}"
+                    )
+                slot = entry.get("input_slot") or entry.get("slot")
+                if not slot:
+                    return None, f"list-form connection is missing 'input_slot': {entry!r}"
+                items.append((slot, entry))
+        else:
+            return None, (
+                "inputs must be a list of connection dicts or a mapping of "
+                f"input_slot -> connection(s), got {type(inputs).__name__}"
+            )
+
+        connections: Dict[str, List[Tuple[str, str]]] = {}
+        for slot, conn in items:
+            conn_tuple, err = _coerce_connection(conn)
+            if err:
+                return None, f"invalid connection for input slot '{slot}': {err}"
+            connections.setdefault(str(slot), []).append(conn_tuple)
+        return connections, None
+
+    @staticmethod
+    def _validate_run_params(
+        params_base: Dict[str, Any],
+        params: Optional[Dict[str, Any]],
+    ) -> Optional[Dict[str, Any]]:
+        """Validate generic-runner params against a job's params_base.
+
+        Returns an error dict when invalid, else None. Enum values are checked
+        against the declared choices (enum_keys plus enum_dict keys/values) so
+        legitimate alternate spellings are not rejected.
+        """
+        if not params:
+            return None
+        if not isinstance(params, dict):
+            return {
+                "success": False,
+                "error": f"params must be a dict of CryoSPARC parameter keys, got {type(params).__name__}",
+            }
+        unknown = sorted(k for k in params if k not in params_base)
+        if unknown:
+            return {
+                "success": False,
+                "error": f"unknown param(s) {unknown} for this job type",
+                "unknown_params": unknown,
+                "available_params": sorted(params_base.keys()),
+            }
+        for key, value in params.items():
+            details = params_base.get(key) or {}
+            if details.get("type") != "enum" or value is None:
+                continue
+            choices: List[Any] = []
+            enum_dict = details.get("enum_dict")
+            if isinstance(enum_dict, dict):
+                choices.extend(enum_dict.keys())
+                choices.extend(enum_dict.values())
+            choices.extend(details.get("enum_keys") or [])
+            if choices and value not in choices:
+                rendered = sorted({str(c) for c in choices})
+                return {
+                    "success": False,
+                    "error": f"invalid value {value!r} for enum param '{key}'; choose from {rendered}",
+                    "param": key,
+                    "available_choices": rendered,
+                }
+        return None
+
+    def run_cryosparc_job(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        job_type: str,
+        inputs: Optional[Any] = None,
+        params: Optional[Dict[str, Any]] = None,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        dry_run: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Generic guarded runner for any regular installed CryoSPARC job type.
+
+        Prefer the curated tool when one exists; use this for job types without
+        a dedicated wrapper. The runner validates — against the instance's real
+        job specs and each source job's real output groups — before creating
+        anything, and never guesses or substitutes connection names:
+
+          * the job type must exist in the installed specs;
+          * every input slot must exist in the job's input_slot_groups;
+          * required slots (count_min) and maximum counts (count_max) are
+            enforced;
+          * every source ``output_group`` must exist verbatim in that source
+            job's ``output_result_groups``;
+          * params keys must exist in params_base, and enum values are checked
+            against the declared choices where practical.
+
+        Irregular job types with non-standard wiring are refused with a pointer
+        to the right curated tool: import_volumes -> import_volumes,
+        validation -> compute_fsc_validation,
+        import_particles -> import_particles_from_star. Destructive live-session
+        administration (delete_live_datatype) is not exposed through this runner.
+
+        Args:
+            project_uid: CryoSPARC project UID.
+            workspace_uid: CryoSPARC workspace UID.
+            job_type: Friendly name or raw CryoSPARC job-type id.
+            inputs: Preferred form is a list of
+                {"input_slot", "job_uid", "output_group"} dicts; a mapping of
+                input_slot -> connection dict (or list of dicts) is also
+                accepted, and a single entry may be a (job_uid, output_group)
+                tuple. Multiple entries for one slot connect multiple sources.
+            params: Raw CryoSPARC params dict (see describe_job_params).
+            dry_run: When True, fully validate and return the resolved
+                job_type/connections/params WITHOUT find_workspace/create_job/
+                queue — nothing is created.
+            wait_for_completion, timeout, check_interval: standard job control.
+
+        Returns:
+            Result dict (never raises); on validation failure it includes the
+            available job types / input slots / output groups / params.
+        """
+        try:
+            resolved = self._resolve_job_type(job_type)
+            specs = self._fetch_job_specs()
+            job_spec = self._find_job_spec(specs, resolved)
+            if job_spec is None:
+                return {
+                    "success": False,
+                    "error": f"Unknown job type '{job_type}' (resolved to '{resolved}').",
+                    "job_type": resolved,
+                    "available_job_types": self._available_job_types(specs),
+                }
+
+            curated = self._RUN_JOB_EXCLUDED.get(resolved)
+            if curated:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Job type '{resolved}' has irregular input handling and cannot be "
+                        f"submitted via run_cryosparc_job; use the curated '{curated}' tool instead."
+                    ),
+                    "job_type": resolved,
+                    "use_tool": curated,
+                }
+            if resolved in self._RUN_JOB_DESTRUCTIVE_EXCLUDED:
+                return {
+                    "success": False,
+                    "error": (
+                        f"Job type '{resolved}' is destructive/administrative and is not "
+                        "available through the autonomous generic runner."
+                    ),
+                    "job_type": resolved,
+                }
+
+            connections_map, err = self._normalize_run_inputs(inputs)
+            if err:
+                return {"success": False, "error": err, "job_type": resolved}
+
+            slot_groups = job_spec.get("input_slot_groups") or []
+            groups_by_name = {
+                g.get("name"): g for g in slot_groups if isinstance(g, dict) and g.get("name")
+            }
+            unknown_slots = sorted(s for s in connections_map if s not in groups_by_name)
+            if unknown_slots:
+                return {
+                    "success": False,
+                    "error": f"unknown input slot(s) {unknown_slots} for job type '{resolved}'",
+                    "job_type": resolved,
+                    "unknown_slots": unknown_slots,
+                    "available_slots": sorted(groups_by_name.keys()),
+                }
+
+            for group in slot_groups:
+                if not isinstance(group, dict):
+                    continue
+                name = group.get("name")
+                if not name:
+                    continue
+                count_min = group.get("count_min") or 0
+                count_max = group.get("count_max")
+                provided = len(connections_map.get(name, []))
+                if provided < count_min:
+                    return {
+                        "success": False,
+                        "error": (
+                            f"input slot '{name}' of '{resolved}' requires at least "
+                            f"{count_min} connection(s); got {provided}"
+                        ),
+                        "job_type": resolved,
+                        "slot": name,
+                        "count_min": count_min,
+                        "count_max": None if self._is_unlimited_count(count_max) else count_max,
+                    }
+                if (count_max is not None and not self._is_unlimited_count(count_max)
+                        and provided > count_max):
+                    return {
+                        "success": False,
+                        "error": (
+                            f"input slot '{name}' of '{resolved}' accepts at most "
+                            f"{count_max} connection(s); got {provided}"
+                        ),
+                        "job_type": resolved,
+                        "slot": name,
+                        "count_min": count_min,
+                        "count_max": count_max,
+                    }
+
+            params_base = job_spec.get("params_base", {}) or {}
+            param_error = self._validate_run_params(params_base, params)
+            if param_error:
+                param_error["job_type"] = resolved
+                return param_error
+
+            # Verify every referenced source output group exists verbatim.
+            project = self.cs.find_project(project_uid)
+            source_group_cache: Dict[str, List[str]] = {}
+            for slot, conns in connections_map.items():
+                for src_uid, out_group in conns:
+                    if src_uid not in source_group_cache:
+                        try:
+                            src_job = project.find_job(src_uid)
+                            src_job.refresh()
+                            src_doc = getattr(src_job, "doc", {}) or {}
+                        except Exception as inspect_error:
+                            return {
+                                "success": False,
+                                "error": f"could not inspect source job '{src_uid}': {inspect_error}",
+                                "job_type": resolved,
+                                "source_job_uid": src_uid,
+                            }
+                        source_group_cache[src_uid] = [
+                            g.get("name")
+                            for g in (src_doc.get("output_result_groups") or [])
+                            if isinstance(g, dict) and g.get("name")
+                        ]
+                    # Never substitute: the named group must exist verbatim.
+                    if out_group not in source_group_cache[src_uid]:
+                        return {
+                            "success": False,
+                            "error": (
+                                f"source job '{src_uid}' has no output group named "
+                                f"'{out_group}' (requested for input slot '{slot}')"
+                            ),
+                            "job_type": resolved,
+                            "source_job_uid": src_uid,
+                            "requested_output_group": out_group,
+                            "available_output_groups": source_group_cache[src_uid],
+                        }
+
+            # Build the connections payload for create_job: a bare tuple for a
+            # single connection, a list of tuples for several on one slot.
+            connections: Dict[str, Any] = {}
+            for slot, conns in connections_map.items():
+                connections[slot] = conns[0] if len(conns) == 1 else list(conns)
+
+            merged_params = dict(params or {})
+
+            if dry_run:
+                return {
+                    "success": True,
+                    "dry_run": True,
+                    "job_type": resolved,
+                    "requested_job_type": job_type,
+                    "connections": connections,
+                    "params": merged_params,
+                    "message": (
+                        f"Dry run: '{resolved}' inputs and params validated; "
+                        "no job was created or queued."
+                    ),
+                }
+
+            workspace = project.find_workspace(workspace_uid)
+            job = workspace.create_job(resolved, connections=connections, params=merged_params)
+            used_lane = self._queue_job_with_lane_fallback(job, lane=lane, hostname=hostname)
+            print(f"Queued {resolved} job: {job.uid}")
+
+            self._job_cache[job.uid] = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+            }
+
+            result: Dict[str, Any] = {
+                "success": True,
+                "job_uid": job.uid,
+                "job_type": resolved,
+                "requested_job_type": job_type,
+                "message": f"{resolved} job {job.uid} queued successfully",
+                "lane": used_lane,
+            }
+            if wait_for_completion:
+                status_result = self.wait_for_job_completion(
+                    project_uid=project_uid,
+                    job_uid=job.uid,
+                    workspace_uid=workspace_uid,
+                    timeout=timeout,
+                    check_interval=check_interval,
+                )
+                result.update(status_result)
+            return result
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "job_type": job_type,
+                "message": f"Failed to run CryoSPARC job '{job_type}': {str(e)}",
+            }
 
     def blob_picker(
         self,
@@ -3002,6 +3554,7 @@ class CryoSPARCTools:
                     if od is not None:
                         c["cfar"] = od.get("cfar")
                         c["cfar_label"] = self._cfar_label(od.get("cfar"))
+                        c["scf_star"] = od.get("scf_star")
                         c["orientation_diagnostics_job_uid"] = od.get("job_uid")
                     else:
                         c["cfar"] = None
@@ -3041,6 +3594,7 @@ class CryoSPARCTools:
                 if od is not None:
                     result["cfar"] = od.get("cfar")
                     result["cfar_label"] = self._cfar_label(od.get("cfar"))
+                    result["scf_star"] = od.get("scf_star")
                     result["orientation_diagnostics_job_uid"] = od.get("job_uid")
                 else:
                     result["cfar"] = None
@@ -3057,20 +3611,29 @@ class CryoSPARCTools:
 
     @staticmethod
     def _cfar_label(cfar: Optional[float]) -> Optional[str]:
-        """Label a cFAR value per the agreed bands (reporting only, not a gate)."""
+        """Report the official 0.5 anisotropy guideline, not a quality verdict."""
         if cfar is None:
             return None
         try:
             c = float(cfar)
         except (TypeError, ValueError):
             return None
-        if c > 0.5:
-            return "good"
-        if c >= 0.15:
-            return "acceptable (not ideal)"
-        if c >= 0.1:
-            return "poor"
-        return "very poor — likely no real structure or severe preferred orientation"
+        if c >= 0.5:
+            return "above the 0.5 anisotropy guideline"
+        return "below 0.5 — anisotropy/preferred orientation likely; cause not determined"
+
+    @staticmethod
+    def _extract_scf_star_from_job(job) -> Optional[float]:
+        """Read SCF* (angular sampling only) from orientation summary stats."""
+        doc = getattr(job, "doc", {}) or {}
+        for group in doc.get("output_result_groups", []) or []:
+            if not isinstance(group, dict):
+                continue
+            stats = group.get("latest_summary_stats") or {}
+            value = stats.get("scf_star")
+            if isinstance(value, (int, float)):
+                return float(value)
+        return None
 
     @staticmethod
     def _extract_cfar_from_job(job) -> Optional[float]:
@@ -3131,7 +3694,11 @@ class CryoSPARCTools:
                         # the requested slot of the refinement job.
                         if not self._diagnostics_uses_volume_slot(cdoc, refinement_job_uid, volume_group_name):
                             continue
-                    return {"job_uid": child_uid, "cfar": self._extract_cfar_from_job(child)}
+                    return {
+                        "job_uid": child_uid,
+                        "cfar": self._extract_cfar_from_job(child),
+                        "scf_star": self._extract_scf_star_from_job(child),
+                    }
                 except Exception:
                     continue
         except Exception:
@@ -3181,7 +3748,7 @@ class CryoSPARCTools:
         When omitted, the first volume/particle output slots are used (appropriate
         for single-volume refinements).
 
-        Returns: {success, cfar, cfar_label, job_uid, computed (bool)}.
+        Returns: {success, cfar, scf_star, cfar_label, job_uid, computed (bool)}.
         """
         try:
             existing = self._find_orientation_diagnostics(
@@ -3191,6 +3758,7 @@ class CryoSPARCTools:
                 return {
                     "success": True,
                     "cfar": existing.get("cfar"),
+                    "scf_star": existing.get("scf_star"),
                     "cfar_label": self._cfar_label(existing.get("cfar")),
                     "job_uid": existing.get("job_uid"),
                     "computed": False,
@@ -3269,9 +3837,11 @@ class CryoSPARCTools:
                 }
             job.refresh()
             cfar = self._extract_cfar_from_job(job)
+            scf_star = self._extract_scf_star_from_job(job)
             return {
                 "success": True,
                 "cfar": cfar,
+                "scf_star": scf_star,
                 "cfar_label": self._cfar_label(cfar),
                 "job_uid": job.uid,
                 "computed": True,
@@ -3696,7 +4266,40 @@ class CryoSPARCTools:
                 "job_type": "homogeneous_refinement",
                 "message": f"Failed to queue homogeneous refinement job: {str(e)}"
             }
-    
+
+    def homogeneous_reconstruction(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        particles_job_uid: str,
+        mask_job_uid: Optional[str] = None,
+        params: Optional[Dict[str, Any]] = None,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """
+        Homogeneous Reconstruction Only (homo_reconstruct): rebuild a 3D map
+        (half-maps + FSC) from particles that ALREADY have 3D alignments — e.g.
+        the output of a homogeneous / non-uniform refinement. This is a pure
+        reconstruction step: it is NOT ab-initio model generation and does NOT
+        re-refine poses.
+
+        Inputs: particles (must carry alignments3D), optional static mask.
+        Tune via raw params keys (see describe_job_params("homo_reconstruct")),
+        e.g. refine_symmetry, refine_N_cmp, refine_gs_resplit.
+        """
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "homo_reconstruct",
+            [("particles", particles_job_uid, "particle"),
+             ("mask", mask_job_uid, "mask")],
+            params=params, passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
+            wait_for_completion=wait_for_completion, timeout=timeout,
+            check_interval=check_interval)
+
     def nonuniform_refine_new(
         self,
         project_uid: str,
@@ -5481,6 +6084,221 @@ class CryoSPARCTools:
             lane=lane, hostname=hostname, wait_for_completion=wait_for_completion,
             timeout=timeout, check_interval=check_interval)
 
+    def rebalance_orientations(
+        self,
+        project_uid: str,
+        workspace_uid: str,
+        particles_job_uid: str,
+        particles_group_name: Optional[str] = None,
+        num_orientation_bins: int = 192,
+        rebalance_percentile: float = 80,
+        exclusion_criterion: str = "random",
+        params: Optional[Dict[str, Any]] = None,
+        lane: Optional[str] = None,
+        hostname: Optional[str] = None,
+        wait_for_completion: bool = False,
+        timeout: int = 3600,
+        check_interval: int = 30,
+        dry_run: bool = False,
+        **kwargs,
+    ) -> Dict[str, Any]:
+        """Remove particles from overrepresented 3D viewing-direction bins.
+
+        The input particles must already have alignments3D. Rebalancing only
+        subsamples the supplied views: it cannot recover views missing from the
+        data, and removing useful particles can degrade the reconstruction.
+        Judge it through a subsequent matched refinement, not as an improvement
+        on its own. The percentile applies to bins, not to a fixed percentage
+        of particles removed.
+        """
+        try:
+            if particles_group_name:
+                slot = particles_group_name
+            else:
+                project = self.cs.find_project(project_uid)
+                slot = self._resolve_particles_slot(project, particles_job_uid)
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "job_type": "rebalance_3D",
+                "message": f"Failed to resolve particles for orientation rebalancing: {e}",
+            }
+
+        job_params = self._merge_passthrough_params(
+            {
+                "rebalance3D_N_bins": int(num_orientation_bins),
+                "rebalance3D_reject_pct": float(rebalance_percentile),
+                "rebalance3D_reject_by": exclusion_criterion,
+            },
+            params=params,
+            kwargs=kwargs,
+        )
+        return self.run_cryosparc_job(
+            project_uid=project_uid,
+            workspace_uid=workspace_uid,
+            job_type="rebalance_3D",
+            inputs=[{
+                "input_slot": "particles",
+                "job_uid": particles_job_uid,
+                "output_group": slot,
+            }],
+            params=job_params,
+            lane=lane,
+            hostname=hostname,
+            wait_for_completion=wait_for_completion,
+            timeout=timeout,
+            check_interval=check_interval,
+            dry_run=dry_run,
+        )
+
+    def split_particles(self, project_uid: str, workspace_uid: str,
+                        particles_job_uid: str, num_splits: int = 2,
+                        random_split: bool = True,
+                        params: Optional[Dict[str, Any]] = None,
+                        lane: Optional[str] = None, hostname: Optional[str] = None,
+                        wait_for_completion: bool = False, timeout: int = 3600,
+                        check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """Split a particle stack into N groups via the ``particle_sets`` utility
+        (set_operation='split'). With ``random_split=True`` the groups are random
+        subsets — used e.g. for subset-scaling (ResLog) tests: refine a random
+        half with the baseline's exact params and compare against the full set.
+        Outputs N particle groups on one job; check the job's outputs for the
+        group names to pass as ``particles_group_name`` downstream."""
+        job_params: Dict[str, Any] = {
+            "set_operation": "split",
+            "set_split_num": int(num_splits),
+            "set_split_random": bool(random_split),
+        }
+        return self._create_and_queue_job(
+            project_uid, workspace_uid, "particle_sets",
+            [("particles_A", particles_job_uid, "particle")],
+            job_params=job_params, params=params, passthrough_kwargs=kwargs,
+            lane=lane, hostname=hostname, wait_for_completion=wait_for_completion,
+            timeout=timeout, check_interval=check_interval)
+
+    def merge_particles(self, project_uid: str, workspace_uid: str,
+                        particles_job_uids: Union[str, List[str]],
+                        particles_group_names: Optional[List[str]] = None,
+                        params: Optional[Dict[str, Any]] = None,
+                        lane: Optional[str] = None, hostname: Optional[str] = None,
+                        wait_for_completion: bool = True, timeout: int = 3600,
+                        check_interval: int = 30, **kwargs) -> Dict[str, Any]:
+        """Merge several particle stacks into one concatenated stack.
+
+        CryoSPARC's ``particle_sets`` utility has no merge/union operation
+        (only split, intersect and balance half sets), so merging is done with
+        ONE ``downsample_particles`` job: its ``particles`` input accepts
+        multiple connections and concatenates all source stacks. The default
+        params ``box_size_pix=None`` / ``bin_size_pix=None`` mean no real-space
+        crop and no Fourier crop, so particles pass through unchanged.
+
+        Args:
+            project_uid: CryoSPARC project UID.
+            workspace_uid: CryoSPARC workspace UID.
+            particles_job_uids: Source particle jobs to merge (a list, or a
+                single UID).
+            particles_group_names: Optional explicit output group for each
+                source job, in the same order as ``particles_job_uids`` (must
+                be the same length). When omitted, each job's particle group is
+                resolved from its real output_result_groups.
+            params: Raw downsample_particles params; overrides the no-crop
+                defaults (see describe_job_params("downsample_particles")).
+            lane, hostname, wait_for_completion, timeout, check_interval:
+                standard job control.
+
+        Returns:
+            Result dict with the merge job UID (never raises).
+        """
+        try:
+            if isinstance(particles_job_uids, str):
+                particles_job_uids = [particles_job_uids]
+            particles_job_uids = [u for u in (particles_job_uids or []) if u]
+            if not particles_job_uids:
+                return {
+                    "success": False,
+                    "error": "merge_particles needs at least one source particles job uid",
+                    "job_type": "merge_particles",
+                    "message": "Failed to merge particle stacks: no source jobs given",
+                }
+
+            project = self.cs.find_project(project_uid)
+            if particles_group_names is not None:
+                if len(particles_group_names) != len(particles_job_uids):
+                    return {
+                        "success": False,
+                        "error": (
+                            "particles_group_names must have exactly one entry per source "
+                            f"job ({len(particles_job_uids)}); got {len(particles_group_names)}"
+                        ),
+                        "job_type": "merge_particles",
+                        "message": "Failed to merge particle stacks: bad particles_group_names",
+                    }
+                slots = [str(group) for group in particles_group_names]
+            else:
+                slots = [self._resolve_particles_slot(project, uid) for uid in particles_job_uids]
+
+            workspace = project.find_workspace(workspace_uid)
+
+            # All source stacks connect to the single 'particles' input as a
+            # list of (job_uid, output_group) tuples; the job concatenates them.
+            connections = {"particles": list(zip(particles_job_uids, slots))}
+
+            # Default: pure concatenation — no real-space crop, no Fourier crop.
+            job_params: Dict[str, Any] = {"box_size_pix": None, "bin_size_pix": None}
+            job_params = self._merge_passthrough_params(job_params, params=params, kwargs=kwargs)
+
+            job = workspace.create_job(
+                "downsample_particles",
+                connections=connections,
+                params=job_params,
+            )
+            used_lane = self._queue_job_with_lane_fallback(job, lane=lane, hostname=hostname)
+            print(f"Queued merge (downsample_particles) job: {job.uid}")
+
+            self._job_cache[job.uid] = {
+                "project_uid": project_uid,
+                "workspace_uid": workspace_uid,
+            }
+
+            result: Dict[str, Any] = {
+                "success": True,
+                "job_uid": job.uid,
+                "job_type": "merge_particles",
+                "cryosparc_job_type": "downsample_particles",
+                "message": (
+                    f"Merged {len(particles_job_uids)} particle stacks via "
+                    f"downsample_particles job {job.uid}"
+                ),
+                "merged_from": list(particles_job_uids),
+                "particles_group_names": slots,
+                "lane": used_lane,
+            }
+            if wait_for_completion:
+                status_result = self.wait_for_job_completion(
+                    project_uid=project_uid,
+                    job_uid=job.uid,
+                    workspace_uid=workspace_uid,
+                    timeout=timeout,
+                    check_interval=check_interval,
+                )
+                result.update(status_result)
+            return result
+        except Exception as e:
+            return {
+                "success": False,
+                "error": str(e),
+                "job_type": "merge_particles",
+                "message": f"Failed to merge particle stacks: {str(e)}",
+            }
+
+    def _topaz_params(self, params: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+        """Supply the worker-visible Topaz executable unless explicitly overridden."""
+        merged = dict(params or {})
+        if self.settings.topaz_exec_path and not merged.get("exec_path"):
+            merged["exec_path"] = self.settings.topaz_exec_path
+        return merged
+
     def topaz_train(self, project_uid: str, workspace_uid: str,
                     micrographs_job_uid: str, particles_job_uid: str,
                     params: Optional[Dict[str, Any]] = None,
@@ -5488,12 +6306,12 @@ class CryoSPARCTools:
                     wait_for_completion: bool = False, timeout: int = 3600,
                     check_interval: int = 30, **kwargs) -> Dict[str, Any]:
         """Train a Topaz deep-picking model. Inputs: micrographs + a set of
-        known-good particles to learn from. Requires Topaz on the worker."""
+        known-good particles to learn from. Uses the configured Topaz executable."""
         return self._create_and_queue_job(
             project_uid, workspace_uid, "topaz_train",
             [("micrographs", micrographs_job_uid, "exposure"),
              ("particles", particles_job_uid, "particle")],
-            params=params, passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
+            params=self._topaz_params(params), passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
             wait_for_completion=wait_for_completion, timeout=timeout, check_interval=check_interval)
 
     def topaz_extract(self, project_uid: str, workspace_uid: str,
@@ -5508,7 +6326,7 @@ class CryoSPARCTools:
             project_uid, workspace_uid, "topaz_extract",
             [("model", model_job_uid, "ml_model"),
              ("micrographs", micrographs_job_uid, "exposure")],
-            params=params, passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
+            params=self._topaz_params(params), passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
             wait_for_completion=wait_for_completion, timeout=timeout, check_interval=check_interval)
 
     def topaz_denoise(self, project_uid: str, workspace_uid: str,
@@ -5523,7 +6341,7 @@ class CryoSPARCTools:
             project_uid, workspace_uid, "topaz_denoise",
             [("micrographs", micrographs_job_uid, "exposure"),
              ("denoise_model", denoise_model_job_uid, "ml_model")],
-            params=params, passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
+            params=self._topaz_params(params), passthrough_kwargs=kwargs, lane=lane, hostname=hostname,
             wait_for_completion=wait_for_completion, timeout=timeout, check_interval=check_interval)
 
     def create_templates(self, project_uid: str, workspace_uid: str,
